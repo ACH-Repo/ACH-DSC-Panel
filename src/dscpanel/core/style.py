@@ -100,17 +100,25 @@ class Setting(object):
 
 
 #: Every value that falls back on the house style, in the order the settings
-#: page lists them. The built-in numbers are the ones the objects carried
-#: before there was a house style, so nothing changes until it is changed.
+#: page lists them. The built-in values for the analysis labels, the
+#: captions and the numbers are the ones Christian settled on for his own
+#: install (2026-09-25); the rest are what the objects carried before there
+#: was a house style.
 SETTINGS = (
-    Setting("analysis_size", "Analysis labels", 9.0, low=5.0, high=40.0,
+    Setting("analysis_size", "Analysis labels", 11.0, low=5.0, high=40.0,
             note="the text of an onset, an integral, a Tg"),
-    Setting("analysis_flush", "Analysis label alignment", FLUSH_AUTO,
+    Setting("analysis_flush", "Analysis label alignment", FLUSH_LEFT,
             kind="choice", choices=(FLUSH_AUTO,) + FLUSHES,
             note="which edge of the label sits on its arrow"),
-    Setting("caption_size", "Axis captions", 10.0, low=5.0, high=40.0,
+    Setting("caption_size", "Axis captions", 14.0, low=5.0, high=40.0,
             note="T / degC and Heat Flow / W/g"),
-    Setting("tick_size", "Axis numbers", 8.0, low=4.0, high=30.0),
+    Setting("tick_size", "Axis numbers", 12.0, low=4.0, high=30.0),
+    # Between an axis's numbers and its caption. The caption used to sit a
+    # fixed 16 px below the axis line, which the numbers themselves nearly
+    # fill at 8 pt - and overlapped at anything bigger.
+    Setting("caption_gap", "Caption distance", 8.0, low=0.0, high=80.0,
+            step=1.0, decimals=0, suffix=" px",
+            note="space between an axis's numbers and its caption"),
     Setting("legend_size", "Legend text", 9.0, low=5.0, high=30.0),
     Setting("label_size", "Labels", 10.0, low=5.0, high=48.0,
             note="captions placed on the figure (Ctrl+T)"),
@@ -137,6 +145,7 @@ FIELDS = {
     ("analysis", "flush"): "analysis_flush",
     ("axis", "label_size"): "caption_size",
     ("axis", "tick_size"): "tick_size",
+    ("axis", "label_gap"): "caption_gap",
     ("legend", "size"): "legend_size",
     ("label", "size"): "label_size",
     ("scan", "line_width"): "line_width",

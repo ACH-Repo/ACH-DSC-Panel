@@ -157,10 +157,9 @@ ARROW_TAIL_OVER_HEAD = 0.9
 ARROW_SHAFT_OVER_HEAD = 4.5 / 9.0
 ARROW_HEAD_OVER_LEN = 13.0 / 9.0
 
-#: How far above the curve the interval bracket sits, and how long its end
-#: ticks are. Small on purpose: it marks a stretch of the line, it is not an
-#: annotation in its own right.
-INTERVAL_LIFT = 5.0
+#: Half the length of the dash at each bound of an analysis's interval,
+#: centred on the trace. Small on purpose: it marks where the stretch ends,
+#: it is not an annotation in its own right.
 INTERVAL_TICK = 4.0
 
 #: The blink for a scan that is missing its molar mass: two flashes, then a
@@ -180,12 +179,20 @@ class Trace(object):
     same numbers.
     """
 
-    __slots__ = ("scan", "x", "y", "colour", "missing", "px", "py")
+    __slots__ = ("scan", "x", "y", "colour", "missing", "px", "py",
+                 "hidden", "first")
 
-    def __init__(self, scan, x, y, colour, missing=None):
+    def __init__(self, scan, x, y, colour, missing=None, hidden=(), first=0):
         self.scan = scan
+        #: The KEPT samples only (see `Scan.keep`): everything that fits,
+        #: picks, arranges or measures reads these.
         self.x = x
         self.y = y
+        #: The truncated ends as `[(x, y), ...]`, drawn dashed on hover.
+        self.hidden = list(hidden)
+        #: Where `x[0]` sits in the segment's own arrays, so a sample picked
+        #: here can be named in the file's terms (an analysis's `span`).
+        self.first = int(first)
         self.colour = QColor(colour)
         #: What stops this scan being drawn, or None. A trace with a reason
         #: has no arrays and is drawn as a placeholder.
@@ -235,13 +242,18 @@ class PlotWidget(QWidget):
     #: Double-click on an object: the window opens its settings.
     activated = Signal(object)
     #: Two cursors are down and Enter was pressed: (scan, x0, x1, analysis
-    #: being edited or None). Both temperatures are in the FILE's Celsius.
-    measure_ready = Signal(object, float, float, object)
+    #: being edited or None, span or None). Both temperatures are in the
+    #: FILE's Celsius; the span, when the cursors came from the curve, is
+    #: the two sample indices they sit on.
+    measure_ready = Signal(object, float, float, object, object)
     #: A zoom or pan finished: (view before, view after, "zoom"/"pan"/"fit"),
     #: for the window to put on the undo stack. See `commit_view`.
     view_committed = Signal(object, object, str)
 
-    ZOOM_CYCLE = ("zoom_h", "zoom_v", "zoom_box", None)
+    #: BOX first (Christian, round 10). The PXRD window starts horizontal,
+    #: which suits a spectrum of peaks; on a DSC stack the feature is a
+    #: region in both directions, so the first Z is the box.
+    ZOOM_CYCLE = ("zoom_box", "zoom_h", "zoom_v", None)
     PAN_CYCLE = ("pan_h", "pan_v", "pan_free", None)
     MODE_TEXT = {
         "zoom_h": "ZOOM horizontal - drag a range (Esc exits)",
@@ -320,7 +332,19 @@ class PlotWidget(QWidget):
                                   getattr(doc, 'x_unit', units.TEMP_C))
                 missing = (None if x is not None
                            else scan.missing_for(doc.y_unit, doc.x_axis))
-                traces.append(Trace(scan, x, y, scan.colour, missing))
+                if x is None:
+                    traces.append(Trace(scan, x, y, scan.colour, missing))
+                    continue
+                k0, k1 = scan.kept_range(len(x))
+                # Each hidden end overlaps the kept part by one sample, so
+                # the dashed line meets the solid one instead of a gap.
+                hidden = []
+                if k0 > 0:
+                    hidden.append((x[:k0 + 1], y[:k0 + 1]))
+                if k1 < len(x):
+                    hidden.append((x[k1 - 1:], y[k1 - 1:]))
+                traces.append(Trace(scan, x[k0:k1], y[k0:k1], scan.colour,
+                                    None, hidden, k0))
         self.traces = traces
         if not keep_view:
             self._view_x = self._view_y = None
@@ -506,16 +530,42 @@ class PlotWidget(QWidget):
             value += step
         caption = QFont(self.font())
         caption.setPointSizeF(self.style_of(y_axis, "label_size"))
-        # tick text + the gap it is drawn with + the rotated caption
-        left = widest + 12 + (QFontMetrics(caption).height() + 10
+        # tick text + the gap it is drawn with + the caption's distance from
+        # the numbers + the rotated caption + a little air at the edge
+        left = widest + 12 + (self.caption_gap(y_axis)
+                              + QFontMetrics(caption).height() + 4
                               if y_axis.visible else 0)
         x_ticks = QFont(self.font())
         x_ticks.setPointSizeF(self.style_of(x_axis, "tick_size"))
         x_caption = QFont(self.font())
         x_caption.setPointSizeF(self.style_of(x_axis, "label_size"))
-        bottom = QFontMetrics(x_ticks).height() + 12 + (
-            QFontMetrics(x_caption).height() + 14 if x_axis.visible else 0)
+        bottom = QFontMetrics(x_ticks).height() + 8 + (
+            self.caption_gap(x_axis) + QFontMetrics(x_caption).height() + 6
+            if x_axis.visible else 0)
         return int(max(30, left)), _RIGHT, _TOP, int(max(26, bottom))
+
+    def caption_gap(self, axis):
+        """Pixels between an axis's numbers and its caption."""
+        return float(_clamp(self.style_of(axis, "label_gap"), 0.0, 80.0))
+
+    def tick_extent(self, axis):
+        """How far an axis's numbers reach out from it, in pixels: their
+        height under the x axis, the widest of them beside the y axis - the
+        edge a caption keeps its distance from."""
+        font = QFont(self.font())
+        font.setPointSizeF(self.style_of(axis, "tick_size"))
+        metrics = QFontMetrics(font)
+        if axis.which == "x":
+            return 3.0 + metrics.height()
+        lo, hi = self.view_y()
+        step = _nice_step(hi - lo, 6)
+        widest = 0
+        value = math.ceil(lo / step) * step
+        while value <= hi + 1e-9:
+            widest = max(widest, metrics.horizontalAdvance(
+                "{:g}".format(round(value, 10))))
+            value += step
+        return 8.0 + widest
 
     def plot_rect(self):
         left, right, top, bottom = self.margins()
@@ -897,6 +947,7 @@ class PlotWidget(QWidget):
             "objs": objs,
             "start": pos,
             "origin": [self._value_of(o) for o in objs],
+            "stored": [self._stored_of(o) for o in objs],
             "typed": "",
             "axis": None,
             "keyboard": True,
@@ -949,8 +1000,17 @@ class PlotWidget(QWidget):
         """
         if isinstance(obj, model.Analysis) and obj.label_dy is None:
             return (self.effective_label_dy(obj),)
-        return tuple(float(getattr(obj, name))
+        # `style_of`, not getattr: a caption's gap is None until dragged.
+        return tuple(float(self.style_of(obj, name))
                      for name in self._fields_of(obj))
+
+    def _stored_of(self, obj):
+        """An object's transformable fields EXACTLY as stored, None and all.
+
+        What a cancelled or undone move must put back. Writing back the value
+        it was DRAWN at instead would turn "follow the house style" into a
+        fixed number the moment a drag was cancelled."""
+        return tuple(getattr(obj, name) for name in self._fields_of(obj))
 
     def effective_label_dy(self, analysis):
         """The offset an analysis label is drawn at, automatic or chosen."""
@@ -1045,12 +1105,11 @@ class PlotWidget(QWidget):
                         origin[0] + dx_px / max(1.0, rect.width()),
                         origin[1] + dy_px))
                 else:
-                    # A bigger gap moves the caption RIGHT, towards the plot,
-                    # so dragging right has to add. It subtracted, and the y
-                    # caption ran the wrong way under the hand.
+                    # The gap is measured LEFT from the numbers, so dragging
+                    # the caption right (towards the plot) makes it smaller.
                     self._apply_value(obj, (
                         origin[0] - dy_px / max(1.0, rect.height()),
-                        origin[1] + dx_px))
+                        origin[1] - dx_px))
                 continue
             if typed is not None:
                 delta = typed
@@ -1069,22 +1128,25 @@ class PlotWidget(QWidget):
         state, self._move = self._move, None
         if state is None:
             return
+        stored = state.get("stored") or [None] * len(state["objs"])
         if cancel:
-            for obj, origin in zip(state["objs"], state["origin"]):
-                self._apply_value(obj, origin)
+            for obj, origin, raw in zip(state["objs"], state["origin"],
+                                        stored):
+                self._restore(obj, origin, raw)
             self.rebuild()
             self.mode_changed.emit(self.MODE_TEXT.get(self._mode,
                                                       self.SELECT_TEXT))
             return
         changes = []
-        for obj, origin in zip(state["objs"], state["origin"]):
+        for obj, origin, raw in zip(state["objs"], state["origin"], stored):
             value = self._value_of(obj)
             if value == origin:
+                self._restore(obj, origin, raw)
                 continue
             # Hand the window the BEFORE state as the current value, so the
             # undo step it builds covers the whole gesture rather than the
-            # last pixel of it.
-            self._apply_value(obj, origin)
+            # last pixel of it - and restores what was STORED, None and all.
+            self._restore(obj, origin, raw)
             for name, new in zip(self._fields_of(obj), value):
                 changes.append((obj, name, new))
         self.mode_changed.emit(self.MODE_TEXT.get(self._mode,
@@ -1116,6 +1178,15 @@ class PlotWidget(QWidget):
             return "move {} scan(s)".format(len(scans))
         return "move {} object(s)".format(len(objs))
 
+    def _restore(self, obj, origin, raw):
+        """Put an object back as it was before a move: exactly as stored when
+        that is known, else at the value it was drawn with."""
+        if raw is None:
+            self._apply_value(obj, origin)
+            return
+        for name, value in zip(self._fields_of(obj), raw):
+            setattr(obj, name, value)
+
     def moving(self):
         """True while a grab or a drag is live. For tests and the status bar."""
         return self._move is not None
@@ -1128,7 +1199,8 @@ class PlotWidget(QWidget):
         "MEASURE - Enter to choose the analysis, Esc to step back",
     )
 
-    def start_measure(self, scan=None, cursors=None, editing=None):
+    def start_measure(self, scan=None, cursors=None, editing=None,
+                      span=None):
         """Begin placing cursors on one scan, TRIOS style.
 
         One scan, always: an analysis is about a single curve, and a gesture
@@ -1155,11 +1227,50 @@ class PlotWidget(QWidget):
                     "Select one scan to measure on")
                 return False
             scan = chosen[0]
+        span = list(span) if span else None
+        if span:
+            # A span names the samples; the temperatures follow from them,
+            # paired index for index.
+            cursors = [self._celsius_of(scan, i) for i in span]
         self._measure = {"scan": scan, "cursors": list(cursors or []),
-                         "typed": "", "editing": editing}
+                         "typed": "", "editing": editing, "span": span}
         self.mode_changed.emit(self._measure_text())
         self.update()
         return True
+
+    def _trace_of(self, scan):
+        for trace in self.traces:
+            if trace.scan is scan:
+                return trace
+        return None
+
+    def sample_at(self, trace, pos, rect=None):
+        """The sample of a drawn curve nearest `pos`, as an index into the
+        segment's OWN arrays, or None.
+
+        Nearest in the plane, not in temperature: on a curve that doubles
+        back, the temperature under the pointer names two or three points,
+        and only the one the pointer is actually near is meant.
+        """
+        if trace is None or trace.x is None or not len(trace.x):
+            return None
+        rect = rect or self.plot_rect()
+        px = self.x_to_px(trace.x, rect)
+        py = self.y_to_px(trace.y, rect)
+        index = int(np.argmin(np.hypot(px - pos.x(), py - pos.y())))
+        return trace.first + index
+
+    @staticmethod
+    def _celsius_of(scan, index):
+        """The file's temperature at one of its samples, in Celsius."""
+        return float(scan.temperature()[int(index)])
+
+    def _sample_point(self, trace, index, rect=None):
+        """Where a sample (segment index) is drawn, clipped to the kept part."""
+        rect = rect or self.plot_rect()
+        local = int(_clamp(int(index) - trace.first, 0, len(trace.x) - 1))
+        return QPointF(float(self.x_to_px(trace.x[local], rect)),
+                       float(self.y_to_px(trace.y[local], rect)))
 
     def _celsius_at(self, px):
         """The file's Celsius under a pixel column, whatever the axis shows."""
@@ -1187,7 +1298,8 @@ class PlotWidget(QWidget):
         if state is None:
             return False
         if not state["live"]:
-            if abs(pos.x() - state["start"].x()) < DRAG_SLOP:
+            if math.hypot(pos.x() - state["start"].x(),
+                          pos.y() - state["start"].y()) < DRAG_SLOP:
                 return True
             editing = None
             measuring = self._measure
@@ -1198,11 +1310,28 @@ class PlotWidget(QWidget):
             if not self.start_measure(state["scan"], editing=editing):
                 self._interval = None
                 return False
-            first = self._celsius_at(state["start"].x())
+            trace = self._trace_of(state["scan"])
+            start = self.sample_at(trace, state["start"])
+            if start is not None:
+                # BY SAMPLE along the curve, not by temperature: where the
+                # press landed and where the pointer is now, each the nearest
+                # point of the drawn curve (Christian: a DSC curve is a
+                # parametric curve, not a function of temperature).
+                self._measure["span"] = [start, start]
+                first = self._celsius_of(state["scan"], start)
+            else:
+                first = self._celsius_at(state["start"].x())
             self._measure["cursors"] = [first, first]
             self._measure["gesture"] = True
             state["live"] = True
-        self._measure["cursors"][1] = self._celsius_at(pos.x())
+        span = self._measure.get("span")
+        if span is not None:
+            index = self.sample_at(self._trace_of(state["scan"]), pos)
+            span[1] = index
+            self._measure["cursors"][1] = self._celsius_of(state["scan"],
+                                                           index)
+        else:
+            self._measure["cursors"][1] = self._celsius_at(pos.x())
         self.mode_changed.emit(self.INTERVAL_TEXT)
         self.update()
         return True
@@ -1221,8 +1350,23 @@ class PlotWidget(QWidget):
             self.activated.emit(state["scan"])
             return True
         measuring = self._measure
-        low, high = sorted(measuring["cursors"])
         rect = self.plot_rect()
+        span = measuring.get("span")
+        trace = self._trace_of(measuring["scan"])
+        if span is not None and trace is not None:
+            a, b = self._sample_point(trace, span[0], rect), \
+                self._sample_point(trace, span[1], rect)
+            if (abs(span[1] - span[0]) < 2
+                    or math.hypot(a.x() - b.x(), a.y() - b.y()) < DRAG_SLOP):
+                self.end_measure()
+                return False
+            # In ORDER ALONG THE CURVE, cursors paired with their samples.
+            span.sort()
+            measuring["cursors"] = [self._celsius_of(measuring["scan"], i)
+                                    for i in span]
+            self.measure_confirm()
+            return True
+        low, high = sorted(measuring["cursors"])
         wide = abs(float(self.x_to_px(self.to_axis(high), rect))
                    - float(self.x_to_px(self.to_axis(low), rect)))
         if wide < DRAG_SLOP:
@@ -1316,6 +1460,19 @@ class PlotWidget(QWidget):
         state = self._cursor_drag
         if state is None or self._measure is None:
             return False
+        span = self._measure.get("span")
+        if span is not None:
+            # A gizmo of an analysis made along the curve follows the
+            # curve: the nearest sample to the pointer, whichever branch.
+            sample = self.sample_at(self._trace_of(self._measure["scan"]),
+                                    pos)
+            if sample is not None and 0 <= state["index"] < len(span):
+                span[state["index"]] = sample
+                self._measure["cursors"][state["index"]] = \
+                    self._celsius_of(self._measure["scan"], sample)
+                self.mode_changed.emit(self._measure_text())
+                self.update()
+            return True
         celsius = self._celsius_at(pos.x())
         index = state["index"]
         if 0 <= index < len(self._measure["cursors"]):
@@ -1325,8 +1482,39 @@ class PlotWidget(QWidget):
         return True
 
     def end_cursor_drag(self):
-        self._cursor_drag = None
+        """Let go of a gizmo. While an analysis made here is being ADJUSTED,
+        letting go is the confirmation: it is recomputed at once, so the
+        number follows the hand instead of waiting for an Enter."""
+        held, self._cursor_drag = self._cursor_drag, None
         self.update()
+        state = self._measure
+        if (held is not None and state is not None
+                and state.get("editing") is not None
+                and len(state["cursors"]) >= 2):
+            self.measure_confirm()
+
+    def editing(self):
+        """The analysis whose gizmos are up, or None."""
+        return (self._measure or {}).get("editing")
+
+    def gizmo_rect(self):
+        """Where the measure cursors are, in GLOBAL coordinates, or None.
+
+        The span between them over the plot's full height, widened by the
+        handles and by the temperature readout drawn to the right of each
+        (90 px): what a settings dialog must not cover while it is open
+        beside them.
+        """
+        state = self._measure
+        if not state or not state["cursors"]:
+            return None
+        rect = self.plot_rect()
+        xs = [float(self.x_to_px(self.to_axis(c), rect))
+              for c in state["cursors"]]
+        left = max(rect.left(), int(min(xs) - 24))
+        right = min(self.width(), int(max(xs) + 100))
+        local = QRect(left, rect.top(), max(1, right - left), rect.height())
+        return QRect(self.mapToGlobal(local.topLeft()), local.size())
 
     def measure_back(self):
         """One Esc: drop the typed number, then a cursor, then the gesture.
@@ -1339,6 +1527,10 @@ class PlotWidget(QWidget):
             return False
         if state["typed"]:
             state["typed"] = ""
+        elif state.get("editing") is not None:
+            # The gizmos of an analysis being adjusted belong to its settings
+            # dialog: closing THAT ends them. Esc here must not strip one.
+            return True
         elif state["cursors"]:
             state["cursors"].pop()
         else:
@@ -1385,8 +1577,10 @@ class PlotWidget(QWidget):
         state = self._measure
         if state is None or len(state["cursors"]) < 2:
             return False
+        span = state.get("span")
         self.measure_ready.emit(state["scan"], float(state["cursors"][0]),
-                                float(state["cursors"][1]), state["editing"])
+                                float(state["cursors"][1]), state["editing"],
+                                tuple(span) if span else None)
         return True
 
     def end_measure(self):
@@ -1407,10 +1601,19 @@ class PlotWidget(QWidget):
                 trace = candidate
                 break
         colour = QColor(_SELECT)
-        positions = []
-        for celsius in state["cursors"]:
+        span = state.get("span")
+        positions, heights = [], []
+        for k, celsius in enumerate(state["cursors"]):
+            if span is not None and trace is not None and k < len(span) \
+                    and trace.x is not None and len(trace.x):
+                # On the SAMPLE, not wherever the temperature is first met.
+                point = self._sample_point(trace, span[k], rect)
+                positions.append(point.x())
+                heights.append(point.y())
+                continue
             value = self.to_axis(celsius)
             positions.append(float(self.x_to_px(value, rect)))
+            heights.append(None)
         if len(positions) == 2:
             span = QRectF(min(positions), rect.top(),
                           abs(positions[1] - positions[0]), rect.height())
@@ -1426,8 +1629,8 @@ class PlotWidget(QWidget):
                     and self._cursor_drag.get("index") == index)
             p.setPen(QPen(colour, 1.6 if held else 1.2, Qt.DashLine))
             p.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
-            y = None
-            if trace is not None:
+            y = heights[index]
+            if y is None and trace is not None:
                 y = self._curve_y_at(trace, self.px_to_x(x, rect), rect)
             if y is not None:
                 p.setRenderHint(QPainter.Antialiasing, True)
@@ -1551,10 +1754,15 @@ class PlotWidget(QWidget):
             held = self.cursor_at(pos)
             if held is not None:
                 self.start_cursor_drag(held, pos)
-            else:
+                ev.accept()
+                return
+            if self._measure.get("editing") is None:
+                # Placing cursors by click is the TYPED route (`C`). While an
+                # analysis is being adjusted, its gizmos are dragged, and a
+                # press anywhere else is an ordinary press.
                 self.measure_place(pos)
-            ev.accept()
-            return
+                ev.accept()
+                return
         if self._mode:
             rect = self.plot_rect()
             self._drag = {"px": pos.x(), "py": pos.y(),
@@ -1604,7 +1812,8 @@ class PlotWidget(QWidget):
             self.drag_interval(pos)
             return
         self._move = {"objs": [obj], "start": press["start"],
-                      "origin": [self._value_of(obj)], "typed": "",
+                      "origin": [self._value_of(obj)],
+                          "stored": [self._stored_of(obj)], "typed": "",
                       "axis": None, "keyboard": False, "moved": True}
         self._update_move(pos, mods)
         self.hovered.emit(self._move_readout())
@@ -1773,6 +1982,7 @@ class PlotWidget(QWidget):
                 isinstance(obj, model.Axis) and self._axis_hit == "spine"):
             self._move = {"objs": [obj], "start": pos,
                           "origin": [self._value_of(obj)],
+                          "stored": [self._stored_of(obj)],
                           "typed": "", "axis": None, "keyboard": False,
                           "moved": False, "activate": obj}
         else:
@@ -1793,7 +2003,8 @@ class PlotWidget(QWidget):
             if len(cursors) == 2:
                 self.doc.select_only([obj.scan])
                 self.selection_changed.emit()
-                self.start_measure(obj.scan, cursors, editing=obj)
+                self.start_measure(obj.scan, cursors, editing=obj,
+                                   span=obj.span)
         # ...and its settings, because opening an analysis should show the
         # analysis. The cursors adjust the interval; the dialog the rest.
         self.activated.emit(obj)
@@ -1885,7 +2096,15 @@ class PlotWidget(QWidget):
     # -------------------------------------------------------------- painting
     def _key(self):
         doc = self.doc
-        return (self.width(), self.height(), self.devicePixelRatioF(),
+        # The selection of EVERY object: a selected artist, analysis label or
+        # axis caption is drawn orange into the cache, and a click that only
+        # changes selection just asks for a repaint. With artists missing
+        # here, clicking off a label left it orange until something else
+        # rebuilt the plot (Christian, round 10).
+        selection = (tuple(obj.selected for obj in doc.objects())
+                     if doc is not None else ())
+        return (selection,
+                self.width(), self.height(), self.devicePixelRatioF(),
                 self.view_x(), self.view_y(),
                 doc.x_axis if doc else "", doc.y_unit if doc else "",
                 doc.exo if doc else "",
@@ -1927,6 +2146,7 @@ class PlotWidget(QWidget):
         self._paint_select_box(painter)
         self._paint_offsets(painter)
         self._paint_alarms(painter)
+        self._paint_hidden(painter)
         self._paint_measure(painter)
         painter.restore()
         self._paint_flash(painter)
@@ -1992,6 +2212,40 @@ class PlotWidget(QWidget):
         p.setPen(QColor(170, 235, 180, alpha))
         p.drawText(QPointF(x + 13, y + metrics.ascent() + 6), text)
         p.restore()
+
+    def hidden_shown(self):
+        """The traces whose truncated ends are on screen right now: the one
+        under the pointer and the selected ones."""
+        hovered = (self._trace_at(self._cursor)
+                   if self._cursor is not None and self._move is None
+                   else None)
+        return [t for t in self.traces
+                if t.hidden and (t is hovered or t.scan.selected)]
+
+    def _paint_hidden(self, p):
+        """A scan's truncated ends, DASHED, while it is hovered or selected.
+
+        So what was cut is never invisible to the person working on it, and
+        never in the figure: painted per event, like the name readout, so no
+        export can carry it.
+        """
+        shown = self.hidden_shown()
+        if not shown:
+            return
+        rect = self.plot_rect()
+        limit = max(50, 2 * rect.width())
+        p.setRenderHint(QPainter.Antialiasing, True)
+        for trace in shown:
+            colour = trace_colour(trace)
+            colour.setAlpha(170)
+            pen = QPen(colour, self.style_of(trace.scan, "line_width")
+                       * CURVE_WIDTH, Qt.DashLine)
+            p.setPen(pen)
+            for x, y in trace.hidden:
+                stride = max(1, int(len(x) // limit))
+                p.drawPolyline(_polyline(self.x_to_px(x[::stride], rect),
+                                         self.y_to_px(y[::stride], rect)))
+        p.setRenderHint(QPainter.Antialiasing, False)
 
     def _render(self):
         ratio = float(self.devicePixelRatioF() or 1.0)
@@ -2124,10 +2378,11 @@ class PlotWidget(QWidget):
     def axis_label_rect(self, axis, rect=None, painter=None):
         """Where an axis caption sits, as a QRectF.
 
-        `label_along` runs from 0 to 1 ALONG the axis and `label_gap` moves
-        it away from the plot - and both are clamped so the caption stays in
-        the margin. Dragging a y caption into the middle of the data is the
-        one thing this must not allow.
+        `label_along` runs from 0 to 1 ALONG the axis; the caption keeps
+        `caption_gap` pixels from the axis's NUMBERS - below them for x, to
+        their left for y. It used to sit a fixed 16 px below the x axis
+        line, which 8 pt numbers nearly fill and bigger ones overlapped.
+        Clamped so it stays on the widget and never over the data.
         """
         rect = rect or self.plot_rect()
         font = QFont(painter.font() if painter is not None else self.font())
@@ -2136,17 +2391,19 @@ class PlotWidget(QWidget):
         width, height = markup_size(text, font)
         width += 8
         height += 2
-        bottom_margin = self.height() - rect.bottom()
+        gap = self.caption_gap(axis)
+        reach = self.tick_extent(axis)
         if axis.which == "x":
             span = max(1.0, rect.width() - width)
             left = rect.left() + _clamp(axis.label_along, 0.0, 1.0) * span
-            room = max(0.0, bottom_margin - height - 18)
-            top = rect.bottom() + 16 + _clamp(axis.label_gap, 0.0, room)
+            top = rect.bottom() + reach + gap
+            top = _clamp(top, rect.bottom() + 1.0,
+                         max(rect.bottom() + 1.0, self.height() - height - 1))
             return QRectF(left, top, width, height)
         span = max(1.0, rect.height() - width)
         centre_y = rect.bottom() - _clamp(axis.label_along, 0.0, 1.0) * span
-        room = max(0.0, rect.left() - height - 8)
-        left = 2.0 + _clamp(axis.label_gap, 0.0, room)
+        left = rect.left() - reach - gap - height
+        left = _clamp(left, 1.0, max(1.0, rect.left() - height - 1))
         return QRectF(left, centre_y - width, height, width)
 
     def label_colour(self, label):
@@ -2378,15 +2635,17 @@ class PlotWidget(QWidget):
             value = self.to_axis(value)
             if not (lo <= value <= hi):
                 continue
-            anchor_y = self._curve_y_at(trace, value, rect)
+            anchor_y = self._curve_y_at(trace, value, rect,
+                                        self._analysis_slice(trace, analysis))
             if anchor_y is None:
                 continue
             colour = (QColor(_SELECT) if analysis.selected
                       else self.analysis_colour(analysis, trace))
-            if analysis.show_interval:
-                self._paint_interval(p, rect, trace, analysis, colour)
             if analysis.shade and "Integration" in analysis.model_name:
                 self._paint_integral(p, rect, trace, analysis, colour)
+            # After the shading, so the dashes sit ON TOP of trace and fill.
+            if analysis.show_interval:
+                self._paint_interval(p, rect, trace, analysis)
             self._paint_analysis_label(p, rect, trace, analysis, value,
                                        anchor_y, colour)
 
@@ -2398,18 +2657,13 @@ class PlotWidget(QWidget):
         baseline joining the two stored cursors. A number with nothing under
         it says where a peak is; the shading says what was integrated.
         """
-        x0 = model.number(analysis.fields.get("Baseline cursor x"))
-        x1 = model.number(analysis.fields.get("Baseline cursor x1"))
-        if x0 is None or x1 is None or trace.x is None:
+        covered = self._covered(trace, analysis)
+        if covered is None:
             return
-        low, high = self.to_axis(min(x0, x1)), self.to_axis(max(x0, x1))
-        inside = (trace.x >= low) & (trace.x <= high)
-        if inside.sum() < 3:
-            return
-        xs, ys = trace.x[inside], trace.y[inside]
+        xs, ys = covered
         # The baseline is a straight line between the curve's own values at
         # the two cursors, which is TRIOS's "linear, double point".
-        base = np.interp(xs, [xs[0], xs[-1]], [ys[0], ys[-1]])
+        base = _chord(xs, ys)
         px = self.x_to_px(xs, rect)
         top = self.y_to_px(ys, rect)
         bottom = self.y_to_px(base, rect)
@@ -2440,22 +2694,37 @@ class PlotWidget(QWidget):
             return float(analysis.label_dy)
         return -46.0 if self.peak_points_up(analysis, trace) else 46.0
 
-    def peak_points_up(self, analysis, trace):
-        """True when the feature rises above its own baseline on screen."""
+    def _covered(self, trace, analysis):
+        """`(xs, ys)`: the part of the drawn curve an integration covers.
+
+        Its own stretch of samples when it was measured along the curve;
+        otherwise every sample between the two stored cursor temperatures,
+        which is all a file's analysis says - and which, on a curve that
+        doubles back, takes in more than one branch.
+        """
+        stretch = self._analysis_slice(trace, analysis)
+        if stretch is not None:
+            a, b = stretch
+            if b - a < 2:
+                return None
+            return trace.x[a:b + 1], trace.y[a:b + 1]
         x0 = model.number(analysis.fields.get("Baseline cursor x"))
         x1 = model.number(analysis.fields.get("Baseline cursor x1"))
         if x0 is None or x1 is None or trace.x is None:
-            return True
-        lo, hi = min(x0, x1), max(x0, x1)
-        lo, hi = self.to_axis(lo), self.to_axis(hi)
-        inside = (trace.x >= lo) & (trace.x <= hi)
+            return None
+        low, high = self.to_axis(min(x0, x1)), self.to_axis(max(x0, x1))
+        inside = (trace.x >= low) & (trace.x <= high)
         if inside.sum() < 3:
+            return None
+        return trace.x[inside], trace.y[inside]
+
+    def peak_points_up(self, analysis, trace):
+        """True when the feature rises above its own baseline on screen."""
+        covered = self._covered(trace, analysis)
+        if covered is None:
             return True
-        ys = trace.y[inside]
-        base = np.interp(trace.x[inside],
-                         [trace.x[inside][0], trace.x[inside][-1]],
-                         [ys[0], ys[-1]])
-        deviation = ys - base
+        xs, ys = covered
+        deviation = ys - _chord(xs, ys)
         # On screen y grows downward, so a curve ABOVE its baseline in data
         # terms is the one with the larger positive deviation.
         return abs(float(deviation.max())) >= abs(float(deviation.min()))
@@ -2468,35 +2737,71 @@ class PlotWidget(QWidget):
         return units.from_celsius(celsius, getattr(doc, "x_unit",
                                                    units.TEMP_C))
 
-    def _paint_interval(self, p, rect, trace, analysis, colour):
-        """Dashed verticals at the two cursors: what the analysis covers.
+    def interval_marks(self, trace, analysis, rect=None):
+        """What marks an analysis's interval, in pixels: `(dashes, lines)`.
+
+        Christian's rules (round 10), replacing a copy of the curve drawn a
+        few pixels ABOVE it between the two bounds - which sat over the data
+        and said nothing the dashes did not:
+
+        * **dashes**: a short vertical dash at each bound, centred ON the
+          trace. Every analysis with two cursors has them.
+        * **lines**: only where the result is a temperature on the curve
+          (`Analysis.marks_a_point` - onset, endset, glass transition). A
+          straight line from the left bound to the result point and on to the
+          right bound: the template's construction. No dash at the point
+          itself; the label's arrow already marks it.
+        * an integration gets the dashes alone: its shading and baseline show
+          what was integrated, and a connecting curve must never be drawn.
+
+        Each (a, b) pair is a segment between two QPointF.
+        """
+        rect = rect or self.plot_rect()
+        cursors = analysis.cursors()
+        if len(cursors) != 2 or trace.x is None or not len(trace.x):
+            return [], []
+        stretch = self._analysis_slice(trace, analysis)
+        bounds = []
+        if stretch is not None:
+            # Measured along the curve: the bounds ARE two samples.
+            for local in stretch:
+                bounds.append(QPointF(
+                    float(self.x_to_px(trace.x[local], rect)),
+                    float(self.y_to_px(trace.y[local], rect))))
+        else:
+            for celsius in sorted(cursors):
+                x = self.to_axis(celsius)
+                y = self._curve_y_at(trace, x, rect)
+                if y is None:
+                    return [], []
+                bounds.append(QPointF(float(self.x_to_px(x, rect)),
+                                      float(y)))
+        dashes = [(QPointF(b.x(), b.y() - INTERVAL_TICK),
+                   QPointF(b.x(), b.y() + INTERVAL_TICK)) for b in bounds]
+        lines = []
+        value = analysis.value() if analysis.marks_a_point else None
+        if value is not None:
+            x = self.to_axis(value)
+            y = self._curve_y_at(trace, x, rect, stretch)
+            if y is not None:
+                point = QPointF(float(self.x_to_px(x, rect)), float(y))
+                lines = [(bounds[0], point), (point, bounds[1])]
+        return dashes, lines
+
+    def _paint_interval(self, p, rect, trace, analysis):
+        """The interval marks, in the axis colour: structure, not data.
 
         The template draws these and a figure needs them - an enthalpy with
         no interval marked is a number somebody has to take on trust. Each
         analysis can switch them off (`show_interval`) for the cases where
         two overlap.
         """
-        cursors = analysis.cursors()
-        if len(cursors) != 2 or trace.x is None:
+        dashes, lines = self.interval_marks(trace, analysis, rect)
+        if not dashes:
             return
-        lo, hi = self.view_x()
-        low, high = sorted(self.to_axis(value) for value in cursors)
-        if high < lo or low > hi:
-            return
-        # A BRACKET ON THE CURVE: the stretch that was analysed, with a short
-        # tick at each end - the marker the template draws. It used to be two
-        # dashed verticals running down to the axis, which is a different
-        # statement and a much louder one.
-        inside = (trace.x >= low) & (trace.x <= high)
-        p.setPen(QPen(colour, 1.2))
-        if inside.sum() >= 2:
-            px = self.x_to_px(trace.x[inside], rect)
-            py = self.y_to_px(trace.y[inside], rect) - INTERVAL_LIFT
-            p.drawPolyline(_polyline(px, py))
-            for end in (0, -1):
-                x, y = float(px[end]), float(py[end])
-                p.drawLine(QPointF(x, y - INTERVAL_TICK),
-                           QPointF(x, y + INTERVAL_TICK))
+        p.setPen(QPen(QColor(_AXIS), 1.0))
+        for a, b in lines + dashes:
+            p.drawLine(a, b)
 
     def _paint_analysis_label(self, p, rect, trace, analysis, value, anchor_y,
                               colour):
@@ -2565,7 +2870,19 @@ class PlotWidget(QWidget):
         return (for_light(analysis.colour) if THEME == THEME_LIGHT
                 else QColor(analysis.colour))
 
-    def _curve_y_at(self, trace, value, rect):
+    def _analysis_slice(self, trace, analysis):
+        """`(a, b)`: the stretch of the drawn curve an analysis covers, as
+        inclusive indices into `trace.x`, or None when it was not measured
+        along the curve (a file's analyses, typed temperatures)."""
+        span = getattr(analysis, "span", None)
+        if not span or trace.x is None or not len(trace.x):
+            return None
+        last = len(trace.x) - 1
+        a = int(_clamp(span[0] - trace.first, 0, last))
+        b = int(_clamp(span[1] - trace.first, 0, last))
+        return (a, b) if b > a else None
+
+    def _curve_y_at(self, trace, value, rect, within=None):
         """The screen y of the drawn curve nearest x = `value`, or None.
 
         "Nearest sample" rather than an interpolation, because x doubles back
@@ -2575,7 +2892,11 @@ class PlotWidget(QWidget):
         """
         if trace.x is None or not len(trace.x):
             return None
-        index = int(np.argmin(np.abs(trace.x - value)))
+        lo, hi = within if within is not None else (0, len(trace.x) - 1)
+        xs = trace.x[lo:hi + 1]
+        if not len(xs):
+            return None
+        index = lo + int(np.argmin(np.abs(xs - value)))
         return self.y_to_px(float(trace.y[index]), rect)
 
     def _paint_names(self, p):
@@ -3164,6 +3485,18 @@ def _nice_step(span, target=8):
 
 def _clamp(value, lo, hi):
     return max(lo, min(hi, value))
+
+
+def _chord(xs, ys):
+    """The straight line from the first point to the last, at every x.
+
+    Not `np.interp`, which needs x to INCREASE and silently returns nonsense
+    for a cooling scan, whose temperature runs the other way.
+    """
+    span = float(xs[-1] - xs[0])
+    if abs(span) < 1e-12:
+        return np.full(len(ys), float(ys[0]))
+    return ys[0] + (ys[-1] - ys[0]) * (xs - xs[0]) / span
 
 
 def _rect_distance(box, point):

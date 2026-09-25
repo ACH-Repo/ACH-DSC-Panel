@@ -88,6 +88,10 @@ def no_modal_loops(monkeypatch):
     monkeypatch.setattr(QMenu, "exec", refused("QMenu.exec", None))
     monkeypatch.setattr(QMessageBox, "about",
                         refused("QMessageBox.about", None))
+    for name in ("question", "warning", "information", "critical"):
+        monkeypatch.setattr(QMessageBox, name,
+                            refused("QMessageBox." + name,
+                                    QMessageBox.Cancel))
     monkeypatch.setattr(QInputDialog, "getText",
                         refused("QInputDialog.getText", ("", False)))
     monkeypatch.setattr(QInputDialog, "getDouble",

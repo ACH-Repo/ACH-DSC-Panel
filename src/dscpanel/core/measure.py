@@ -42,7 +42,7 @@ class Measurement(object):
         self.note = note
 
 
-def _series(scan):
+def _series(scan, span=None):
     """`(time_min, temperature, heat_flow_per_gram)` for a scan, or None.
 
     In the file's own units, ALWAYS: minutes, degrees Celsius and W/g,
@@ -66,11 +66,19 @@ def _series(scan):
         values = values / float(scan.sample.mass_g)
     if minutes is None:
         minutes = np.arange(len(values), dtype=float)
-    return minutes, temperature, values
+    # Only what is DRAWN: a truncated end is gone from the analyses too, and
+    # a span (the samples a drag ran between) narrows it to exactly those.
+    lo, hi = scan.kept_range(len(values))
+    if span is not None:
+        lo = max(lo, int(min(span)))
+        hi = min(hi, int(max(span)) + 1)
+    if hi - lo < 3:
+        return None
+    return minutes[lo:hi], temperature[lo:hi], values[lo:hi]
 
 
-def onset(scan, x0, x1, kind="onset"):
-    series = _series(scan)
+def onset(scan, x0, x1, kind="onset", span=None):
+    series = _series(scan, span)
     if series is None:
         return None
     _t, temperature, flow = series
@@ -84,12 +92,12 @@ def onset(scan, x0, x1, kind="onset"):
             key: "{:.4f} °C".format(result[key])}
 
 
-def endset(scan, x0, x1):
-    return onset(scan, x0, x1, kind="endset")
+def endset(scan, x0, x1, span=None):
+    return onset(scan, x0, x1, kind="endset", span=span)
 
 
-def integrate(scan, x0, x1):
-    series = _series(scan)
+def integrate(scan, x0, x1, span=None):
+    series = _series(scan, span)
     if series is None:
         return None
     minutes, temperature, flow = series
@@ -106,8 +114,8 @@ def integrate(scan, x0, x1):
                 result["Peak temperature"])}
 
 
-def glass_transition(scan, x0, x1):
-    series = _series(scan)
+def glass_transition(scan, x0, x1, span=None):
+    series = _series(scan, span)
     if series is None:
         return None
     _t, temperature, flow = series
@@ -123,8 +131,8 @@ def glass_transition(scan, x0, x1):
             "Midpoint": "{:.4f} °C".format(result["Midpoint"])}
 
 
-def signal_change(scan, x0, x1):
-    series = _series(scan)
+def signal_change(scan, x0, x1, span=None):
+    series = _series(scan, span)
     if series is None:
         return None
     _t, temperature, flow = series
@@ -139,8 +147,8 @@ def signal_change(scan, x0, x1):
             if isinstance(first[1], float) else str(first[1])}
 
 
-def peak_height(scan, x0, x1):
-    series = _series(scan)
+def peak_height(scan, x0, x1, span=None):
+    series = _series(scan, span)
     if series is None:
         return None
     _t, temperature, flow = series
@@ -188,7 +196,7 @@ def by_name(name):
     return None
 
 
-def run(name, scan, x0, x1):
+def run(name, scan, x0, x1, span=None):
     """Compute one analysis and attach it to `scan`, or return None.
 
     The cursors arrive in DEGREES CELSIUS, whatever the axis is showing; the
@@ -197,22 +205,58 @@ def run(name, scan, x0, x1):
     which numbers came out of the instrument and which out of this program.
     """
     entry = by_name(name)
-    if entry is None:
-        return None
-    low, high = (x0, x1) if x0 <= x1 else (x1, x0)
-    try:
-        fields = entry.run(scan, low, high)
-    except Exception:
-        return None
-    if not fields:
+    fields = compute(name, scan, x0, x1, span)
+    if entry is None or not fields:
         return None
     analysis = model.Analysis(id(fields) % 1000000, scan,
                               fields.get("Model", name), fields,
                               source="panel", attribution="measured here")
+    analysis.span = clean_span(span)
     analysis.visible = True
     analysis.label = default_label(entry, analysis)
     scan.analysis_objects.append(analysis)
     return analysis
+
+
+def clean_span(span):
+    """Two sample indices, lowest first, or None."""
+    if not span or len(span) != 2 or None in tuple(span):
+        return None
+    low, high = sorted(int(i) for i in span)
+    return (low, high) if high > low else None
+
+
+def compute(name, scan, x0, x1, span=None):
+    """The result fields of one analysis between two cursors, or None.
+
+    `run` without making an object: what moving an existing analysis's
+    interval needs, so the analysis is updated IN PLACE and whatever holds it
+    (its open settings, the outliner, the selection) keeps holding it.
+    """
+    entry = by_name(name)
+    if entry is None:
+        return None
+    low, high = (x0, x1) if x0 <= x1 else (x1, x0)
+    try:
+        fields = entry.run(scan, low, high, span=clean_span(span))
+    except Exception:
+        return None
+    return fields or None
+
+
+def relabelled(analysis, fields):
+    """The label an analysis should carry once its fields become `fields`.
+
+    A label that is still the default one quotes the OLD number, so it is
+    rewritten with the new one. One somebody typed is theirs and is kept.
+    Re-measuring used to keep the label as it was, so the figure went on
+    showing the number from before the cursors moved.
+    """
+    entry = by_name(analysis.model_name)
+    if entry is None or analysis.label != default_label(entry, analysis):
+        return analysis.label
+    fresh = model.Analysis(0, analysis.scan, analysis.model_name, fields)
+    return default_label(entry, fresh)
 
 
 def default_label(entry, analysis):

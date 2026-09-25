@@ -27,7 +27,9 @@ from . import units
 FORMAT = "dscpanel-session"
 #: 2: sizes are None until chosen (the house style fills them in), the
 #: figure carries its own `style`, and analyses have a `flush`.
-VERSION = 2
+#: 3: an axis's `label_gap` is measured from its NUMBERS (it was from the
+#: axis line for x and from the window's edge for y), None until chosen.
+VERSION = 3
 
 
 def _chosen(value, key, version):
@@ -42,9 +44,17 @@ def _chosen(value, key, version):
     """
     setting = style.BY_KEY[key]
     value = setting.clean(value)
-    if value is not None and version < 2 and value == setting.default:
+    if (value is not None and version < 2
+            and value == _VERSION_1_DEFAULTS.get(key)):
         return None
     return value
+
+
+#: What every object carried in a version-1 file when nobody had touched it:
+#: the built-ins of THAT time, not today's, which have since moved.
+_VERSION_1_DEFAULTS = {"analysis_size": 9.0, "caption_size": 10.0,
+                       "tick_size": 8.0, "legend_size": 9.0,
+                       "label_size": 10.0, "line_width": 1.0}
 
 
 def _analysis_state(analysis):
@@ -67,6 +77,7 @@ def _analysis_state(analysis):
     if analysis.source == "panel":
         state["model"] = analysis.model_name
         state["cursors"] = analysis.cursors()
+        state["span"] = list(analysis.span) if analysis.span else None
     return state
 
 
@@ -103,6 +114,7 @@ def to_state(doc):
             "colour": scan.colour,
             "offset": scan.offset,
             "line_width": scan.line_width,
+            "keep": list(scan.keep),
             "label": scan.label,
             "visible": scan.visible,
             "analyses": [_analysis_state(a) for a in scan.analysis_objects],
@@ -132,6 +144,7 @@ def to_state(doc):
         "axes": axes,
         "labels": labels,
         "x_axis": doc.x_axis,
+        "x_unit": doc.x_unit,
         "y_unit": doc.y_unit,
         "theme": doc.theme,
         "style": doc.style.chosen(),
@@ -207,6 +220,13 @@ def load(path, read_sample):
         scan.offset = float(entry.get("offset", 0.0))
         scan.line_width = _chosen(entry.get("line_width"), "line_width",
                                   version)
+        keep = entry.get("keep") or (0.0, 1.0)
+        try:
+            start, end = float(keep[0]), float(keep[1])
+        except (TypeError, ValueError, IndexError):
+            start, end = 0.0, 1.0
+        if 0.0 <= start < end <= 1.0:
+            scan.keep = (start, end)
         scan.label = entry.get("label")
         scan.visible = bool(entry.get("visible", True))
         stored = entry.get("analyses") or []
@@ -223,7 +243,8 @@ def load(path, read_sample):
             made = None
             if len(cursors) == 2:
                 made = measure.run(saved.get("model", ""), scan,
-                                   float(cursors[0]), float(cursors[1]))
+                                   float(cursors[0]), float(cursors[1]),
+                                   span=saved.get("span"))
             if made is None:
                 problems.append("{}: {} could not be measured again".format(
                     scan.display_name(), saved.get("model", "an analysis")))
@@ -251,6 +272,10 @@ def load(path, read_sample):
                 setattr(axis, name, value)
         axis.label_size = _chosen(saved.get("label_size"), "caption_size",
                                   version)
+        # Before version 3 the gap was measured from somewhere else, so an
+        # old number would put the caption in the wrong place: dropped.
+        axis.label_gap = (style.BY_KEY["caption_gap"].clean(
+            saved.get("label_gap")) if version >= 3 else None)
         axis.tick_size = _chosen(saved.get("tick_size"), "tick_size", version)
     for saved in state.get("labels") or []:
         owner = None
@@ -277,6 +302,8 @@ def load(path, read_sample):
     doc.legend.size = _chosen((state.get("legend") or {}).get("size"),
                               "legend_size", version)
     doc.x_axis = state.get("x_axis", doc.x_axis)
+    if state.get("x_unit") in units.TEMPERATURE_UNITS:
+        doc.x_unit = state["x_unit"]
     doc.y_unit = state.get("y_unit", doc.y_unit)
     doc.theme = state.get("theme", doc.theme)
     doc.path = str(path)

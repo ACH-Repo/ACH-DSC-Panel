@@ -149,6 +149,61 @@ going; this file is about how it is done here.
   the window applies it before building any widget.
 * **A QMenu fetched back through a temporary QAction wrapper** can already
   be deleted on the Python side. The window keeps `self.menus`.
+* **A dialog field must not be named like a QWidget method.** `self.size`
+  (a spin box) hid `QWidget.size()`, and `width`, `x`, `y` did the same; it
+  only showed when something asked a dialog how big it was. A test now scans
+  `dialogs.py` and `settings.py` for it - the `grab` trap, again.
+* **The render cache must key on EVERY object's selection.** It keyed on
+  scans and analyses only, so a selected label or arrow kept (or never got)
+  its orange until something else rebuilt the plot: a click that changes
+  selection only asks for a repaint.
+* **An analysis being adjusted is changed IN PLACE** (`window.remeasure`):
+  same object, new fields, and a default label rewritten with the new number
+  (`measure.relabelled`). Replacing it left an open dialog editing an object
+  no longer in the figure, and kept the old number in the label. Its gizmos
+  live exactly as long as its settings dialog: letting go of one recomputes,
+  closing the dialog (any way) confirms and ends them, a press elsewhere is
+  an ordinary press, and Esc does not strip them. The dialog opens beside
+  them (`window.place_beside`, `plot.gizmo_rect`).
+* **A window shortcut fires from inside the window's pop-ups** (a Qt.Tool
+  settings dialog passes its keys up), so `Ctrl+W` there closed the whole
+  program. `close_step` closes the pop-up in front first (`window.popups`).
+  A test of a window shortcut must `show()` the window, or it never fires.
+* **A DSC curve is a PARAMETRIC curve, not a function of temperature**
+  (Christian, round 11). A segment's temperature doubles back at its start
+  and runs backwards when cooling, so anything that picks samples by a
+  temperature window takes every branch at once. Truncation (`Scan.keep`,
+  the template's `x_truncate`) is by FRACTION OF THE SAMPLES, and an
+  interval dragged along a curve is stored as the two SAMPLE INDICES under
+  the pointer (`Analysis.span`, `PlotWidget.sample_at`, nearest in the
+  plane); `measure._series` slices by them. Only a file's analyses and typed
+  temperatures still fall back to temperature windows.
+* **A trace holds the KEPT samples only** (`trace.first` is where they start
+  in the segment). Fit, picking, arranging, CSV and analyses read them; the
+  hidden ends are painted dashed in the per-event overlay while the scan is
+  hovered or selected, so no export can carry them.
+* **`np.interp` needs x to increase.** A chord between the ends of a stretch
+  of a COOLING scan came out wrong; use `_chord` in `ui/plot.py`.
+* **A pop-up keeps its changes however it is closed** (round 11: "a change
+  is a change"). `_LiveDialog.reject` - X, Esc, Ctrl+W - accepts; only the
+  Revert button (`revert`) puts things back. Either way the window makes
+  one undo step.
+* **Unsaved changes are COMPARED, not counted**: `window.is_modified` diffs
+  `session.to_state` against the last save or open. A zoom is on the undo
+  stack but not in the file, so it is not a change; undoing back to the
+  saved state is clean. `closeEvent` asks (`ask_to_save`, stubbable).
+* **A move restores what was STORED, not what was drawn** (`_stored_of`).
+  Restoring the drawn value turned "follow the house style" (None) into a
+  fixed number whenever a drag was cancelled or undone.
+* **An axis caption keeps `caption_gap` px from its NUMBERS** (house style,
+  per axis `label_gap`), below them for x and left of the widest for y; the
+  margins grow to fit. Session version 3 drops older `label_gap`s, which
+  were measured from somewhere else.
+* **Interval marks** (round 10): a dash at each bound, centred ON the trace,
+  in the axis colour; for an analysis whose result is a temperature
+  (`Analysis.marks_a_point`: onset, endset, Tg) straight lines bound ->
+  point -> bound, no dash at the point; an integration never gets a
+  connecting curve. `PlotWidget.interval_marks` is the geometry.
 * **Step names are length-prefixed and the length byte is printable**
   (fixed in ACH-DSC-Plotter's reader, round 9): names of 34+ bytes were
   invisible, and CN-119 read 3 segments of 7. TRI-FORMAT.md section 4.

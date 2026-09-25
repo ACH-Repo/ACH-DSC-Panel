@@ -18,13 +18,15 @@ Below them, **Handling**: how the program responds to the hand - the pick
 distance. It has a Default and nothing else, because it is about the person
 at the trackpad and not about any figure.
 
-Live, like every dialog here: the plot follows each change as it is made, and
-Cancel puts back what was there when the page opened - both columns.
+Live, like every dialog here: the plot follows each change as it is made.
+Closing the page any way keeps the changes; Revert puts back what was there
+when it opened - both columns.
 """
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QGridLayout,
-                               QLabel, QVBoxLayout)
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFrame,
+                               QGridLayout, QLabel, QScrollArea, QVBoxLayout,
+                               QWidget)
 
 from ..core import style
 from .dialogs import NumberBox, StyleChoice, StyleNumber
@@ -49,9 +51,19 @@ class SettingsDialog(QDialog):
         self.figure = {}
 
         layout = QVBoxLayout(self)
-        grid = QGridLayout()
+        # The rows SCROLL, as MoloM's page does once it outgrew the screen:
+        # the list only gets longer, and a page taller than the screen puts
+        # its OK button out of reach.
+        self._scroll = QScrollArea(self)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        body = QWidget(self._scroll)
+        self._scroll.setWidget(body)
+        grid = QGridLayout(body)
+        grid.setContentsMargins(0, 0, 8, 0)
         grid.setHorizontalSpacing(12)
-        layout.addLayout(grid)
+        layout.addWidget(self._scroll, 1)
         for column, text in ((1, "Default"), (2, "This figure")):
             head = QLabel("<b>{}</b>".format(text))
             grid.addWidget(head, 0, column)
@@ -115,8 +127,12 @@ class SettingsDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Ok
                                    | QDialogButtonBox.Cancel
                                    | QDialogButtonBox.RestoreDefaults)
+        buttons.button(QDialogButtonBox.Cancel).setText("Revert")
+        buttons.button(QDialogButtonBox.Cancel).setToolTip(
+            "Put both columns back as they were when this opened, and close. "
+            "Closing any other way keeps the changes.")
         buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons.rejected.connect(self.revert)
         buttons.button(QDialogButtonBox.RestoreDefaults).setText(
             "Built-in defaults")
         buttons.button(QDialogButtonBox.RestoreDefaults).setToolTip(
@@ -124,7 +140,15 @@ class SettingsDialog(QDialog):
         buttons.button(QDialogButtonBox.RestoreDefaults).clicked.connect(
             lambda _c=False: self.restore_builtin())
         layout.addWidget(buttons)
-        self.resize(560, self.sizeHint().height())
+        # As tall as the rows need, up to most of the screen; beyond that
+        # the rows scroll and the buttons stay put.
+        wanted = body.sizeHint().height() + note.sizeHint().height() \
+            + buttons.sizeHint().height() + 60
+        screen = window.screen()
+        limit = (int(screen.availableGeometry().height() * 0.75)
+                 if screen is not None else wanted)
+        self.resize(max(560, body.sizeHint().width() + 40),
+                    min(wanted, limit))
 
     # ------------------------------------------------------------ editing
     def default_value(self, key):
@@ -190,6 +214,11 @@ class SettingsDialog(QDialog):
         QDialog.accept(self)
 
     def reject(self):
+        """Its X, Esc or Ctrl+W: keep the changes, like OK (see
+        `_LiveDialog.reject`). Only Revert puts them back."""
+        self.accept()
+
+    def revert(self):
         style.restore_preferences(self._saved_defaults)
         for key, old in self._saved_figure.items():
             setattr(self.doc.style, key, old)

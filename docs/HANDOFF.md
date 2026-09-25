@@ -7,12 +7,13 @@ always current.
 
 ## 1. State right now
 
-**Nothing is committed anywhere.** This is the single most important fact.
+**Both repos have been committed once, nothing pushed.** Work after
+`f261ce5` (panel) is in the working tree only.
 
 | Repo | State |
 | :-- | :-- |
-| `ACH-DSC-Panel` | `git init` done, **zero commits**, every file untracked. 151 tests pass. |
-| `ACH-DSC-Plotter` | 3 files modified, uncommitted: `src/achdsc/trios_io.py` (Tg decode + `.txt` mass fix + round 9's step-name length byte, `_step_name`), `TRI-FORMAT.md` (the Tg layout, the indium finding, section 4's length byte and CN-119), `src/achdsc/templates/DSC_Plotter.py` (re-vendored). Its own 33 tests pass, including the three CN-119 export comparisons (CN-119's folder is in its gitignored `tests/local_testdata.txt`). |
+| `ACH-DSC-Panel` | Initial commit `f261ce5` on `master` (2026-09-25, at Christian's request; not pushed - his other repos use `main`). Rounds 10 and 11 after it are uncommitted. 172 tests pass. |
+| `ACH-DSC-Plotter` | Committed `d743702` on `main` (2026-09-25; not pushed): the Tg decode, the `.txt` mass fix and round 9's step-name length byte (`_step_name`), with TRI-FORMAT.md and the re-vendored template. 33 tests, including the three CN-119 export comparisons (its folder is in the gitignored `tests/local_testdata.txt`). |
 | `ACH-MoloM` | Untouched by this chat. Its tree already had 10 modified files from earlier work. |
 
 Christian commits and pushes himself, per message, never as a standing
@@ -143,7 +144,7 @@ Full list in `CLAUDE.md`. The ones that cost the most:
   Write longer patches to a `.py` file in the scratchpad and run that.
 - **`QWidget.grab` exists**; the transform method is `start_grab`.
 
-## 7. What the program does now (0.1.0, 151 tests)
+## 7. What the program does now (0.1.0, 172 tests)
 
 Reading and data: vendored reader; `.tri` and `.txt`; per-file exo detection;
 background loading; sessions (`.dscpanel`); CSV and PNG/SVG export (light
@@ -179,18 +180,26 @@ what it starts near** (PLAN.md, rounds 8 and 9):
   (not dragging) an analysis made here shows its cursors AND its settings and
   keeps its model. Analyses made here are SAVED in the session (model +
   cursors, recomputed on load);
+- truncation by POINTS (`Scan.keep`, the template's `x_truncate`): hidden
+  ends dashed on hover, out of fit/picking/analyses/exports. Intervals
+  dragged along a curve are sample spans (`Analysis.span`);
+- closing: pop-ups keep their changes (Revert is the way back); the window
+  asks to save when the figure differs from the file;
 - house style (`Ctrl+,`, `core/style.py`): sizes and label `flush` resolve
   object -> figure (`doc.style`, in the session) -> the user's default
   (`preferences.json` in `branding.app_dir()`) -> built-in. Styled
   attributes are None until chosen; read them through `style.value`;
 - analyses: leader-arrow labels dragged vertically only, auto side away from
-  the peak, shaded integrals, interval BRACKET on the curve (hideable),
-  default labels like `\Delta*H* = 13.247 J/g`, `Delete` removes them;
+  the peak, shaded integrals, interval marks (dashes at the bounds, and for
+  onset/endset/Tg lines to the point, in the axis colour; hideable), default
+  labels like `\Delta*H* = 13.247 J/g`, `Ctrl+L`/`R`/`M` alignment,
+  `Delete` removes them. Double-click one made here: gizmos plus its
+  settings beside them; the gizmos end with the dialog;
 - figure: template style (no grid, ticks in, minor ticks, italic `*T*`),
   margins sized by font, spine vs caption double-click, Celsius/K/F x axis,
   two themes (`blender-default`, `light`; exports always light), legend
-  (`Ctrl+L`), captions (`Ctrl+T`, or right-click a curve), undo over
-  everything including removals.
+  (the outliner's tick), captions (`Ctrl+T`, or right-click a curve), undo
+  over everything including removals. `Z` cycles box, horizontal, vertical.
 
 ## 8. Offered or parked, not done
 

@@ -12,14 +12,15 @@ gesture in the plot is only one of the things that changes it. The plot hands
 over what a gesture did (`transform_done`) rather than writing history itself.
 """
 
+import json
 import os
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import (QAction, QColor, QCursor, QImage, QKeySequence,
                            QPainter)
-from PySide6.QtWidgets import (QApplication, QColorDialog, QDockWidget,
-                               QFileDialog, QInputDialog, QLabel, QMainWindow,
-                               QMenu, QMessageBox, QWidget)
+from PySide6.QtWidgets import (QApplication, QColorDialog, QDialog,
+                               QDockWidget, QFileDialog, QInputDialog, QLabel,
+                               QMainWindow, QMenu, QMessageBox, QWidget)
 
 from .. import branding
 from ..core import (arrange, export, loader, measure, model, ops, session,
@@ -95,6 +96,9 @@ class MainWindow(QMainWindow):
         self._install_shortcuts()
         self._build_menus()
         self._undo_changed()
+        # An empty window has nothing to lose; from here on, a difference
+        # from this is a change.
+        self.mark_clean()
 
     #: Wider than tall, because a DSC figure is, and small enough to sit
     #: beside something else. Clamped to the screen, which is the trap the
@@ -122,9 +126,72 @@ class MainWindow(QMainWindow):
 
     def _sync_title(self):
         subject = os.path.basename(self.doc.path) if self.doc.path else ""
+        if self.is_modified():
+            subject = (subject or "unsaved") + " *"
         self.setWindowTitle(branding.window_title(subject))
 
+    # ------------------------------------------------------ unsaved changes
+    def _document_state(self):
+        """What saving now would write, as text - for "has anything changed".
+
+        Compared rather than counted: undoing back to the saved state is
+        clean again, a zoom (on the undo stack, not in the file) is not a
+        change, and what never touches the undo stack (a file opened, the
+        unit switched) is one.
+        """
+        return json.dumps(session.to_state(self.doc), sort_keys=True,
+                          default=str)
+
+    def mark_clean(self):
+        self._clean_state = self._document_state()
+        self._sync_title()
+
+    def is_modified(self):
+        clean = getattr(self, "_clean_state", None)
+        return clean is not None and self._document_state() != clean
+
+    def ask_to_save(self):
+        """"save", "discard" or "cancel", asked in a box. A method of its
+        own so a test can answer it without a modal event loop."""
+        name = (os.path.basename(self.doc.path) if self.doc.path
+                else "this figure")
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(branding.APP_NAME)
+        box.setText("Save the changes to {} before closing?".format(name))
+        box.setInformativeText("Closing without saving loses them.")
+        save = box.addButton("Save", QMessageBox.AcceptRole)
+        discard = box.addButton("Close without saving",
+                                QMessageBox.DestructiveRole)
+        cancel = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(save)
+        box.setEscapeButton(cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is save:
+            return "save"
+        if clicked is discard:
+            return "discard"
+        return "cancel"
+
+    def closeEvent(self, event):
+        """Closing with unsaved changes asks first (Christian: a hotkey from
+        muscle memory must not take a project with it). Save, close without
+        saving, or stay; a save that is cancelled keeps the window open."""
+        if self.is_modified():
+            answer = self.ask_to_save()
+            if answer == "cancel" or (answer == "save"
+                                      and not self.save_session()):
+                event.ignore()
+                return
+        QMainWindow.closeEvent(self, event)
+
     def _undo_changed(self):
+        # Gizmos up for an analysis whose interval an undo just changed:
+        # put them where the analysis now says it was measured.
+        editing = self.plot.editing()
+        if editing is not None and len(editing.cursors()) == 2:
+            self.plot.measuring()["cursors"] = list(editing.cursors())
         self.refresh()
 
     def _selection_changed(self):
@@ -190,8 +257,12 @@ class MainWindow(QMainWindow):
         r("file.export_driver", "Export as a DSC_Plotter.py driver...",
           lambda c: c.export_driver(), category="File", enabled=any_scan,
           aliases=("matplotlib", "script", "template"))
-        r("file.close", "Close the window", lambda c: c.close(),
-          category="File", key="Ctrl+W", shortcut="Ctrl+W")
+        # Ctrl+W closes the POP-UP in front while any is open, and the window
+        # only when none is. Christian: muscle memory for "close this" must
+        # not take the whole project with it.
+        r("file.close", "Close the window (or the pop-up in front)",
+          lambda c: c.close_step(), category="File", key="Ctrl+W",
+          shortcut="Ctrl+W", aliases=("quit", "exit"))
 
         r("edit.undo", "Undo", lambda c: c.undo_step(), category="Edit",
           key="Ctrl+Z", shortcut="Ctrl+Z", aliases=("zoom back", "back"),
@@ -316,9 +387,23 @@ class MainWindow(QMainWindow):
               enabled=(lambda u: lambda c: (
                   c.doc.x_unit != u
                   and c.doc.x_axis == model.AXIS_TEMPERATURE))(unit))
+        # No key: Ctrl+L belongs to the label alignment below (Christian,
+        # round 10). The outliner's tick and F3 still toggle it.
         r("legend.toggle", "Show or hide the legend",
-          lambda c: c.toggle_legend(), category="Object", key="Ctrl+L",
-          shortcut="Ctrl+L", aliases=("key", "which colour is which"))
+          lambda c: c.toggle_legend(), category="Object",
+          aliases=("key", "which colour is which"))
+        # The template's `flush` for analysis labels, on keys: which edge of
+        # the text sits on its arrow.
+        flushable = lambda c: bool(c.flush_targets())
+        for side, key, words in (
+                (style.FLUSH_LEFT, "Ctrl+L", "left"),
+                (style.FLUSH_RIGHT, "Ctrl+R", "right"),
+                (style.FLUSH_CENTER, "Ctrl+M", "centred")):
+            r("analysis.flush_" + side,
+              "Align analysis labels {}".format(words),
+              (lambda f: lambda c: c.set_flush(f))(side), category="Object",
+              key=key, shortcut=key, enabled=flushable,
+              aliases=("flush", "alignment", "justify", words))
         r("legend.settings", "Legend settings...",
           lambda c: c.edit_object(c.doc.legend), category="Object")
         r("label.add", "Add a label...", lambda c: c.add_label(),
@@ -429,6 +514,44 @@ class MainWindow(QMainWindow):
             return False
         op.run(self)
         return True
+
+    def popups(self):
+        """This window's pop-ups that are open, most recently opened LAST.
+
+        Every visible dialog whose parent chain leads here: the settings of
+        an object, an analysis opened from a scan's settings, the settings
+        page. Found from the widgets themselves rather than from a list kept
+        by hand, so a new kind of pop-up cannot be forgotten.
+        """
+        found = []
+        for widget in QApplication.topLevelWidgets():
+            if (widget is self or not widget.isVisible()
+                    or not isinstance(widget, QDialog)):
+                continue
+            parent = widget.parentWidget()
+            while parent is not None and parent is not self:
+                parent = parent.parentWidget()
+            if parent is self:
+                found.append(widget)
+        tracked = [d for d in getattr(self, "_dialogs", []) if d in found]
+        return [w for w in found if w not in tracked] + tracked
+
+    def close_step(self):
+        """Ctrl+W: the pop-up in front if any is open, else the window.
+
+        The active pop-up when one has the focus, otherwise the one opened
+        last. Closing a pop-up is what its own X does. Returns what closed:
+        the pop-up, or None when it was the window.
+        """
+        popups = self.popups()
+        if not popups:
+            self.close()
+            return None
+        active = QApplication.activeWindow()
+        target = active if active in popups else popups[-1]
+        target.close()
+        self.note.setText("Closed {}".format(target.windowTitle()))
+        return target
 
     def operator_search(self):
         dialog = OperatorPalette(self.ops, self, self, self._last_operator)
@@ -613,6 +736,7 @@ class MainWindow(QMainWindow):
         self.note.setText("; ".join(problems) if problems
                           else "Opened {}".format(os.path.basename(path)))
         self.refresh(keep_view=False)
+        self.mark_clean()
         return path
 
     def save_session(self, ask=False, path=None):
@@ -632,7 +756,7 @@ class MainWindow(QMainWindow):
             self.note.setText("Could not save: {}".format(exc))
             self.plot.flash("NOT saved - {}".format(exc.strerror or exc))
             return None
-        self._sync_title()
+        self.mark_clean()
         self.note.setText("Saved {}".format(os.path.basename(path)))
         # MoloM's fading confirmation: the moment of saving is the moment
         # nobody is looking at the status bar.
@@ -774,7 +898,9 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------- arranging
     def _curve_of(self, scan):
-        return scan.curve(self.doc.x_axis, self.doc.y_unit,
+        # The KEPT part: a truncated start-up hook must not steer a stack or
+        # an alignment any more than it steers the fit.
+        return scan.kept_curve(self.doc.x_axis, self.doc.y_unit,
                           self.doc.exo, self.doc.x_unit)
 
     def stack_selected(self):
@@ -834,6 +960,15 @@ class MainWindow(QMainWindow):
             dialog = LegendSettings(self, obj, on_change=self._live_change)
         elif isinstance(obj, model.Analysis):
             dialog = AnalysisSettings(self, obj, on_change=self._live_change)
+            if self.plot.editing() is obj:
+                # Its gizmos are up: the dialog opens BESIDE them, and
+                # closing it - any way - confirms the interval and ends them.
+                avoid = self.plot.gizmo_rect()
+                if avoid is not None:
+                    self.place_beside(dialog, avoid)
+                self._editing = (obj, dialog)
+                dialog.finished.connect(
+                    lambda _result, a=obj: self._editing_closed(a))
         elif isinstance(obj, model.HeatFlowArrow):
             dialog = ArrowSettings(self, obj, on_change=self._live_change)
         else:
@@ -841,7 +976,7 @@ class MainWindow(QMainWindow):
         self._run_live_dialog(dialog, obj, "settings")
         return obj
 
-    def _measure_ready(self, scan, x0, x1, editing):
+    def _measure_ready(self, scan, x0, x1, editing, span=None):
         """Two cursors are down: ask what to compute, then compute it.
 
         From the double-click-drag this runs the moment the button comes up,
@@ -856,14 +991,13 @@ class MainWindow(QMainWindow):
             # An analysis that already exists keeps ITS model: adjusting an
             # interval is not a chance to change what is being measured, and
             # being asked again every time is the annoyance.
-            chosen = editing.model_name
-        else:
-            chosen = self.ask_analysis(x0, x1)
-            if not chosen:
-                if measuring.get("gesture"):
-                    self.plot.end_measure()
-                return None
-        analysis = measure.run(chosen, scan, x0, x1)
+            return self.remeasure(editing, x0, x1, span)
+        chosen = self.ask_analysis(x0, x1)
+        if not chosen:
+            if measuring.get("gesture"):
+                self.plot.end_measure()
+            return None
+        analysis = measure.run(chosen, scan, x0, x1, span=span)
         if analysis is None:
             self.note.setText(
                 "{} could not be computed between those cursors".format(
@@ -871,40 +1005,110 @@ class MainWindow(QMainWindow):
             if measuring.get("gesture"):
                 self.plot.end_measure()
             return None
-        old = editing
-        if old is not None and old in old.scan.analysis_objects:
-            # Adjusting an existing one: the new analysis takes its place and
-            # its appearance, so a re-measure does not restyle the figure.
-            analysis.colour = old.colour
-            analysis.label = old.label
-            analysis.label_dy = old.label_dy
-            analysis.label_size = old.label_size
-            analysis.flush = old.flush
-            analysis.show_interval = old.show_interval
-            analysis.shade = old.shade
-            old.scan.analysis_objects.remove(old)
 
         def undo_it():
             if analysis in scan.analysis_objects:
                 scan.analysis_objects.remove(analysis)
-            if old is not None and old not in old.scan.analysis_objects:
-                old.scan.analysis_objects.append(old)
 
         def redo_it():
             if analysis not in scan.analysis_objects:
                 scan.analysis_objects.append(analysis)
-            if old is not None and old in old.scan.analysis_objects:
-                old.scan.analysis_objects.remove(old)
 
         self.undo.push(undo.CallCommand(
-            redo_it, undo_it,
-            "{} {}".format("re-measure" if old is not None else "measure",
-                           analysis.model_name)))
+            redo_it, undo_it, "measure {}".format(analysis.model_name)))
         self.plot.end_measure()
         self.note.setText("{}: {}".format(analysis.model_name,
                                           analysis.summary()))
         self.refresh()
         return analysis
+
+    def remeasure(self, analysis, x0, x1, span=None):
+        """Move an analysis made here to a new interval, IN PLACE.
+
+        The same object, with new result fields: its styling stays, and so
+        does everything holding it - the open settings dialog, the outliner
+        row, the selection. It used to be replaced by a fresh object, which
+        left an open dialog editing an analysis no longer in the figure, and
+        kept the old label, number and all. A default label is rewritten
+        with the new number; one somebody typed is kept (`measure.relabelled`).
+
+        The gizmos stay up while the analysis's settings are open (they are
+        how the interval is adjusted) and go when they are not.
+        """
+        fields = measure.compute(analysis.model_name, analysis.scan, x0, x1,
+                                 span)
+        if not fields:
+            self.note.setText(
+                "{} could not be computed between those cursors".format(
+                    analysis.model_name))
+            return None
+        old_label = analysis.label
+        new_label = measure.relabelled(analysis, fields)
+        changes = [(analysis, "fields", fields),
+                   (analysis, "span", measure.clean_span(span))]
+        if new_label != old_label:
+            changes.append((analysis, "label", new_label))
+        self.undo.set_props(changes, "re-measure {}".format(
+            analysis.model_name))
+        dialog = self._editing_dialog(analysis)
+        if dialog is not None:
+            dialog.adopt_measurement(old_label, new_label)
+        else:
+            self.plot.end_measure()
+        self.note.setText("{}: {}".format(analysis.model_name,
+                                          analysis.summary()))
+        return analysis
+
+    def _editing_dialog(self, analysis):
+        """The open settings dialog that owns this analysis's gizmos."""
+        editing = getattr(self, "_editing", None)
+        if editing is None or editing[0] is not analysis:
+            return None
+        return editing[1] if editing[1].isVisible() else None
+
+    def _editing_closed(self, analysis):
+        """Its settings closed - by OK, Cancel or the window's X: confirm.
+
+        Christian: the gizmos exist only while the settings are open. An
+        interval moved and not yet confirmed is taken now, and the gizmos go.
+        """
+        self._editing = None
+        state = self.plot.measuring()
+        if state is None or state.get("editing") is not analysis:
+            return
+        cursors = sorted(float(c) for c in state["cursors"])
+        stored = sorted(analysis.cursors())
+        span = measure.clean_span(state.get("span"))
+        if len(cursors) == 2 and (span != analysis.span or len(stored) != 2
+                                  or any(abs(a - b) > 1e-6
+                                         for a, b in zip(cursors, stored))):
+            self.remeasure(analysis, cursors[0], cursors[1], span)
+        self.plot.end_measure()
+
+    def place_beside(self, dialog, avoid):
+        """Move `dialog` next to - never over - `avoid`, a global rect.
+
+        The side with more room on the screen, top-aligned with the plot, and
+        pulled back on screen if it does not fit. Its frame is not known
+        before it is shown, so a margin stands in for the title bar.
+        """
+        from PySide6.QtGui import QGuiApplication
+        dialog.adjustSize()
+        width = dialog.width() + 16
+        height = dialog.height() + 40
+        screen = (QGuiApplication.screenAt(avoid.center())
+                  or self.screen() or QGuiApplication.primaryScreen())
+        area = screen.availableGeometry()
+        room_left = avoid.left() - area.left()
+        room_right = area.right() - avoid.right()
+        if room_right >= width + 12 or room_right >= room_left:
+            x = avoid.right() + 12
+        else:
+            x = avoid.left() - 12 - width
+        x = max(area.left(), min(x, area.right() - width))
+        y = max(area.top(), min(avoid.top(), area.bottom() - height))
+        dialog.move(x, y)
+        return QPoint(x, y)
 
     def ask_analysis(self, x0, x1):
         """Which analysis to run between two temperatures, or None.
@@ -937,6 +1141,32 @@ class MainWindow(QMainWindow):
         self.refresh(keep_view=False)
         self.note.setText("X axis in {}".format(
             units.TEMPERATURE_LABEL.get(unit, unit)))
+
+    def flush_targets(self):
+        """The analyses Ctrl+L / Ctrl+R / Ctrl+M act on.
+
+        The selected analyses; with none selected, every analysis shown on
+        the selected scans, so one key lines up all the labels of a curve.
+        """
+        chosen = [obj for obj in self.doc.selected()
+                  if isinstance(obj, model.Analysis)]
+        if chosen:
+            return chosen
+        return [analysis for scan in self.doc.selected_scans()
+                for analysis in scan.visible_analyses()]
+
+    def set_flush(self, side):
+        """Align analysis labels left, right or centred on their arrows,
+        as one undo step."""
+        targets = self.flush_targets()
+        if not targets:
+            self.note.setText("Select an analysis label (or its scan) first")
+            return 0
+        self.undo.set_props([(a, "flush", side) for a in targets],
+                            "align labels")
+        self.note.setText("{} label(s) aligned {}".format(
+            len(targets), style.FLUSH_TITLES.get(side, side)))
+        return len(targets)
 
     def toggle_legend(self):
         """Put the key on the figure, or take it off. Undoable like the rest."""
@@ -1013,6 +1243,10 @@ class MainWindow(QMainWindow):
         if not result:
             self._live_change()
             return
+        # The dialog's snapshot as it is NOW: a re-measure while it was open
+        # moves the "before" label on with the number (`adopt_measurement`),
+        # so the settings step does not undo the label back to an old value.
+        before = dialog.snapshot()
         changes = []
         for name, old in before.items():
             new = getattr(obj, name)

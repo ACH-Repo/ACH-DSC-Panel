@@ -43,7 +43,7 @@ dsc-panel my-sample.tri      # straight into a file
   blinking red label instead of being plotted wrong. An export of a figure
   with one in it carries a `NO MOLAR MASS` notice on the image and on the
   console.
-- **A legend when you want one** (`Ctrl+L`): a colour sample and a name per
+- **A legend when you want one** (tick it in the outliner): a colour sample and a name per
   drawn scan, taking each scan's own label. It is an artist, so it is dragged
   and anchored like the rest, and it starts off.
 - **Labels can belong to a line.** Right-click a curve and add one: it
@@ -76,7 +76,7 @@ The navigation is MoloM's PXRD window and ORCA Workbench's, key for key.
 | two-finger swipe | scale the y axis about the cursor |
 | `Shift` + swipe | pan the view, in whichever direction the fingers go |
 | pinch | zoom both axes about the cursor (Windows sends this as `Ctrl+wheel`) |
-| `Z` | cycle zoom: horizontal, vertical, box (`Esc` leaves) |
+| `Z` | cycle zoom: box, horizontal, vertical (`Esc` leaves) |
 | `P` | cycle pan: horizontal, vertical, free |
 | `F` / `Home` | fit the view (x first, then y) |
 | `Esc` | back to plain select |
@@ -86,7 +86,7 @@ The navigation is MoloM's PXRD window and ORCA Workbench's, key for key.
 | `R` | reset the selected offsets to zero (or all of them) |
 | a number | move the selected scans by it; `Enter` confirms, `Esc` cancels |
 | `Ctrl+T` | add a caption where the cursor is |
-| `Ctrl+L` | show or hide the legend |
+| `Ctrl+L` / `Ctrl+R` / `Ctrl+M` | align analysis labels left / right / centred on their arrows |
 | `C` | measure by typing: two temperatures, then `Enter` |
 | `Delete` | remove the selection: an analysis, a caption, or scans |
 | `Ctrl+A` / `Alt+A` | select everything / nothing; `Shift+click` adds |
@@ -97,6 +97,7 @@ The navigation is MoloM's PXRD window and ORCA Workbench's, key for key.
 | `Ctrl+Z` / `Ctrl+Y` | undo / redo, including a file you removed - and zoom, pan and fit, one gesture at a time |
 | `Ctrl+S` / `Ctrl+E` | save the session / export the figure |
 | `Ctrl+,` | settings: the house style, for every figure and for this one |
+| `Ctrl+W` | close the pop-up in front; the window only when no pop-up is open |
 
 The rule is short on purpose: **a drag acts on what it starts near.**
 "Near" is the pick distance (Settings > Handling, 14 px unless you change
@@ -127,17 +128,22 @@ and it is one undo step. `Esc` on the list drops the interval.
 
 To give the temperatures as numbers instead, select one scan and press `C`,
 then type a temperature for each crosshair (in whatever unit the axis is
-showing) and `Enter`; `Esc` steps back one stage at a time. Double-clicking
-an analysis made here brings its cursors back so the interval can be
-adjusted.
+showing) and `Enter`; `Esc` steps back one stage at a time.
+
+Double-clicking an analysis made here brings its cursors back as gizmos,
+with its settings opened beside them rather than over them. Drag a gizmo
+and the analysis is recomputed as you let go; close the settings - OK,
+Cancel or the window's X - and the interval is confirmed and the gizmos go.
 
 The arithmetic is `trios_analysis`, the same code the reader uses for the
 analyses TRIOS stored, so a measurement made here and one read out of a `.tri`
 are the same kind of thing. Against a stored integration in OJ-12 the panel
 computes 13.3 J/g where the file says 13.2611.
 
-Each analysis marks its interval with a bracket along the curve (one
-tickbox hides it), and a cursor can be picked up and dragged rather than
+Each analysis marks its interval with a dash on the curve at each end, in
+the axis colour; an onset, endset or glass transition also gets straight
+lines from those dashes to its result point, the template's construction
+(one tickbox hides them). A cursor can be picked up and dragged rather than
 replaced. Adjusting an existing analysis keeps the model it already has.
 Analyses made here are saved with the session and recomputed from the file
 when it is reopened.
@@ -146,6 +152,14 @@ A finished analysis arrives with its own caption - `\Delta*H* = 13.247 J/g`,
 `*T*_{g} = 78.9 degC` - which is editable text in its settings. Captions
 anywhere in the figure take the same small markup: `*T*` for italic, `_{g}`
 for a subscript, and a backslash name for a Greek letter.
+
+**Hiding the ends of a curve** (Scan settings > Hide) is the plotter's
+`x_truncate`: the first and last N % of the POINTS, never a temperature
+window - a DSC curve doubles back at its start and runs backwards when
+cooling. The hidden ends show dashed while the scan is hovered or selected,
+and are left out of the fit, the analyses and the exports. For the same
+reason an interval dragged along a curve is the stretch of points between
+where the drag began and ended, not every point between two temperatures.
 
 The caption's **alignment** is the plotter's `flush`: which edge of the text
 sits on the leader arrow. Left reads away to the right of the feature, right
@@ -165,7 +179,12 @@ columns:
   for this figure only. Left on "default", it follows the column beside it.
 
 A size chosen in an object's own settings (double-click it) wins over both,
-and its **Default** button hands it back.
+and its **Default** button hands it back. The **caption distance** is the
+space between an axis's numbers and its caption.
+
+Every settings window applies as you touch it and keeps the changes however
+it is closed; its **Revert** button is the one way back. Closing the program
+with unsaved changes asks first.
 
 ## Exports
 

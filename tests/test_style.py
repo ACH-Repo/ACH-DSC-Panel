@@ -16,7 +16,7 @@ def test_a_value_comes_from_the_object_then_the_figure_then_the_default():
     doc = model.Document()
     axis = doc.axes["x"]
     assert axis.tick_size is None                       # nothing chosen
-    assert style.value(doc, axis, "tick_size") == 8.0   # the built-in value
+    assert style.value(doc, axis, "tick_size") == style.builtin("tick_size")
     style.set_preference("tick_size", 11.0)
     assert style.value(doc, axis, "tick_size") == 11.0  # the user's default
     doc.style.tick_size = 7.0
@@ -44,7 +44,7 @@ def test_the_defaults_survive_a_restart(own_preferences):
     style.set_preference("analysis_flush", style.FLUSH_RIGHT)
     assert style.save_preferences() == own_preferences
     style.restore_preferences({})
-    assert style.preference("analysis_size") == 9.0
+    assert style.preference("analysis_size") == style.builtin("analysis_size")
     style.load_preferences()
     assert style.preference("analysis_size") == 7.5
     assert style.preference("analysis_flush") == style.FLUSH_RIGHT
@@ -71,6 +71,7 @@ def test_a_damaged_preferences_file_is_the_builtin_style(own_preferences):
 
 
 def test_auto_flush_follows_the_template_per_kind():
+    style.set_preference("analysis_flush", style.FLUSH_AUTO)
     doc = model.Document()
     for name, side in (("Onset point", "left"), ("Endset point", "left"),
                        ("Glass transition", "left"),

@@ -312,6 +312,62 @@ round 9, below.)
   are correct: its audit trail shows all five deleted after the export.
 * **Tests can no longer hang on a modal dialog** (conftest `no_modal_loops`).
 
+### Round 10 (2026-09-25): committed, then details
+
+* **Both repos committed** at Christian's request: the panel's initial
+  commit (`f261ce5`, on `master`) and the reader changes in ACH-DSC-Plotter
+  (`d743702`, on `main`). Not pushed. Before the panel's commit,
+  `tests/test_data_cases.py` had a home folder and a student's name written
+  into it; the tests now find real files by NAME through the uncommitted
+  `tests/local_testdata.txt` (`conftest.local_file`).
+* `Z` cycles **box, horizontal, vertical**: on a DSC stack the feature is a
+  region, not a range of peaks.
+* `Ctrl+L` / `Ctrl+R` / `Ctrl+M` align analysis labels left / right /
+  centred (the selected ones, else all shown on the selected scans).
+  `Ctrl+L` no longer toggles the legend; the outliner tick and F3 do.
+* **Interval marks redrawn** (his screenshots): no copy of the curve lifted
+  above it any more. Dashes at the bounds on the trace, in the axis colour;
+  for onset, endset and Tg, straight lines bound -> point -> bound.
+* **`Ctrl+W` closes the pop-up in front** (the active one, else the one
+  opened last) and the window only when no pop-up is open. It used to close
+  the whole program from inside a settings dialog - the window's shortcut
+  reaches it there. Closing a pop-up this way is what its X does.
+* **Clicking off an object now clears its orange**: the render cache did not
+  key on the selection of artists.
+* **Adjusting an analysis**: its settings open BESIDE its gizmos; letting go
+  of a gizmo recomputes the analysis in place; closing the settings, any
+  way, confirms and removes the gizmos. The label follows the new number.
+
+### Round 11 (2026-09-25): parametric curves, and nothing lost by accident
+
+* **x_truncate**, the template's: hide the first / last N % of a scan's
+  POINTS (Scan settings > Hide). Never by temperature - a DSC curve is a
+  parametric curve that doubles back at its start and runs backwards when
+  cooling. The hidden ends are dashed while the scan is hovered or
+  selected, and left out of the fit (F), picking, arranging, the analyses
+  and the CSV; the driver export writes the same `x_truncate` call.
+* **Intervals are stretches of samples.** A drag along a curve records the
+  two samples nearest where it started and ended (`Analysis.span`), and the
+  analysis is computed on exactly that stretch. Christian: dragging an
+  analysis "doesn't know where to start and end" on such a curve. The
+  gizmos of such an analysis follow the curve. Sessions keep the span.
+* **"Save changes?" on close** when the figure differs from what was last
+  saved or opened; the title shows `*`.
+* **A settings window keeps its changes however it is closed** (X, Esc,
+  Ctrl+W). The Cancel button is now **Revert**, the one way back.
+* **His defaults are the built-ins**: analysis labels 11 pt left-aligned,
+  captions 14 pt, numbers 12 pt. New: **caption distance** (8 px) between
+  an axis's numbers and its caption, which used to sit a fixed 16 px below
+  the axis line and overlap numbers bigger than 8 pt. The settings page
+  scrolls once it outgrows the screen, like MoloM's.
+* The first clicks after opening "not being picked up" was most likely the
+  missing orange of round 10 (the clicks registered; the highlight was
+  cached): measured through Qt's input pipeline, every click selected the
+  right object in 20-70 ms. Loading is 1.4 s in the real event loop.
+* Also: the x axis's temperature scale (K / degF) is saved in sessions; an
+  integral's baseline on a cooling scan is right (it used `np.interp`,
+  which needs x to increase).
+
 ## Next
 
 1. **Analyses drawn properly.** Right now a decoded analysis is a tick and a

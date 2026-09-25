@@ -23,7 +23,7 @@ This file is GENERATED. After adding an operator, run:
 | Export the figure... | `Ctrl+E` | a scan is open |  |
 | Export the curves as CSV... |  | a scan is open |  |
 | Export as a DSC_Plotter.py driver... |  | a scan is open | hands the arrangement to ACH-DSC-Plotter |
-| Close the window | `Ctrl+W` | always |  |
+| Close the window (or the pop-up in front) | `Ctrl+W` | always |  |
 
 ## Edit
 
@@ -64,7 +64,10 @@ This file is GENERATED. After adding an operator, run:
 | Show every analysis of the selected scans |  | always |  |
 | Hide every analysis of the selected scans |  | always |  |
 | Set the molar mass... | `Shift+M` | a scan is selected | there is no default M, so this is how W/mol happens |
-| Show or hide the legend | `Ctrl+L` | always |  |
+| Show or hide the legend |  | always | or its tick in the outliner |
+| Align analysis labels left | `Ctrl+L` | an analysis, or a scan with one shown, is selected | the selected labels, else all on the selected scans |
+| Align analysis labels right | `Ctrl+R` | an analysis, or a scan with one shown, is selected |  |
+| Align analysis labels centred | `Ctrl+M` | an analysis, or a scan with one shown, is selected |  |
 | Legend settings... |  | always |  |
 | Add a label... | `Ctrl+T` | always |  |
 

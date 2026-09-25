@@ -50,16 +50,18 @@ def curves_csv(doc, path):
     cooling scan runs the other way. Interpolating them onto a common grid
     would be inventing data.
     """
+    # The KEPT part of each: a truncated end is not part of the figure, so
+    # it is not part of its numbers either.
     scans = [s for s in doc.visible_scans()
-             if s.curve(doc.x_axis, doc.y_unit, doc.exo,
-                        doc.x_unit)[0] is not None]
+             if s.kept_curve(doc.x_axis, doc.y_unit, doc.exo,
+                             doc.x_unit)[0] is not None]
     if not scans:
         return None
     columns, headers = [], []
     x_label = ("Temperature/C" if doc.x_axis == model.AXIS_TEMPERATURE
                else "Time/min")
     for scan in scans:
-        x, y = scan.curve(doc.x_axis, doc.y_unit, doc.exo, doc.x_unit)
+        x, y = scan.kept_curve(doc.x_axis, doc.y_unit, doc.exo, doc.x_unit)
         columns.append(x)
         columns.append(y)
         name = scan.display_name().replace(",", " ")
@@ -124,6 +126,14 @@ def driver_source(doc):
                          i, scan.seg, scan.colour, x_dim, y_dim,
                          scan.display_name()))
     for scan in doc.visible_scans():
+        if scan.is_truncated():
+            # The template's own function, with the same fractions: it
+            # slices x[int(n * x0):int(n * x1)] exactly as the panel does.
+            i = index[os.path.normcase(scan.sample.path)]
+            lines.append("    x_truncate(ax, datas, ({}, {}), x0={:.6g}, "
+                         "x1={:.6g})".format(i, scan.seg, scan.keep[0],
+                                             scan.keep[1]))
+    for scan in doc.visible_scans():
         if scan.offset:
             i = index[os.path.normcase(scan.sample.path)]
             lines.append("    y_offset(ax, datas, ({}, {}), {:.6g})".format(
@@ -146,7 +156,8 @@ def doc_view_x(doc):
         return view
     lo, hi = None, None
     for scan in doc.visible_scans():
-        x, _y = scan.curve(doc.x_axis, doc.y_unit, doc.exo, doc.x_unit)
+        x, _y = scan.kept_curve(doc.x_axis, doc.y_unit, doc.exo,
+                                doc.x_unit)
         if x is None or not len(x):
             continue
         lo = float(np.nanmin(x)) if lo is None else min(lo, float(np.nanmin(x)))

@@ -707,8 +707,9 @@ def test_the_gizmo_flow_places_two_cursors_and_asks(window):
     plot.measure_ready.connect(lambda *args: asked.append(args))
     plot.measure_confirm()
     assert len(asked) == 1
-    scan_out, x0, x1, editing = asked[0]
+    scan_out, x0, x1, editing, span = asked[0]
     assert scan_out is scan and editing is None and x0 < x1
+    assert span is None                   # typed / clicked: temperatures
     plot.grab()                                   # the crosshairs draw
 
 
@@ -1006,12 +1007,20 @@ def test_re_measuring_keeps_the_model_and_needs_no_palette(window):
     window.doc.select_only([scan])
     first = measure.run("Onset point", scan, 60.0, 120.0)
     window.refresh()
-    # the window is handed the analysis being edited, so it does not ask
+    label_before = first.label
+    # the window is handed the analysis being edited, so it does not ask -
+    # and it moves THAT analysis rather than replacing it (round 10)
     again = window._measure_ready(scan, 65.0, 125.0, first)
-    assert again is not None
-    assert again.model_name == first.model_name
-    assert first not in scan.analysis_objects
-    assert again in scan.analysis_objects
+    assert again is first
+    assert first in scan.analysis_objects
+    assert first.cursors() == pytest.approx([65.0, 125.0])
+    # the default label carries the NEW number; it used to keep the old one
+    assert first.label != label_before
+    assert first.label == measure.default_label(
+        measure.by_name(first.model_name), first)
+    window.undo.undo()
+    assert first.cursors() == pytest.approx([60.0, 120.0])
+    assert first.label == label_before
 
 
 def test_delete_removes_a_selected_analysis_not_its_scan(window):
@@ -1244,10 +1253,15 @@ def test_a_double_click_drag_on_a_curve_marks_an_interval_and_asks(window):
         plot.measure_ready.disconnect(ready)
         plot.measure_ready.connect(window._measure_ready)
     assert len(asked) == 1
-    scan, x0, x1, editing = asked[0]
+    scan, x0, x1, editing, span = asked[0]
     assert scan is window.doc.scans[0] and editing is None
-    assert x0 == pytest.approx(plot._celsius_at(start[0]))
-    assert x1 == pytest.approx(plot._celsius_at(end[0]))
+    # the interval is the two SAMPLES nearest where the drag began and ended
+    trace = plot._trace_of(scan)
+    first = plot.sample_at(trace, QPointF(*start))
+    last = plot.sample_at(trace, QPointF(*end))
+    assert span == (first, last)
+    assert x0 == pytest.approx(float(scan.temperature()[first]))
+    assert x1 == pytest.approx(float(scan.temperature()[last]))
     # ...and the curve did not move: marking is not dragging
     assert window.doc.scans[0].offset == 0.0
     assert window.undo.depth() == 0
@@ -1417,7 +1431,8 @@ def test_no_interval_is_marked_on_a_time_axis(window):
 
 # ------------------------------------------------ flush, from DSC_Plotter
 def test_flush_decides_which_edge_of_the_label_sits_on_its_arrow(window):
-    from dscpanel.core import measure
+    from dscpanel.core import measure, style
+    style.set_preference("analysis_flush", style.FLUSH_AUTO)
     scan = window.doc.scans[0]
     analysis = measure.run("Peak Integration (enthalpy)", scan, 70.0, 150.0)
     window.refresh()
@@ -1476,8 +1491,8 @@ def test_the_settings_page_changes_the_default_live(window):
     assert style.value(window.doc, axis, "tick_size") == 20.0
     plot.grab()
     assert plot.margins()[0] > narrow          # the plot follows at once
-    dialog.reject()                            # Cancel puts it back
-    assert style.preference("tick_size") == 8.0
+    dialog.revert()                            # Revert puts it back
+    assert style.preference("tick_size") == style.builtin("tick_size")
 
 
 def test_the_settings_page_saves_the_defaults_and_undoes_the_figure(
@@ -1506,13 +1521,13 @@ def test_an_object_dialog_can_give_a_size_back_to_the_default(window):
     from dscpanel.ui.dialogs import LegendSettings
     legend = window.doc.legend
     dialog = LegendSettings(window, legend)
-    assert dialog.size.value() is None                  # following
-    assert "default" in dialog.size.box.suffix()
-    dialog.size.box.setValue(13.0)
+    assert dialog.text_size.value() is None                  # following
+    assert "default" in dialog.text_size.box.suffix()
+    dialog.text_size.box.setValue(13.0)
     assert legend.size == 13.0                          # its own now
     style.set_preference("legend_size", 6.0)
     assert style.value(window.doc, legend, "size") == 13.0   # still its own
-    dialog.size.reset.click()
+    dialog.text_size.reset.click()
     assert legend.size is None
     assert style.value(window.doc, legend, "size") == 6.0
     dialog.reject()
@@ -1714,3 +1729,484 @@ def test_saving_flashes_a_confirmation(window, tmp_path):
     assert path
     assert window.plot.flashing().startswith("Saved flash.dscpanel")
     window.plot.grab()                              # and it paints
+
+
+# ------------------------------------------------------------- round 10
+def test_z_starts_with_the_box(window):
+    plot = window.plot
+    seen = []
+    for _ in range(4):
+        plot.cycle_mode(plot.ZOOM_CYCLE)
+        seen.append(plot.mode())
+    assert seen == ["zoom_box", "zoom_h", "zoom_v", None]
+
+
+def test_ctrl_l_r_m_align_analysis_labels_and_leave_the_legend(window):
+    from dscpanel.core import measure, style
+    keys = {op.id: op.key for op in window.ops.all()}
+    assert keys["legend.toggle"] == ""
+    assert keys["analysis.flush_left"] == "Ctrl+L"
+    assert keys["analysis.flush_right"] == "Ctrl+R"
+    assert keys["analysis.flush_center"] == "Ctrl+M"
+    scan = window.doc.scans[0]
+    onset = measure.run("Onset point", scan, 60.0, 120.0)
+    integral = measure.run("Peak Integration (enthalpy)", scan, 70.0, 150.0)
+    window.refresh()
+    window.doc.select_only([integral])
+    assert window.run_op("analysis.flush_right")
+    assert integral.flush == style.FLUSH_RIGHT and onset.flush is None
+    # nothing but the scan selected: every analysis shown on it
+    window.doc.select_only([scan])
+    assert window.run_op("analysis.flush_left")
+    assert onset.flush == integral.flush == style.FLUSH_LEFT
+    window.undo.undo()
+    assert integral.flush == style.FLUSH_RIGHT and onset.flush is None
+    window.doc.select_all(False)
+    assert not window.ops.get("analysis.flush_center").enabled(window)
+
+
+def _orange_in(plot, box):
+    image = plot.grab().toImage()
+    ratio = image.devicePixelRatio() or 1.0
+    for x in range(box.left(), box.right()):
+        for y in range(box.top(), box.bottom()):
+            c = image.pixelColor(int(x * ratio), int(y * ratio))
+            if c.red() > 200 and 100 < c.green() < 200 and c.blue() < 100:
+                return True
+    return False
+
+
+def test_clicking_off_an_artist_takes_the_orange_away(window):
+    """The cache was keyed on the selection of scans and analyses only, so a
+    label kept its orange after a click elsewhere (and did not always get
+    it in the first place)."""
+    plot = window.plot
+    plot.grab()
+    label = window.add_label("note", at=QPointF(400, 150))
+    plot.grab()
+    box = [b for lb, b in plot._text_boxes if lb is label][0]
+    centre = (box.center().x(), box.center().y())
+    plot.mousePressEvent(_press(plot, centre))
+    plot.mouseReleaseEvent(_release(plot, centre))
+    assert label.selected and _orange_in(plot, box)
+    empty = (plot.plot_rect().right() - 30, plot.plot_rect().top() + 30)
+    assert plot.object_at(QPointF(*empty)) is None
+    plot.mousePressEvent(_press(plot, empty))
+    plot.mouseReleaseEvent(_release(plot, empty))
+    assert not label.selected and not _orange_in(plot, box)
+
+
+def _trace_of(window, scan):
+    window.plot.grab()
+    return [t for t in window.plot.traces if t.scan is scan][0]
+
+
+def test_an_integration_is_marked_by_two_dashes_and_nothing_between(window):
+    from dscpanel.core import measure
+    scan = window.doc.scans[0]
+    integral = measure.run("Peak Integration (enthalpy)", scan, 70.0, 150.0)
+    window.refresh()
+    plot = window.plot
+    trace = _trace_of(window, scan)
+    rect = plot.plot_rect()
+    dashes, lines = plot.interval_marks(trace, integral, rect)
+    assert lines == []                        # never a connecting curve
+    assert len(dashes) == 2
+    for (a, b), celsius in zip(dashes, sorted(integral.cursors())):
+        # a vertical dash centred ON the trace, not lifted above it
+        x = plot.x_to_px(plot.to_axis(celsius), rect)
+        assert a.x() == pytest.approx(x) and b.x() == pytest.approx(x)
+        on_curve = plot._curve_y_at(trace, plot.to_axis(celsius), rect)
+        assert (a.y() + b.y()) / 2.0 == pytest.approx(on_curve)
+
+
+def test_an_onset_is_marked_by_lines_to_its_point_in_the_axis_colour(window):
+    from dscpanel.core import measure
+    from dscpanel.ui import plot as plot_module
+    scan = window.doc.scans[0]
+    onset = measure.run("Onset point", scan, 60.0, 120.0)
+    assert onset.marks_a_point
+    window.refresh()
+    plot = window.plot
+    trace = _trace_of(window, scan)
+    rect = plot.plot_rect()
+    dashes, lines = plot.interval_marks(trace, onset, rect)
+    assert len(dashes) == 2 and len(lines) == 2
+    (left, point), (point_again, right) = lines
+    assert point == point_again
+    x_point = plot.x_to_px(plot.to_axis(onset.value()), rect)
+    assert point.x() == pytest.approx(x_point)
+    # the lines start and end where the dashes sit; no dash at the point
+    centres = [QPointF(a.x(), (a.y() + b.y()) / 2.0) for a, b in dashes]
+    assert left == centres[0] and right == centres[1]
+    assert all(abs(a.x() - point.x()) > 1 for a, _b in dashes)
+    # drawn in the axis colour, whatever the analysis colour is
+    painted = []
+
+    class Pen(object):
+        def setPen(self, pen):
+            painted.append(pen.color().name())
+
+        def drawLine(self, *_args):
+            pass
+    plot._paint_interval(Pen(), rect, trace, onset)
+    assert painted == [plot_module._AXIS.name()]
+
+
+def _edit(window, analysis):
+    """Double-click an analysis label made here, without dragging."""
+    plot = window.plot
+    plot.grab()
+    box = [b for a, b in plot._analysis_boxes if a is analysis][0]
+    centre = (box.center().x(), box.center().y())
+    plot.mouseDoubleClickEvent(_double(plot, centre))
+    plot.mouseReleaseEvent(_release(plot, centre))
+    return window._editing[1]
+
+
+def test_the_gizmos_live_only_while_the_settings_are_open(window):
+    from dscpanel.core import measure
+    scan = window.doc.scans[0]
+    analysis = measure.run("Peak Integration (enthalpy)", scan, 70.0, 150.0)
+    window.refresh()
+    dialog = _edit(window, analysis)
+    plot = window.plot
+    assert plot.editing() is analysis and dialog.isVisible()
+    # dragging a gizmo recomputes the SAME analysis the moment it is let go
+    plot.grab()
+    rect = plot.plot_rect()
+    x = plot.x_to_px(plot.to_axis(150.0), rect)
+    index = plot.cursor_at(QPointF(x, rect.center().y()))
+    assert index is not None
+    plot.start_cursor_drag(index, QPointF(x, rect.center().y()))
+    plot.drag_cursor(QPointF(x + 40, rect.center().y()))
+    plot.end_cursor_drag()
+    assert analysis in scan.analysis_objects
+    assert max(analysis.cursors()) > 150.0
+    assert any(str(round(max(analysis.cursors()), 1))[:4] in
+               dialog.values.item(i).text()
+               for i in range(dialog.values.count()))   # the dialog follows
+    # closing the settings - here Cancel - ends the gizmos
+    dialog.reject()
+    assert plot.measuring() is None
+
+
+def test_closing_the_settings_confirms_a_moved_interval(window):
+    from dscpanel.core import measure
+    scan = window.doc.scans[0]
+    analysis = measure.run("Onset point", scan, 60.0, 120.0)
+    window.refresh()
+    dialog = _edit(window, analysis)
+    # moved (typed, say) but never confirmed
+    window.plot.measuring()["cursors"] = [62.0, 118.0]
+    dialog.accept()
+    assert window.plot.measuring() is None
+    assert analysis.cursors() == pytest.approx([62.0, 118.0])
+
+
+def test_while_editing_a_press_elsewhere_does_not_move_a_gizmo(window):
+    from PySide6.QtGui import QKeyEvent
+    from dscpanel.core import measure
+    scan = window.doc.scans[0]
+    analysis = measure.run("Onset point", scan, 60.0, 120.0)
+    window.refresh()
+    dialog = _edit(window, analysis)
+    plot = window.plot
+    before = list(plot.measuring()["cursors"])
+    empty = (plot.plot_rect().right() - 30, plot.plot_rect().top() + 30)
+    plot.mousePressEvent(_press(plot, empty))
+    plot.mouseReleaseEvent(_release(plot, empty))
+    plot.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key_Escape,
+                                 Qt.NoModifier))
+    assert plot.measuring()["cursors"] == before    # neither moved nor lost
+    dialog.reject()
+
+
+def test_the_settings_open_beside_the_gizmos_not_over_them(window):
+    from PySide6.QtCore import QRect
+    from dscpanel.ui.dialogs import AnalysisSettings
+    from dscpanel.core import measure
+    scan = window.doc.scans[0]
+    analysis = measure.run("Onset point", scan, 60.0, 120.0)
+    dialog = AnalysisSettings(window, analysis)
+    area = window.screen().availableGeometry()
+    for avoid in (QRect(area.left() + 40, area.top() + 60, 120, 300),
+                  QRect(area.right() - 160, area.top() + 60, 120, 300)):
+        at = window.place_beside(dialog, avoid)
+        placed = QRect(at, dialog.size())
+        assert not placed.intersects(avoid)
+        assert area.contains(placed.topLeft())
+    dialog.close()
+
+
+def test_no_dialog_field_shadows_a_qt_method():
+    """`self.size = <a spin box>` hid QWidget.size() - and `width`, `x` and
+    `y` did the same - which only surfaced when something asked a dialog how
+    big it was. The `grab` trap, again."""
+    import io
+    import re
+    from PySide6.QtWidgets import QDialog
+    import dscpanel.ui.dialogs as dialogs_module
+    import dscpanel.ui.settings as settings_module
+    qt = set(dir(QDialog))
+    for module in (dialogs_module, settings_module):
+        with io.open(module.__file__, encoding="utf-8") as fh:
+            names = set(re.findall(r"self\.([a-z_]+)\s*=", fh.read()))
+        assert not sorted(names & qt), module.__name__
+
+
+def test_ctrl_w_closes_the_pop_ups_before_the_window(window):
+    """Christian: hotkey muscle memory must not close the whole project
+    while a settings window is open."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    closed = []
+    window.close = lambda: closed.append("window") or True
+    window.show()                  # a window shortcut needs a shown window
+    QTest.qWaitForWindowExposed(window)
+    window.edit_object(window.doc.legend)
+    window.edit_object(window.doc.arrow)
+    first, second = window._dialogs[-2], window._dialogs[-1]
+    assert window.popups()[-2:] == [first, second]
+    # through the real shortcut, pressed while a pop-up has the keyboard
+    QTest.keyClick(second.windowHandle(), Qt.Key_W, Qt.ControlModifier)
+    assert not second.isVisible() and first.isVisible()
+    assert closed == []
+    assert window.close_step() is first         # then the next one
+    assert window.popups() == []
+    assert closed == []
+    assert window.close_step() is None          # only now the window
+    assert closed == ["window"]
+
+
+# ------------------------------------------------------------- round 11
+def test_closing_with_unsaved_changes_asks_first(window, tmp_path):
+    from PySide6.QtTest import QTest
+    window.show()
+    QTest.qWaitForWindowExposed(window)
+    assert window.is_modified()               # a file was opened, not saved
+    assert window.windowTitle().startswith("unsaved *")
+    answers = []
+
+    def answer(reply):
+        def ask():
+            answers.append(reply)
+            return reply
+        return ask
+    window.ask_to_save = answer("cancel")
+    assert window.close() is False and window.isVisible()
+    window.save_session(path=str(tmp_path / "kept.dscpanel"))
+    assert not window.is_modified()
+    # a zoom is not a change to the file, even though it is undoable
+    window.plot.fit()
+    window.plot.zoom_at(window.plot.plot_rect().center(), 2.0, both=True)
+    assert not window.is_modified()
+    window.doc.scans[0].offset = 0.3
+    assert window.is_modified()
+    window.doc.scans[0].offset = 0.0          # back as it was saved
+    assert not window.is_modified()
+    window.doc.scans[0].offset = 0.3
+    window.ask_to_save = answer("discard")
+    assert window.close() is True
+    assert answers == ["cancel", "discard"]
+
+
+def test_a_settings_window_closed_any_way_keeps_its_changes(window):
+    from dscpanel.ui.dialogs import LegendSettings
+    legend = window.doc.legend
+    window.undo.clear()
+    dialog = window.edit_object(legend) and window._dialogs[-1]
+    assert isinstance(dialog, LegendSettings)
+    dialog.text_size.box.setValue(13.0)
+    dialog.reject()                           # its X, Esc, Ctrl+W
+    assert legend.size == 13.0
+    assert window.undo.depth() == 1           # one step, undoable
+    window.undo.undo()
+    assert legend.size is None
+    # Revert is the one way to put it back
+    window.edit_object(legend)
+    dialog = window._dialogs[-1]
+    dialog.text_size.box.setValue(15.0)
+    dialog.revert()
+    assert legend.size is None
+
+
+# ------------------------------------------- round 11: x_truncate, spans
+def test_a_truncated_start_is_left_out_of_fit_picking_and_exports(
+        window, tmp_path, sample):
+    from dscpanel.core import export as core_export, session
+    plot = window.plot
+    scan = window.doc.scans[0]
+    window.doc.scans[1].visible = False
+    scan.keep = (0.1, 1.0)
+    window.refresh()
+    plot.grab()
+    trace = plot._trace_of(scan)
+    count = len(scan.temperature())
+    assert len(trace.x) == count - int(count * 0.1)
+    assert trace.first == int(count * 0.1)
+    # the fit (F) ignores the hidden start: the dip at 26 degC is gone
+    assert plot.data_x()[0] == pytest.approx(float(trace.x.min()))
+    assert plot.data_x()[0] > 50.0
+    # dashed only while hovered or selected - never otherwise
+    window.doc.select_all(False)
+    plot._cursor = None
+    assert plot.hidden_shown() == []
+    scan.selected = True
+    assert plot.hidden_shown() == [trace]
+    plot.grab()                                   # and it paints
+    # the exports: CSV holds the kept part, the driver repeats x_truncate
+    csv = window.export_csv(str(tmp_path / "kept.csv"))
+    rows = [line for line in open(csv, encoding="utf-8")
+            if line[:1].isdigit() or line[:1] == "-"]
+    assert len(rows) == len(trace.x)
+    assert "x_truncate(ax, datas, (0, 0), x0=0.1, x1=1)" in \
+        core_export.driver_source(window.doc)
+    # and a session keeps it
+    path = tmp_path / "cut.dscpanel"
+    session.save(window.doc, str(path))
+    reopened, _problems = session.load(
+        str(path), lambda _p: model.Sample(sample.path, sample.data))
+    assert reopened.scans[0].keep == (0.1, 1.0)
+
+
+def test_measuring_leaves_out_what_is_hidden(window):
+    from dscpanel.core import measure
+    scan = window.doc.scans[0]
+    scan.keep = (0.25, 1.0)
+    minutes, temperature, flow = measure._series(scan)
+    k0, k1 = scan.kept_range(len(scan.temperature()))
+    assert len(temperature) == k1 - k0
+    assert float(temperature[0]) == pytest.approx(
+        float(scan.temperature()[k0]))
+
+
+def _hooked_sample():
+    """A heating segment whose temperature DOUBLES BACK: 30 -> 80, back
+    down to 50, then up to 200. The shape the reader returns; synthetic."""
+    from conftest import make_data
+    data = make_data(segments=1)
+    temp = np.concatenate([np.linspace(30.0, 80.0, 100),
+                           np.linspace(80.0, 50.0, 60),
+                           np.linspace(50.0, 200.0, 400)])
+    time = np.linspace(0.0, 30.0, len(temp))
+    watts = -0.004 - 0.003 * np.exp(-((temp - 65.0) / 4.0) ** 2) \
+        * (np.arange(len(temp)) >= 160)       # a peak on the LAST branch
+    data["numdata"][0]["nums"] = np.column_stack([time, temp, watts])
+    return model.Sample("C:/nowhere/HOOK.tri", data)
+
+
+def test_a_stretch_dragged_on_one_branch_measures_that_branch(qapp):
+    """Christian: a DSC curve is a parametric curve, not a function of
+    temperature, so an interval has to be a stretch of samples. Between 60
+    and 70 degC this curve passes three times; the drag was on one pass."""
+    from dscpanel.core import measure
+    from dscpanel.ui.window import MainWindow
+    sample = _hooked_sample()
+    win = MainWindow()
+    win.resize(900, 560)
+    win._sample_loaded(sample)
+    scan = win.doc.scans[0]
+    temperature = scan.temperature()
+    # the last branch between 60 and 70 degC
+    first = int(np.flatnonzero((np.arange(len(temperature)) >= 160)
+                               & (temperature >= 60.0))[0])
+    last = int(np.flatnonzero((np.arange(len(temperature)) >= 160)
+                              & (temperature <= 70.0))[-1])
+    minutes, temp, _flow = measure._series(scan, (first, last))
+    assert len(temp) == last - first + 1                 # that pass only
+    by_span = measure.run("Peak Integration (enthalpy)", scan,
+                          float(temperature[first]),
+                          float(temperature[last]), span=(first, last))
+    assert by_span is not None and by_span.span == (first, last)
+    by_temperature = measure.run("Peak Integration (enthalpy)", scan,
+                                 float(temperature[first]),
+                                 float(temperature[last]))
+    win.refresh()
+    plot = win.plot
+    plot.grab()
+    trace = plot._trace_of(scan)
+    covered_span = plot._covered(trace, by_span)[0]
+    covered_temp = plot._covered(trace, by_temperature)[0]
+    assert len(covered_span) == last - first + 1
+    assert len(covered_temp) > len(covered_span)          # every pass
+
+
+def test_a_gizmo_of_a_stretch_follows_the_curve(window):
+    from dscpanel.core import measure
+    scan = window.doc.scans[0]
+    plot = window.plot
+    plot.grab()
+    trace = plot._trace_of(scan)
+    first, last = trace.first + 100, trace.first + 200
+    analysis = measure.run("Peak Integration (enthalpy)", scan,
+                           float(scan.temperature()[first]),
+                           float(scan.temperature()[last]),
+                           span=(first, last))
+    window.refresh()
+    assert plot.start_measure(scan, editing=analysis, span=analysis.span)
+    plot.grab()
+    target = plot._sample_point(trace, last + 60)
+    plot.start_cursor_drag(1, target)
+    plot.drag_cursor(target)
+    assert plot.measuring()["span"][1] == pytest.approx(last + 60, abs=2)
+    plot.end_measure()
+
+
+def test_the_scan_settings_hide_the_ends(window):
+    from dscpanel.ui.dialogs import ScanSettings
+    scan = window.doc.scans[0]
+    dialog = ScanSettings(window, scan, window.doc.y_unit)
+    dialog.cut_start.setValue(10.0)
+    dialog.cut_end.setValue(5.0)
+    assert scan.keep == pytest.approx((0.1, 0.95))
+    assert "points" in dialog.cut_note.text()
+    dialog.revert()
+    assert scan.keep == (0.0, 1.0)
+
+
+def test_the_caption_keeps_its_distance_from_the_numbers(window):
+    """The x caption sat a fixed 16 px below the axis line, which 8 pt
+    numbers nearly fill and bigger ones overlapped."""
+    from dscpanel.core import style
+    plot = window.plot
+    plot.grab()
+    x_axis, y_axis = window.doc.axes["x"], window.doc.axes["y"]
+    rect = plot.plot_rect()
+    numbers_end = rect.bottom() + plot.tick_extent(x_axis)
+    caption = plot.axis_label_rect(x_axis)
+    assert caption.top() == pytest.approx(numbers_end
+                                          + style.builtin("caption_gap"))
+    # a bigger distance is a bigger margin, not a caption run off the edge
+    bottom = plot.margins()[3]
+    style.set_preference("caption_gap", 30.0)
+    assert plot.margins()[3] > bottom
+    assert plot.axis_label_rect(x_axis).bottom() <= plot.height()
+    # the y caption sits LEFT of the widest number, the same distance off
+    rect = plot.plot_rect()
+    y_caption = plot.axis_label_rect(y_axis)
+    assert y_caption.right() == pytest.approx(
+        rect.left() - plot.tick_extent(y_axis) - 30.0)
+
+
+def test_cancelling_a_caption_drag_leaves_it_following_the_default(window):
+    plot = window.plot
+    plot.grab()
+    axis = window.doc.axes["x"]
+    assert axis.label_gap is None
+    plot.start_grab([axis])
+    plot._update_move(QPointF(plot._move["start"].x(),
+                              plot._move["start"].y() + 20))
+    assert axis.label_gap is not None
+    plot._finish_move(cancel=True)
+    assert axis.label_gap is None          # not pinned at what was drawn
+
+
+def test_the_session_keeps_the_temperature_scale(window, tmp_path, sample):
+    from dscpanel.core import session, units as core_units
+    window.set_x_unit(core_units.TEMP_K)
+    path = tmp_path / "kelvin.dscpanel"
+    session.save(window.doc, str(path))
+    reopened, _problems = session.load(
+        str(path), lambda _p: model.Sample(sample.path, sample.data))
+    assert reopened.x_unit == core_units.TEMP_K

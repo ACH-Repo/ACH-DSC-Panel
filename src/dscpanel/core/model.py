@@ -213,6 +213,15 @@ class Scan(Obj):
         #: None follows the house style (`core/style.py`); read it through
         #: `style.value`, never directly.
         self.line_width = None
+        #: Which part of the segment is DRAWN, as fractions of its samples
+        #: counted from the start: the DSC_Plotter template's `x_truncate`
+        #: (`x0=0.01` hides the first 1 %), so the driver export repeats it
+        #: exactly. By POSITION ALONG THE CURVE and never by temperature: a
+        #: segment's temperature doubles back at its start and runs backwards
+        #: when cooling, so a temperature window cuts every branch at once.
+        #: The hidden ends are left out of the fit, the picking, arranging,
+        #: exports and analyses, and drawn dashed only on hover.
+        self.keep = (0.0, 1.0)
         #: None means "use the program string", which is what it says in
         #: TRIOS. A typed one wins.
         self.label = None
@@ -394,6 +403,31 @@ class Scan(Obj):
         self._cache_key, self._cache = key, (x, y)
         return self._cache
 
+    def kept_range(self, count):
+        """`(k0, k1)`: the slice of `count` samples that is drawn.
+
+        The template's own arithmetic (`x_truncate` takes `x[k0:k1]` with
+        `k = int(n * fraction)`), so the panel and the driver it exports hide
+        the same samples; at least two are always kept.
+        """
+        start, end = self.keep
+        k0, k1 = sorted([int(count * float(start)), int(count * float(end))])
+        k0 = max(0, min(k0, count))
+        k1 = max(min(count, k0 + 2), min(k1, count))
+        return k0, k1
+
+    def is_truncated(self):
+        return tuple(self.keep) != (0.0, 1.0)
+
+    def kept_curve(self, axis, unit, exo, x_unit=units.TEMP_C):
+        """`curve` without the hidden ends: what is drawn, fitted, arranged
+        and exported."""
+        x, y = self.curve(axis, unit, exo, x_unit)
+        if x is None:
+            return x, y
+        k0, k1 = self.kept_range(len(x))
+        return x[k0:k1], y[k0:k1]
+
     def baseline_y(self, axis, unit, exo):
         """Where this scan's zero sits on screen: its offset, plus nothing.
 
@@ -439,6 +473,10 @@ def _rate(prog):
 DECODED_MODELS = ("Onset point", "Endset point", "Peak Integration",
                   "Glass transition")
 
+#: The models whose RESULT is a temperature on the curve, drawn with lines
+#: from the interval's bounds to that point.
+POINT_MODELS = ("Onset point", "Endset point", "Glass transition")
+
 
 class Analysis(Obj):
     """One analysis, as an object that can be shown, hidden and edited.
@@ -477,6 +515,12 @@ class Analysis(Obj):
         self.colour = "auto"
         #: Text override for the marker, or None for the computed one.
         self.label = None
+        #: The two SAMPLE INDICES (in the segment's own arrays) an analysis
+        #: made by dragging along the curve was measured between, or None -
+        #: a file's analyses, and cursors typed as temperatures. A
+        #: temperature does not name a point on a curve that doubles back;
+        #: an index does, so this is what the measurement is made on.
+        self.span = None
         #: How far from the curve the label sits, in pixels, with the arrow
         #: drawn between the two. Dragging the analysis changes this and
         #: nothing else: the movement is locked vertically, so a label can
@@ -505,6 +549,17 @@ class Analysis(Obj):
     def decoded(self):
         """True when this model's result fields are understood."""
         return any(name in self.model_name for name in DECODED_MODELS)
+
+    @property
+    def marks_a_point(self):
+        """True when the result IS a temperature on the curve.
+
+        An onset, an endset, a glass transition's midpoint - as opposed to an
+        area (integration) or a height. These are drawn as the template's
+        construction: straight lines from each bound of the interval to the
+        result point (Christian, round 10).
+        """
+        return any(name in self.model_name for name in POINT_MODELS)
 
     @property
     def certain(self):
@@ -703,7 +758,9 @@ class Axis(Obj):
         #: from it in pixels. Both are clamped to the margin outside the plot
         #: (see `PlotWidget`), so a caption cannot be dragged over the data.
         self.label_along = 0.5
-        self.label_gap = 0.0
+        #: Pixels between the axis's NUMBERS and its caption, or None for the
+        #: house style's `caption_gap`. Dragging the caption sets it.
+        self.label_gap = None
 
     def caption(self, doc):
         """What the caption says: the user's text, or the axis's own.

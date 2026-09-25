@@ -94,7 +94,8 @@ class StyleNumber(QWidget):
     def _show(self):
         shown = self._own if self._own is not None else self._inherited()
         self.box.blockSignals(True)
-        self.box.setSuffix("" if self._own is not None else "  (default)")
+        self.box.setSuffix(self.setting.suffix + (
+            "" if self._own is not None else "  (default)"))
         self.box.setValue(float(shown))
         self.box.blockSignals(False)
         self.reset.setEnabled(self._own is not None)
@@ -205,15 +206,15 @@ class ArtistTransform(QWidget):
         row = QWidget(self)
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(0, 0, 0, 0)
-        self.x = NumberBox()
-        self.y = NumberBox()
-        for box in (self.x, self.y):
+        self.at_x = NumberBox()
+        self.at_y = NumberBox()
+        for box in (self.at_x, self.at_y):
             box.setDecimals(4)
             box.setRange(-1e9, 1e9)
             box.setSingleStep(0.01)
             row_layout.addWidget(box)
-        self.x.setValue(float(artist.x))
-        self.y.setValue(float(artist.y))
+        self.at_x.setValue(float(artist.x))
+        self.at_y.setValue(float(artist.y))
         form.addRow("x, y", row)
 
         self.anchor = QComboBox()
@@ -226,8 +227,8 @@ class ArtistTransform(QWidget):
         form.addRow("Anchor", self.anchor)
 
         self.space.currentIndexChanged.connect(self._space_changed)
-        self.x.valueChanged.connect(self._apply)
-        self.y.valueChanged.connect(self._apply)
+        self.at_x.valueChanged.connect(self._apply)
+        self.at_y.valueChanged.connect(self._apply)
         self.anchor.currentIndexChanged.connect(self._apply)
 
     def _space_changed(self, _index=0):
@@ -235,19 +236,19 @@ class ArtistTransform(QWidget):
         wanted = self.space.currentData()
         if wanted != self.artist.space and self.plot is not None:
             self.plot.convert_artist_space(self.artist, wanted)
-        self.x.blockSignals(True)
-        self.y.blockSignals(True)
-        self.x.setValue(float(self.artist.x))
-        self.y.setValue(float(self.artist.y))
-        self.x.blockSignals(False)
-        self.y.blockSignals(False)
+        self.at_x.blockSignals(True)
+        self.at_y.blockSignals(True)
+        self.at_x.setValue(float(self.artist.x))
+        self.at_y.setValue(float(self.artist.y))
+        self.at_x.blockSignals(False)
+        self.at_y.blockSignals(False)
         self._apply()
 
     def _apply(self, *_args):
         self.artist.space = self.space.currentData()
         self.artist.anchor = self.anchor.currentData()
-        self.artist.x = float(self.x.value())
-        self.artist.y = float(self.y.value())
+        self.artist.x = float(self.at_x.value())
+        self.artist.y = float(self.at_y.value())
         if self.on_change is not None:
             self.on_change()
 
@@ -278,10 +279,35 @@ class _LiveDialog(QDialog):
             self.on_change()
 
     def reject(self):
+        """Closed without OK - its X, Esc, Ctrl+W: KEEP what was changed.
+
+        Christian: these apply as they are touched, and "a change is a
+        change". Closing used to put everything back, which after a minute
+        of adjusting by eye is exactly the loss nobody expects. Only the
+        Revert button puts things back (`revert`); either way an undo step
+        is made, so Ctrl+Z still takes the whole dialog back afterwards.
+        """
+        self.accept()
+
+    def revert(self):
+        """The Revert button: put back what the object was when this opened."""
         for name, value in self._snapshot.items():
             setattr(self.obj, name, value)
         self._live()
         QDialog.reject(self)
+
+    def _buttons(self):
+        """OK and Revert. OK closes; Revert undoes this dialog and closes."""
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok
+                                   | QDialogButtonBox.Cancel)
+        revert = buttons.button(QDialogButtonBox.Cancel)
+        revert.setText("Revert")
+        revert.setToolTip("Put back everything this window changed, and "
+                          "close it. Closing it any other way keeps the "
+                          "changes.")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.revert)
+        return buttons
 
     def snapshot(self):
         """What the object looked like when this opened, for the undo step."""
@@ -312,7 +338,7 @@ def _colour_button(parent, get_colour, set_colour):
 class ScanSettings(_LiveDialog):
     """Everything about one scan, plus its sample's molar mass."""
 
-    FIELDS = ("colour", "label", "offset", "line_width",
+    FIELDS = ("colour", "label", "offset", "line_width", "keep",
               "molar_mass_override")
 
     def __init__(self, parent, scan, unit, on_change=None):
@@ -338,8 +364,37 @@ class ScanSettings(_LiveDialog):
         self.offset.setSuffix(" " + unit)
         form.addRow("Offset", self.offset)
 
-        self.width = _style_number(self, scan, "line_width")
-        form.addRow("Line width", self.width)
+        self.line_width = _style_number(self, scan, "line_width")
+        form.addRow("Line width", self.line_width)
+
+        # The template's x_truncate: hide the ends by POSITION along the
+        # curve, never by temperature (a segment doubles back at its start).
+        cut = QWidget(self)
+        cut_row = QHBoxLayout(cut)
+        cut_row.setContentsMargins(0, 0, 0, 0)
+        self.cut_start = NumberBox()
+        self.cut_end = NumberBox()
+        for box, value in ((self.cut_start, scan.keep[0]),
+                           (self.cut_end, 1.0 - scan.keep[1])):
+            box.setDecimals(1)
+            box.setRange(0.0, 49.0)
+            box.setSingleStep(0.5)
+            box.setSuffix(" %")
+            box.setValue(round(100.0 * float(value), 1))
+        cut_row.addWidget(QLabel("first"))
+        cut_row.addWidget(self.cut_start, 1)
+        cut_row.addWidget(QLabel("last"))
+        cut_row.addWidget(self.cut_end, 1)
+        cut.setToolTip(
+            "Hide the start and the end of the curve by position ALONG it - "
+            "a start-up hook, an end transient - never by temperature. The "
+            "hidden parts are dashed while the scan is hovered or selected, "
+            "and left out of the fit, the analyses and every export.")
+        form.addRow("Hide", cut)
+        self.cut_note = QLabel("")
+        self.cut_note.setStyleSheet("color: #9a9a9a;")
+        form.addRow("", self.cut_note)
+        self._describe_cut()
 
         # The analyses, one box each, off unless ticked. A run carries a
         # dozen and a figure wants one or two, so the list is the dialogue
@@ -391,19 +446,30 @@ class ScanSettings(_LiveDialog):
         note.setStyleSheet("color: #9a9a9a;")
         layout.addWidget(note)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok
-                                   | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons = self._buttons()
         layout.addWidget(buttons)
 
         self.label.textChanged.connect(self._apply)
         for box in (self.offset, self.molar, self.own_molar):
             box.valueChanged.connect(self._apply)
-        self.width.changed.connect(self._apply)
+        self.line_width.changed.connect(self._apply)
+        self.cut_start.valueChanged.connect(self._apply)
+        self.cut_end.valueChanged.connect(self._apply)
         self.analyses.itemChanged.connect(self._analysis_ticked)
         self.analyses.itemDoubleClicked.connect(self._edit_analysis)
         self.resize(440, self.sizeHint().height())
+
+    def _describe_cut(self):
+        """Where the drawn part of the curve now starts and ends."""
+        temperature = self.obj.temperature()
+        if temperature is None or not len(temperature):
+            self.cut_note.setText("")
+            return
+        k0, k1 = self.obj.kept_range(len(temperature))
+        self.cut_note.setText(
+            "drawn from {:.1f} to {:.1f} \u00b0C ({} of {} points)".format(
+                float(temperature[k0]), float(temperature[k1 - 1]),
+                k1 - k0, len(temperature)))
 
     @staticmethod
     def _analysis_text(analysis):
@@ -449,7 +515,10 @@ class ScanSettings(_LiveDialog):
         scan = self.obj
         scan.label = self.label.text().strip() or None
         scan.offset = float(self.offset.value())
-        scan.line_width = self.width.value()
+        scan.line_width = self.line_width.value()
+        scan.keep = (round(self.cut_start.value() / 100.0, 6),
+                     round(1.0 - self.cut_end.value() / 100.0, 6))
+        self._describe_cut()
         scan.molar_mass_override = (float(self.own_molar.value())
                                     if self.own_molar.value() > 0 else None)
         scan.sample.molar_mass = (float(self.molar.value())
@@ -457,9 +526,9 @@ class ScanSettings(_LiveDialog):
         scan._cache_key = None
         self._live()
 
-    def reject(self):
+    def revert(self):
         self.obj.sample.molar_mass = self._sample_molar_mass
-        _LiveDialog.reject(self)
+        _LiveDialog.revert(self)
 
 
 class SampleSettings(_LiveDialog):
@@ -503,10 +572,7 @@ class SampleSettings(_LiveDialog):
         note.setStyleSheet("color: #9a9a9a;")
         layout.addWidget(note)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok
-                                   | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons = self._buttons()
         layout.addWidget(buttons)
 
         self.molar.valueChanged.connect(self._apply)
@@ -546,8 +612,13 @@ class CaptionSettings(_LiveDialog):
         self.label.setPlaceholderText(axis.caption(doc))
         form.addRow("Text", self.label)
 
-        self.size = _style_number(self, axis, "label_size")
-        form.addRow("Size", self.size)
+        self.text_size = _style_number(self, axis, "label_size")
+        form.addRow("Size", self.text_size)
+
+        self.gap = _style_number(self, axis, "label_gap")
+        self.gap.setToolTip("Space between the axis's numbers and this "
+                            "caption. Dragging the caption sets it too.")
+        form.addRow("Distance", self.gap)
 
         note = QLabel(
             "Empty means the axis says what is on it. `*T*` sets a symbol in "
@@ -558,18 +629,17 @@ class CaptionSettings(_LiveDialog):
         note.setStyleSheet("color: #9a9a9a;")
         layout.addWidget(note)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok
-                                   | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons = self._buttons()
         layout.addWidget(buttons)
 
         self.label.textChanged.connect(self._apply)
-        self.size.changed.connect(self._apply)
+        self.text_size.changed.connect(self._apply)
+        self.gap.changed.connect(self._apply)
 
     def _apply(self, *_args):
         self.obj.label = self.label.text().strip() or None
-        self.obj.label_size = self.size.value()
+        self.obj.label_size = self.text_size.value()
+        self.obj.label_gap = self.gap.value()
         self._live()
 
 
@@ -624,10 +694,7 @@ class AxisSettings(_LiveDialog):
         note.setStyleSheet("color: #9a9a9a;")
         layout.addWidget(note)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok
-                                   | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons = self._buttons()
         layout.addWidget(buttons)
 
         self.label.textChanged.connect(self._apply)
@@ -664,8 +731,8 @@ class LabelSettings(_LiveDialog):
         self.text = QLineEdit(label.text)
         form.addRow("Text", self.text)
 
-        self.size = _style_number(self, label, "size")
-        form.addRow("Size", self.size)
+        self.text_size = _style_number(self, label, "size")
+        form.addRow("Size", self.text_size)
 
         self.bold = QCheckBox("Bold")
         self.bold.setChecked(bool(label.bold))
@@ -682,14 +749,11 @@ class LabelSettings(_LiveDialog):
         self.auto.setChecked(label.colour in (None, "", "auto"))
         form.addRow("", self.auto)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok
-                                   | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons = self._buttons()
         layout.addWidget(buttons)
 
         self.text.textChanged.connect(self._apply)
-        self.size.changed.connect(self._apply)
+        self.text_size.changed.connect(self._apply)
         self.bold.toggled.connect(self._apply)
         self.auto.toggled.connect(self._apply)
 
@@ -702,7 +766,7 @@ class LabelSettings(_LiveDialog):
     def _apply(self, *_args):
         label = self.obj
         label.text = self.text.text() or "Label"
-        label.size = self.size.value()
+        label.size = self.text_size.value()
         label.bold = bool(self.bold.isChecked())
         if self.auto.isChecked():
             label.colour = "auto"
@@ -734,13 +798,10 @@ class AnalysisSettings(_LiveDialog):
         form.addRow("From", QLabel(
             "the file" if analysis.source == "file" else "this panel"))
 
-        values = QListWidget(self)
-        values.setMaximumHeight(130)
-        for key, value in analysis.fields.items():
-            if key in ("Model", "segment", "attribution", "prog"):
-                continue
-            values.addItem("{}: {}".format(key, value))
-        form.addRow("Values", values)
+        self.values = QListWidget(self)
+        self.values.setMaximumHeight(130)
+        self._fill_values()
+        form.addRow("Values", self.values)
 
         self.shown_on = QComboBox()
         for scan in analysis.scan.sample.scans:
@@ -756,12 +817,13 @@ class AnalysisSettings(_LiveDialog):
         self.interval = QCheckBox("Mark the interval on the curve")
         self.interval.setChecked(bool(analysis.show_interval))
         self.interval.setToolTip(
-            "The bracket along the curve that says which stretch this "
-            "covers. Worth switching off where two analyses overlap.")
+            "A dash on the curve at each end of the interval, and for an "
+            "onset, endset or glass transition the lines from them to the "
+            "result. Worth switching off where two analyses overlap.")
         form.addRow("", self.interval)
 
-        self.size = _style_number(self, analysis, "label_size")
-        form.addRow("Label size", self.size)
+        self.text_size = _style_number(self, analysis, "label_size")
+        form.addRow("Label size", self.text_size)
 
         # The template's `flush`: which edge of the text sits on the arrow.
         self.flush = StyleChoice(
@@ -793,20 +855,42 @@ class AnalysisSettings(_LiveDialog):
         layout.addWidget(self.note)
         self._describe()
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok
-                                   | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons = self._buttons()
         layout.addWidget(buttons)
 
         self.visible.toggled.connect(self._apply)
         self.interval.toggled.connect(self._apply)
-        self.size.changed.connect(self._apply)
+        self.text_size.changed.connect(self._apply)
         self.flush.changed.connect(self._apply)
         self.label.textChanged.connect(self._apply)
         self.auto.toggled.connect(self._apply)
         self.shown_on.currentIndexChanged.connect(self._move)
         self.resize(460, self.sizeHint().height())
+
+    def _fill_values(self):
+        self.values.clear()
+        for key, value in self.obj.fields.items():
+            if key in ("Model", "segment", "attribution", "prog"):
+                continue
+            self.values.addItem("{}: {}".format(key, value))
+
+    def adopt_measurement(self, old_label, new_label):
+        """The analysis was re-measured while this was open (its gizmos were
+        moved): show the new numbers, and carry a default label along.
+
+        The label box and the snapshot Cancel restores both still hold the
+        old label, number and all; left alone, the next touch of any field
+        would write the old number back, and Cancel would too.
+        """
+        self._fill_values()
+        if new_label != old_label:
+            if self.label.text() == (old_label or ""):
+                self.label.blockSignals(True)
+                self.label.setText(new_label or "")
+                self.label.blockSignals(False)
+            if self._snapshot.get("label") == old_label:
+                self._snapshot["label"] = new_label
+        self.label.setPlaceholderText(self.obj.summary())
 
     def _describe(self):
         analysis = self.obj
@@ -845,7 +929,7 @@ class AnalysisSettings(_LiveDialog):
         analysis = self.obj
         analysis.visible = bool(self.visible.isChecked())
         analysis.show_interval = bool(self.interval.isChecked())
-        analysis.label_size = self.size.value()
+        analysis.label_size = self.text_size.value()
         analysis.flush = self.flush.value()
         analysis.label = self.label.text().strip() or None
         if self.auto.isChecked():
@@ -871,8 +955,8 @@ class LegendSettings(_LiveDialog):
         self.visible.setChecked(bool(legend.visible))
         form.addRow("", self.visible)
 
-        self.size = _style_number(self, legend, "size")
-        form.addRow("Text size", self.size)
+        self.text_size = _style_number(self, legend, "size")
+        form.addRow("Text size", self.text_size)
 
         self.sample = NumberBox()
         self.sample.setDecimals(0)
@@ -902,23 +986,20 @@ class LegendSettings(_LiveDialog):
         note.setStyleSheet("color: #9a9a9a;")
         layout.addWidget(note)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok
-                                   | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons = self._buttons()
         layout.addWidget(buttons)
 
         self.visible.toggled.connect(self._apply)
         self.frame.toggled.connect(self._apply)
         for box in (self.sample, self.spacing):
             box.valueChanged.connect(self._apply)
-        self.size.changed.connect(self._apply)
+        self.text_size.changed.connect(self._apply)
 
     def _apply(self, *_args):
         legend = self.obj
         legend.visible = bool(self.visible.isChecked())
         legend.show_frame = bool(self.frame.isChecked())
-        legend.size = self.size.value()
+        legend.size = self.text_size.value()
         legend.sample = float(self.sample.value())
         legend.spacing = float(self.spacing.value())
         self._live()
@@ -983,10 +1064,7 @@ class ArrowSettings(_LiveDialog):
         self.note.setStyleSheet("color: #9a9a9a;")
         layout.addWidget(self.note)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok
-                                   | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons = self._buttons()
         layout.addWidget(buttons)
 
         self.word.currentIndexChanged.connect(self._apply)

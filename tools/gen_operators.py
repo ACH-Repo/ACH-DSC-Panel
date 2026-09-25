@@ -33,6 +33,8 @@ NOTES = {
     "app.about": "Help menu: version, reader, Qt",
     "app.operator_search": "also the Search button on the menu bar",
     "edit.undo": "also walks back zoom, pan and fit, one gesture at a time",
+    "legend.toggle": "or its tick in the outliner",
+    "analysis.flush_left": "the selected labels, else all on the selected scans",
 }
 
 #: `enabled` is a predicate, so it cannot describe itself. These are its
@@ -63,6 +65,9 @@ WHEN = {
     "edit.redo": "there is something to redo",
     "view.axis_temperature": "the x axis is not temperature",
     "view.axis_time": "the x axis is not time",
+    "analysis.flush_left": "an analysis, or a scan with one shown, is selected",
+    "analysis.flush_right": "an analysis, or a scan with one shown, is selected",
+    "analysis.flush_center": "an analysis, or a scan with one shown, is selected",
 }
 
 ORDER = ("File", "Edit", "Select", "Transform", "Object", "View", "Arrow",
