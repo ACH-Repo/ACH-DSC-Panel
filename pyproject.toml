@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ach-dsc-panel"
+dynamic = ["version"]
+description = "An interactive panel for stacked DSC scans from TA Instruments TRIOS files."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Christian Nelle" }]
+keywords = ["dsc", "calorimetry", "trios", "ta instruments", "thermal analysis",
+            "plotting"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: Microsoft :: Windows",
+    "Environment :: X11 Applications :: Qt",
+]
+dependencies = [
+    "numpy",
+    "PySide6",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.urls]
+Repository = "https://github.com/ACH-Repo/ACH-DSC-Panel"
+
+# Two entry points on purpose. The console one prints (a version check, a
+# reader warning, the NO MOLAR MASS notice on an export); the windowed one is
+# what a Start Menu shortcut points at, so no console flashes up behind the
+# window. Both run the same main().
+#
+# The NAMES are deliberately in one place only: `dscpanel.branding`. A rename
+# changes that module, these two lines, and nothing else - see
+# `dscpanel.branding.LEGACY_NAMES` for how the old name is cleaned up.
+[project.scripts]
+dsc-panel = "dscpanel.__main__:main"
+
+[project.gui-scripts]
+dsc-panel-gui = "dscpanel.__main__:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "dscpanel.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"dscpanel.resources" = ["*.svg", "*.png", "*.ico"]
