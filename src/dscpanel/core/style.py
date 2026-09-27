@@ -210,6 +210,10 @@ _preferences = {}
 #: state, or None for the built-in one. A session keeps its own.
 _figure_default = None
 
+#: Where the window was and where its docks were, as the UI saved them
+#: (opaque strings), or None before the first close.
+_window_state = None
+
 #: Where the preferences live. Tests point this at a temporary file so that
 #: running the suite never touches the defaults of whoever runs it.
 PATH_OVERRIDE = None
@@ -227,9 +231,10 @@ def load_preferences(path=None):
     Unreadable is not an error worth stopping the program for: the file is a
     convenience, and the built-in values are always a correct figure.
     """
-    global _figure_default
+    global _figure_default, _window_state
     _preferences.clear()
     _figure_default = None
+    _window_state = None
     path = path or preferences_path()
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -240,6 +245,8 @@ def load_preferences(path=None):
         return dict(_preferences)
     if isinstance(stored.get("figure"), dict):
         _figure_default = dict(stored["figure"])
+    if isinstance(stored.get("window"), dict):
+        set_window_state(stored["window"])
     for section in ("style", "handling"):
         entries = stored.get(section)
         if not isinstance(entries, dict):
@@ -270,9 +277,22 @@ def save_preferences(path=None):
                               if not BY_KEY[k].figure)}
     if _figure_default is not None:
         state["figure"] = dict(_figure_default)
+    if _window_state is not None:
+        state["window"] = dict(_window_state)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(state, fh, indent=1)
     return path
+
+
+def window_state():
+    """The window's saved place and docks, or None."""
+    return dict(_window_state) if _window_state else None
+
+
+def set_window_state(state):
+    global _window_state
+    _window_state = (dict((str(k), str(v)) for k, v in state.items())
+                     if state else None)
 
 
 def preferences():

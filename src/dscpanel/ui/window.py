@@ -12,16 +12,18 @@ gesture in the plot is only one of the things that changes it. The plot hands
 over what a gesture did (`transform_done`) rather than writing history itself.
 """
 
+import contextlib
 import json
 import os
 import re
 
-from PySide6.QtCore import QPoint, QRectF, Qt
+from PySide6.QtCore import QByteArray, QPoint, QRectF, Qt
 from PySide6.QtGui import (QAction, QColor, QCursor, QImage, QKeySequence,
                            QPainter)
 from PySide6.QtWidgets import (QApplication, QColorDialog, QDialog,
                                QDockWidget, QFileDialog, QInputDialog, QLabel,
-                               QMainWindow, QMenu, QMessageBox, QWidget)
+                               QMainWindow, QMenu, QMessageBox,
+                               QStackedWidget, QTabWidget, QWidget)
 
 from .. import branding
 from ..core import (arrange, export, loader, measure, model, ops, session,
@@ -29,7 +31,8 @@ from ..core import (arrange, export, loader, measure, model, ops, session,
 from ..core import figure as figure_module
 from .dialogs import (AnalysisSettings, ArrowSettings, AxisSettings,
                       CaptionSettings, FigureSettings, LabelSettings,
-                      ExportDialog, LegendSettings, NumberSettings,
+                      ExportDialog, ImageSettings, LegendSettings,
+                      NumberSettings,
                       OffsetMarkerSettings, RangeDialog, SampleSettings,
                       ScanSettings, install_basic_colours)
 from . import appearance
@@ -41,23 +44,66 @@ from .plot import PlotWidget, paper_palette
 from .settings import SettingsDialog
 
 
+class FigureTab(object):
+    """One open figure: its document, its plot, its undo history, and what
+    it was when last saved or opened. A tab of the window."""
+
+    def __init__(self, window, doc=None):
+        self.doc = doc if doc is not None else model.Document()
+        self.undo = undo.UndoStack(on_change=window._undo_changed)
+        self.plot = PlotWidget(self.doc)
+        #: The saved state, compared for "has anything changed".
+        self.clean_state = None
+        #: The analysis whose gizmos are up and its settings, if any.
+        self.editing = None
+        #: The live settings windows opened on this figure.
+        self.dialogs = []
+
+    def title(self):
+        return (os.path.basename(self.doc.path) if self.doc.path
+                else "untitled")
+
+
 class MainWindow(QMainWindow):
-    """One document, one plot, one outliner."""
+    """The figures as tabs, the outliner, and every operator.
+
+    Each tab is a `FigureTab` - a document with its own plot and undo
+    history - and `doc`, `plot` and `undo` are the CURRENT tab's (Christian,
+    round 19). With no tab open the window shows its blank background, and
+    a stand-in figure nobody sees keeps every operator answerable.
+    """
 
     def __init__(self, parent=None):
         QMainWindow.__init__(self, parent)
         self.setWindowTitle(branding.window_title())
-        self.doc = model.Document()
+        #: The open figures, in no particular order (the tab bar has it).
+        self._figures = []
+        #: Stands in while no tab is open; never shown.
+        self._blank = FigureTab(self)
+        self._figure = self._blank
         # Dressed BEFORE any widget exists, so nothing is built in the
         # system's light look and repainted a moment later.
         appearance.apply(self.doc.theme)
-        self.undo = undo.UndoStack(on_change=self._undo_changed)
         # The colour picker's basic colours: the plotter's, in its order.
         install_basic_colours()
         #: The export dialog's last choice of colours: light, for a page.
         self._export_light = True
-        self.plot = PlotWidget(self.doc, self)
-        self.setCentralWidget(self.plot)
+        self._tabs = QTabWidget(self)
+        self._tabs.setDocumentMode(True)
+        self._tabs.setTabsClosable(True)
+        self._tabs.setMovable(True)
+        self._tabs.tabCloseRequested.connect(self.close_tab)
+        self._tabs.currentChanged.connect(self._tab_changed)
+        self._empty = QLabel(
+            "No figure open.\n\nCtrl+N  a new figure\nCtrl+O  open TRIOS "
+            "files\nCtrl+Shift+O  open a session\nCtrl+W  close the "
+            "program", self)
+        self._empty.setAlignment(Qt.AlignCenter)
+        self._empty.setStyleSheet("color: #8a8a8a;")
+        self._stack = QStackedWidget(self)
+        self._stack.addWidget(self._tabs)
+        self._stack.addWidget(self._empty)
+        self.setCentralWidget(self._stack)
         self.setAcceptDrops(True)
         self.resize(*self.opening_size())
 
@@ -83,19 +129,12 @@ class MainWindow(QMainWindow):
         self.loader.failed.connect(self._sample_failed)
         self.loader.progress.connect(self._loading_progress)
 
-        self.plot.hovered.connect(self.readout.setText)
-        self.plot.mode_changed.connect(self.mode_label.setText)
-        self.plot.context_menu.connect(self._context_menu)
-        self.plot.transform_done.connect(self._transform_done)
-        self.plot.measure_ready.connect(self._measure_ready)
-        self.plot.view_committed.connect(self._view_committed)
-        self.plot.selection_changed.connect(self._selection_changed)
-        self.plot.activated.connect(self.edit_object)
         self.outliner.visibility_changed.connect(self._set_visible)
         # A sweep across the outliner's boxes is ONE undo step.
         self.outliner.sweep_started.connect(
             lambda: self.undo.begin_group("show / hide"))
-        self.outliner.sweep_finished.connect(self.undo.end_group)
+        # A lambda: `self.undo` is the CURRENT tab's, looked up when it fires.
+        self.outliner.sweep_finished.connect(lambda: self.undo.end_group())
         self.outliner.segment_toggled.connect(self.toggle_segment)
         self.outliner.selection_picked.connect(self._outliner_selected)
         self.outliner.activated_object.connect(self.edit_object)
@@ -107,10 +146,162 @@ class MainWindow(QMainWindow):
         self._register_ops()
         self._install_shortcuts()
         self._build_menus()
-        self._undo_changed()
-        # An empty window has nothing to lose; from here on, a difference
-        # from this is a change.
+        # The first tab: a program always opens on a figure.
+        self.new_figure()
+
+    # ------------------------------------------------------------ the tabs
+    @property
+    def doc(self):
+        return self._figure.doc
+
+    @doc.setter
+    def doc(self, value):
+        self._figure.doc = value
+
+    @property
+    def plot(self):
+        return self._figure.plot
+
+    @property
+    def undo(self):
+        return self._figure.undo
+
+    @property
+    def _clean_state(self):
+        return self._figure.clean_state
+
+    @_clean_state.setter
+    def _clean_state(self, value):
+        self._figure.clean_state = value
+
+    @property
+    def _editing(self):
+        return self._figure.editing
+
+    @_editing.setter
+    def _editing(self, value):
+        self._figure.editing = value
+
+    @property
+    def _dialogs(self):
+        return self._figure.dialogs
+
+    @_dialogs.setter
+    def _dialogs(self, value):
+        self._figure.dialogs = value
+
+    def figures(self):
+        """The open figures, in tab order."""
+        return [self._figure_at(i) for i in range(self._tabs.count())]
+
+    def _figure_at(self, index):
+        page = self._tabs.widget(index)
+        for figure in self._figures:
+            if figure.plot is page:
+                return figure
+        return None
+
+    def _wire(self, plot):
+        """A figure's plot speaks to the window (only the shown one can)."""
+        plot.hovered.connect(self.readout.setText)
+        plot.mode_changed.connect(self.mode_label.setText)
+        plot.context_menu.connect(self._context_menu)
+        plot.transform_done.connect(self._transform_done)
+        plot.measure_ready.connect(self._measure_ready)
+        plot.view_committed.connect(self._view_committed)
+        plot.selection_changed.connect(self._selection_changed)
+        plot.activated.connect(self.edit_object)
+
+    def new_figure(self, doc=None):
+        """A new tab with an empty figure (or `doc`), made current."""
+        figure = FigureTab(self, doc)
+        self._wire(figure.plot)
+        self._figures.append(figure)
+        self._stack.setCurrentWidget(self._tabs)
+        index = self._tabs.addTab(figure.plot, figure.title())
+        self._tabs.setCurrentIndex(index)
+        self._switch_to(figure)
+        # Nothing to lose yet: from here on, a difference is a change.
         self.mark_clean()
+        return figure
+
+    def ensure_figure(self):
+        """A tab to put things in: the current one, or a new one when the
+        window is showing its blank background."""
+        if self._figure is self._blank:
+            self.new_figure()
+        return self._figure
+
+    def _tab_changed(self, index):
+        figure = self._figure_at(index) if index >= 0 else None
+        self._switch_to(figure or self._blank)
+
+    def _switch_to(self, figure):
+        if figure is self._figure:
+            return
+        # The pop-ups belong to the figure being left: closing them now
+        # makes their undo step on ITS history, and none edits a figure
+        # that is not on screen.
+        for dialog in self.popups():
+            dialog.close()
+        if self.plot.measuring() is not None:
+            self.plot.end_measure()
+        self._figure = figure
+        self.outliner.set_document(self.doc)
+        self.refresh()
+
+    def close_tab(self, index=None):
+        """Close a tab (the current one), asking first when it has unsaved
+        changes. The last one closed leaves the window's blank background.
+        True when it closed."""
+        index = self._tabs.currentIndex() if index is None else int(index)
+        figure = self._figure_at(index) if index >= 0 else None
+        if figure is None:
+            return False
+        if figure is not self._figure:
+            self._tabs.setCurrentIndex(index)
+        if self.is_modified():
+            answer = self.ask_to_save()
+            if answer == "cancel" or (answer == "save"
+                                      and not self.save_session()):
+                return False
+        for dialog in self.popups():
+            dialog.close()
+        self._figures.remove(figure)
+        if not self._figures:
+            self._blank = FigureTab(self)
+            self._switch_to(self._blank)
+            self._stack.setCurrentWidget(self._empty)
+        self._tabs.removeTab(self._tabs.indexOf(figure.plot))
+        figure.plot.setParent(None)
+        figure.plot.deleteLater()
+        self._sync_title()
+        return True
+
+    # ------------------------------------------------ the window's layout
+    def save_layout(self):
+        """Where the window was and where its outliner was docked, kept
+        with the user's preferences for the next start (round 19)."""
+        style.set_window_state({
+            "geometry": bytes(self.saveGeometry().toBase64()).decode("ascii"),
+            "docks": bytes(self.saveState().toBase64()).decode("ascii")})
+        try:
+            style.save_preferences()
+        except OSError:
+            pass
+
+    def restore_layout(self):
+        """Put the window where it was last time. False when there is no
+        last time (the caller then opens it maximized)."""
+        state = style.window_state()
+        if not state or not state.get("geometry"):
+            return False
+        self.restoreGeometry(QByteArray.fromBase64(
+            state["geometry"].encode("ascii")))
+        if state.get("docks"):
+            self.restoreState(QByteArray.fromBase64(
+                state["docks"].encode("ascii")))
+        return True
 
     #: Wider than tall, because a DSC figure is, and small enough to sit
     #: beside something else. Clamped to the screen, which is the trap the
@@ -138,9 +329,13 @@ class MainWindow(QMainWindow):
 
     def _sync_title(self):
         subject = os.path.basename(self.doc.path) if self.doc.path else ""
-        if self.is_modified():
+        if self._figure is not self._blank and self.is_modified():
             subject = (subject or "unsaved") + " *"
         self.setWindowTitle(branding.window_title(subject))
+        index = self._tabs.indexOf(self.plot)
+        if index >= 0:
+            self._tabs.setTabText(index, subject or "untitled")
+            self._tabs.setTabToolTip(index, self.doc.path or "not saved")
 
     # ------------------------------------------------------ unsaved changes
     def _document_state(self):
@@ -205,12 +400,16 @@ class MainWindow(QMainWindow):
         """Closing with unsaved changes asks first (Christian: a hotkey from
         muscle memory must not take a project with it). Save, close without
         saving, or stay; a save that is cancelled keeps the window open."""
-        if self.is_modified():
-            answer = self.ask_to_save()
-            if answer == "cancel" or (answer == "save"
-                                      and not self.save_session()):
-                event.ignore()
-                return
+        for figure in self.figures():
+            if figure is not self._figure:
+                self._tabs.setCurrentWidget(figure.plot)
+            if self.is_modified():
+                answer = self.ask_to_save()
+                if answer == "cancel" or (answer == "save"
+                                          and not self.save_session()):
+                    event.ignore()
+                    return
+        self.save_layout()
         QMainWindow.closeEvent(self, event)
 
     def _undo_changed(self):
@@ -268,6 +467,9 @@ class MainWindow(QMainWindow):
         r("file.open", "Open TRIOS files...", lambda c: c.open_files(),
           category="File", key="Ctrl+O", shortcut="Ctrl+O",
           aliases=("import", "tri", "add files"))
+        r("file.new", "New figure", lambda c: c.new_figure_op(),
+          category="File", key="Ctrl+N", shortcut="Ctrl+N",
+          aliases=("tab", "new tab", "empty"))
         r("file.session_open", "Open a session...",
           lambda c: c.open_session(), category="File", key="Ctrl+Shift+O",
           shortcut="Ctrl+Shift+O")
@@ -287,10 +489,13 @@ class MainWindow(QMainWindow):
         # Ctrl+W closes the POP-UP in front while any is open, and the window
         # only when none is. Christian: muscle memory for "close this" must
         # not take the whole project with it.
-        r("file.close", "Close the window (or the pop-up in front)",
+        r("file.close", "Close the pop-up in front, the tab, or the window",
           lambda c: c.close_step(), category="File", key="Ctrl+W",
           shortcut="Ctrl+W", aliases=("quit", "exit"))
 
+        r("edit.paste", "Paste a picture", lambda c: c.paste(),
+          category="Edit", key="Ctrl+V", shortcut="Ctrl+V",
+          aliases=("image", "picture", "structure", "clipboard", "insert"))
         r("edit.undo", "Undo", lambda c: c.undo_step(), category="Edit",
           key="Ctrl+Z", shortcut="Ctrl+Z", aliases=("zoom back", "back"),
           enabled=lambda c: (c.undo.can_undo()
@@ -322,6 +527,33 @@ class MainWindow(QMainWindow):
           enabled=lambda c: any(c.plot.scale_fields(o)
                                 for o in c.doc.selected()),
           aliases=("size", "bigger", "smaller", "resize", "grow"))
+        # ChemDraw's alignment of what is drawn on the figure (Christian,
+        # round 19): edges to the outermost one, centres to the middle of
+        # them all.
+        for edge, letter, words in (
+                ("left", "L", "left edges"), ("right", "R", "right edges"),
+                ("top", "T", "top edges"), ("bottom", "B", "bottom edges"),
+                ("centre", "C", "centres, side to side"),
+                ("middle", "M", "middles, up and down")):
+            key = "Ctrl+Shift+Alt+" + letter
+            r("arrange.align_" + edge, "Align the artists' {}".format(words),
+              (lambda e: lambda c: c.align_artists(e))(edge),
+              category="Transform", key=key, shortcut=key,
+              enabled=lambda c: len(c.selected_artists()) >= 2,
+              aliases=("align", "line up", edge, "chemdraw"))
+        # The stack order, per object: Page Up and Page Down, which every
+        # keyboard layout has (brackets need AltGr on a German one).
+        for how, key, words in (
+                ("front", "Ctrl+Shift+PgUp", "Bring to front"),
+                ("forward", "Ctrl+PgUp", "Bring forward"),
+                ("backward", "Ctrl+PgDown", "Send backward"),
+                ("back", "Ctrl+Shift+PgDown", "Send to back")):
+            r("order." + how, words,
+              (lambda h: lambda c: c.restack(h))(how), category="Object",
+              key=key, shortcut=key,
+              enabled=lambda c: bool(c.layered_selected()),
+              aliases=("z order", "layer", "above", "below", "stack order",
+                       "on top", "behind"))
         r("arrange.stack", "Stack the selected scans evenly",
           lambda c: c.stack_selected(), category="Transform",
           enabled=several, aliases=("spread", "offset", "space out"))
@@ -364,7 +596,8 @@ class MainWindow(QMainWindow):
           enabled=lambda c: bool(c.doc.selected_scans()
                                  or [o for o in c.doc.selected()
                                      if isinstance(o, (model.Analysis,
-                                                       model.TextLabel))]))
+                                                       model.TextLabel,
+                                                       model.ImageArtist))]))
         r("object.remove_file", "Remove every scan of this file",
           lambda c: c.remove_selected_files(), category="Object",
           enabled=scans_selected, aliases=("close file", "unload"))
@@ -526,11 +759,12 @@ class MainWindow(QMainWindow):
     #: menus held is one F3 away, filtered by the selection, which a menu
     #: cannot do.
     MENUS = (
-        ("&File", ("file.open", "file.session_open", None,
+        ("&File", ("file.new", "file.open", "file.session_open", None,
                    "file.session_save", "file.session_save_as", None,
                    "file.export_image", "file.export_csv",
                    "file.export_driver", None, "file.close")),
-        ("&Edit", ("edit.undo", "edit.redo", None, "select.all",
+        ("&Edit", ("edit.undo", "edit.redo", "edit.paste", None,
+                   "select.all",
                    "select.none", "select.invert", "select.same_sample",
                    None, "figure.layout", "app.settings",
                    ("Theme", ("view.theme_blender_default",
@@ -625,14 +859,18 @@ class MainWindow(QMainWindow):
         return [w for w in found if w not in tracked] + tracked
 
     def close_step(self):
-        """Ctrl+W: the pop-up in front if any is open, else the window.
+        """Ctrl+W, by what is in front: a pop-up if any is open, else the
+        current tab (asking to save), else - the window showing its blank
+        background - the program.
 
         The active pop-up when one has the focus, otherwise the one opened
         last. Closing a pop-up is what its own X does. Returns what closed:
-        the pop-up, or None when it was the window.
+        the pop-up, "tab", or None when it was the window.
         """
         popups = self.popups()
         if not popups:
+            if self._figures:
+                return "tab" if self.close_tab() else None
             self.close()
             return None
         active = QApplication.activeWindow()
@@ -704,6 +942,11 @@ class MainWindow(QMainWindow):
             for op_id in ("file.open", "view.fit", "select.all",
                           "arrange.stack"):
                 self._menu_op(menu, op_id)
+        if obj is not None and hasattr(obj, "z") and self.layered_selected():
+            menu.addSeparator()
+            for op_id in ("order.front", "order.forward", "order.backward",
+                          "order.back"):
+                self._menu_op(menu, op_id)
         if not menu.isEmpty():
             menu.exec(pos if isinstance(pos, QPoint) else QPoint(pos))
 
@@ -732,11 +975,17 @@ class MainWindow(QMainWindow):
         action.triggered.connect(lambda _c=False: self.run_op(op_id))
 
     # ------------------------------------------------------------- documents
+    def new_figure_op(self):
+        self.new_figure()
+        self.note.setText("A new figure")
+
     def open_files(self, paths=None):
         if paths is None:
             paths, _f = QFileDialog.getOpenFileNames(
                 self, "Open TRIOS measurements", "",
                 "TRIOS files (*.tri *.txt);;All files (*)")
+        if paths:
+            self.ensure_figure()
         queued = self.loader.load(paths or [])
         if queued:
             self.note.setText("Reading {} file(s)...".format(queued))
@@ -747,6 +996,7 @@ class MainWindow(QMainWindow):
             self.note.setText("Reading {} of {}...".format(done + 1, total))
 
     def _sample_loaded(self, sample):
+        self.ensure_figure()
         existing = self.doc.sample_for(sample.path)
         if existing is not None:
             self.doc.samples.remove(existing)
@@ -830,6 +1080,12 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.note.setText("Could not open the session: {}".format(exc))
             return None
+        # A tab of its own, unless the current one is an untouched new
+        # figure, which it then replaces.
+        current = self._figure
+        if (current is self._blank or current.doc.samples
+                or current.doc.path or self.is_modified()):
+            self.new_figure()
         self.doc = doc
         self.undo.clear()
         self.plot.set_document(doc)
@@ -946,7 +1202,7 @@ class MainWindow(QMainWindow):
         scale = dpi / figure_module.DESIGN_DPI
         painter.scale(scale, scale)
         try:
-            with paper_palette(self.plot, light):
+            with paper_palette(self.plot, light), self.unselected():
                 image.fill(QColor(plot_module._BG) if not light
                            else QColor(255, 255, 255))
                 self.plot.paint_into(painter, columns=width_px)
@@ -983,7 +1239,7 @@ class MainWindow(QMainWindow):
         # starts and ends, and `clip_svg` writes a real one in afterwards.
         self.plot._svg_clip = []
         try:
-            with paper_palette(self.plot, light):
+            with paper_palette(self.plot, light), self.unselected():
                 painter.fillRect(QRectF(0.0, 0.0, canvas_w, canvas_h),
                                  QColor(255, 255, 255) if light
                                  else QColor(plot_module._BG))
@@ -996,6 +1252,22 @@ class MainWindow(QMainWindow):
         if self.plot.layout_mode() == figure_module.MODE_SIZE:
             width_in, height_in = self.doc.figure.inches()
             _exact_svg_size(path, width_in * 25.4, height_in * 25.4)
+
+    @contextlib.contextmanager
+    def unselected(self):
+        """Nothing selected while this lasts: an export draws the figure,
+        not the hand working on it - no orange (Christian, round 19)."""
+        doc = self.doc
+        chosen = [o for o in doc.objects() if o.selected]
+        chosen += [s.marker for s in doc.scans
+                   if s.marker.selected and s.marker not in chosen]
+        for obj in chosen:
+            obj.selected = False
+        try:
+            yield
+        finally:
+            for obj in chosen:
+                obj.selected = True
 
     def _stamp(self, painter, warnings):
         """Draw the warnings onto the figure itself.
@@ -1119,6 +1391,87 @@ class MainWindow(QMainWindow):
         return self.undo.set_props([(s, "offset", 0.0) for s in scans],
                                    "reset offsets")
 
+    def selected_artists(self):
+        """The selected things drawn on the figure that are not data."""
+        return [o for o in self.doc.selected()
+                if self.plot.is_artist(o) and o.visible]
+
+    def align_artists(self, edge):
+        """Line the selected artists up by `edge`: "left", "right", "top",
+        "bottom" (to the outermost one), "centre" or "middle" (to the
+        middle of them all), by their boxes as drawn. One undo step."""
+        artists = self.selected_artists()
+        if len(artists) < 2:
+            return None
+        plot = self.plot
+        rect = plot.plot_rect()
+        boxes = [(a, plot.rotated_bounds(a, plot.artist_box(a, rect), rect))
+                 for a in artists]
+        left = min(b.left() for _a, b in boxes)
+        right = max(b.right() for _a, b in boxes)
+        top = min(b.top() for _a, b in boxes)
+        bottom = max(b.bottom() for _a, b in boxes)
+        changes = []
+        for artist, box in boxes:
+            dx = {"left": left - box.left(), "right": right - box.right(),
+                  "centre": (left + right) / 2.0 - box.center().x()
+                  }.get(edge, 0.0)
+            dy = {"top": top - box.top(), "bottom": bottom - box.bottom(),
+                  "middle": (top + bottom) / 2.0 - box.center().y()
+                  }.get(edge, 0.0)
+            old = (artist.x, artist.y)
+            x, y = plot.artist_point(artist, rect)
+            plot.set_artist_point(artist, x + dx, y + dy, rect, clamp=False)
+            new = (artist.x, artist.y)
+            artist.x, artist.y = old
+            if new != old:
+                changes += [(artist, "x", new[0]), (artist, "y", new[1])]
+        self.undo.set_props(changes, "align {}".format(edge))
+        self.note.setText("{} artists aligned: {}".format(len(artists), edge))
+        return len(artists)
+
+    def stack_objects(self):
+        """Everything with a place in the stack, bottom first."""
+        doc = self.doc
+        objs = (list(doc.scans) + doc.analyses()
+                + ([s.marker for s in doc.scans] if doc.offset_markers
+                   else [])
+                + [doc.arrow, doc.legend] + list(doc.labels)
+                + list(getattr(doc, "images", [])))
+        order = dict((id(o), i) for i, o in enumerate(objs))
+        return sorted(objs, key=lambda o: (model.z_of(o), order[id(o)]))
+
+    def layered_selected(self):
+        """The selected objects that have a place in the stack."""
+        return [o for o in self.stack_objects() if o.selected]
+
+    def restack(self, how):
+        """Move the selected objects in the stack: "front", "back",
+        "forward" or "backward" (past the next one that is not selected).
+        The whole stack is then numbered in order - one undo step."""
+        stack = self.stack_objects()
+        chosen = set(id(o) for o in stack if o.selected)
+        if not chosen:
+            return None
+        if how == "front":
+            stack = ([o for o in stack if id(o) not in chosen]
+                     + [o for o in stack if id(o) in chosen])
+        elif how == "back":
+            stack = ([o for o in stack if id(o) in chosen]
+                     + [o for o in stack if id(o) not in chosen])
+        elif how == "forward":
+            for i in range(len(stack) - 2, -1, -1):
+                if id(stack[i]) in chosen and id(stack[i + 1]) not in chosen:
+                    stack[i], stack[i + 1] = stack[i + 1], stack[i]
+        elif how == "backward":
+            for i in range(1, len(stack)):
+                if id(stack[i]) in chosen and id(stack[i - 1]) not in chosen:
+                    stack[i], stack[i - 1] = stack[i - 1], stack[i]
+        changes = [(o, "z", float(i)) for i, o in enumerate(stack)
+                   if o.z != float(i)]
+        self.undo.set_props(changes, "stack order")
+        return len(chosen)
+
     def rotatable_selected(self):
         return any(self.plot.can_transform("rotate", o)
                    for o in self.doc.selected())
@@ -1183,6 +1536,8 @@ class MainWindow(QMainWindow):
         elif isinstance(obj, model.OffsetMarker):
             dialog = OffsetMarkerSettings(self, obj,
                                           on_change=self._live_change)
+        elif isinstance(obj, model.ImageArtist):
+            dialog = ImageSettings(self, obj, on_change=self._live_change)
         else:
             return None
         if group:
@@ -1447,27 +1802,33 @@ class MainWindow(QMainWindow):
 
     # --------------------------------------------------------------- x range
     def x_range_dialog(self):
-        """The `M` pop-up, filled with the range on screen (not shown)."""
+        """The `M` pop-up, filled with the ranges on screen (not shown):
+        x first, then y - Tab reaches y only when it is wanted."""
         lo, hi = self.plot.view_x()
         if self.doc.x_axis == model.AXIS_TEMPERATURE:
             unit = units.TEMPERATURE_LABEL.get(self.doc.x_unit, "")
         else:
             unit = "min"
-        return RangeDialog("X range", unit, lo, hi, self)
+        y_lo, y_hi = self.plot.view_y()
+        return RangeDialog("Range", unit, lo, hi, self,
+                           y=(self.doc.y_unit, y_lo, y_hi))
 
     def ask_x_range(self):
         dialog = self.x_range_dialog()
         if not dialog.exec():
             return None
-        return self.set_x_range(*dialog.values())
+        return self.set_x_range(*dialog.values(), y=dialog.y_values())
 
-    def set_x_range(self, lo, hi):
-        """Frame x from `lo` to `hi` (axis units), as one undo step."""
+    def set_x_range(self, lo, hi, y=None):
+        """Frame x from `lo` to `hi` (axis units), and y to the pair `y`
+        when it differs from what is shown - as ONE undo step."""
         if not hi > lo:
             return None
         self.plot.commit_view()
-        self.plot._view_begin("x range")
+        self.plot._view_begin("range")
         self.plot.set_view_x(lo, hi)
+        if y and y[1] > y[0] and not _same_pair(y, self.plot.view_y()):
+            self.plot.set_view_y(*y)
         self.plot.commit_view()
         self.note.setText("x from {:g} to {:g}".format(lo, hi))
         return (lo, hi)
@@ -1631,7 +1992,7 @@ class MainWindow(QMainWindow):
         analyses = [o for o in self.doc.selected()
                     if isinstance(o, model.Analysis)]
         labels = [o for o in self.doc.selected()
-                  if isinstance(o, model.TextLabel)]
+                  if isinstance(o, (model.TextLabel, model.ImageArtist))]
         if analyses or labels:
             self.remove_analyses(analyses, labels)
             return
@@ -1641,8 +2002,8 @@ class MainWindow(QMainWindow):
         """Take analyses and captions off the figure, undoably."""
         places = [(a, a.scan, a.scan.analysis_objects.index(a))
                   for a in analyses if a in a.scan.analysis_objects]
-        label_places = [(lb, self.doc.labels.index(lb)) for lb in labels
-                        if lb in self.doc.labels]
+        label_places = [(lb, self._shelf(lb).index(lb)) for lb in labels
+                        if lb in self._shelf(lb)]
         if not places and not label_places:
             return
 
@@ -1651,7 +2012,8 @@ class MainWindow(QMainWindow):
                 if analysis in scan.analysis_objects:
                     scan.analysis_objects.remove(analysis)
             for label, _index in label_places:
-                self.doc.remove_label(label)
+                if label in self._shelf(label):
+                    self._shelf(label).remove(label)
 
         def restore():
             for analysis, scan, index in places:
@@ -1659,14 +2021,79 @@ class MainWindow(QMainWindow):
                     scan.analysis_objects.insert(
                         min(index, len(scan.analysis_objects)), analysis)
             for label, index in sorted(label_places, key=lambda p: p[1]):
-                if label not in self.doc.labels:
-                    self.doc.labels.insert(
-                        min(index, len(self.doc.labels)), label)
+                shelf = self._shelf(label)
+                if label not in shelf:
+                    shelf.insert(min(index, len(shelf)), label)
 
         count = len(places) + len(label_places)
         self.undo.push(undo.CallCommand(
             remove, restore, "remove {} object(s)".format(count)))
         self.refresh()
+
+    def _shelf(self, obj):
+        """The document's list an added object lives in."""
+        return (self.doc.images if isinstance(obj, model.ImageArtist)
+                else self.doc.labels)
+
+    # ------------------------------------------------------------- images
+    IMAGE_TYPES = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff",
+                   ".webp")
+
+    def add_image(self, picture, at=None):
+        """Put a picture on the figure, undoably, where the pointer is (or
+        `at`, figure units; the middle without either), at its own size up
+        to 40 % of the plot's width."""
+        from PySide6.QtCore import QBuffer, QIODevice
+        if picture is None or picture.isNull():
+            self.note.setText("No picture to put on the figure")
+            return None
+        self.ensure_figure()
+        buffer = QBuffer()
+        buffer.open(QIODevice.WriteOnly)
+        picture.save(buffer, "PNG")
+        png = bytes(buffer.data().toBase64()).decode("ascii")
+        rect = self.plot.plot_rect()
+        where = at or self.plot._cursor
+        x = y = 0.5
+        if where is not None:
+            x = (where.x() - rect.left()) / max(1.0, rect.width())
+            y = (where.y() - rect.top()) / max(1.0, rect.height())
+        width = min(float(picture.width()), 0.4 * rect.width())
+        image = model.ImageArtist(self.doc._next_id(), png,
+                                  min(0.98, max(0.02, x)),
+                                  min(0.98, max(0.02, y)), width)
+        doc = self.doc
+
+        def put():
+            if image not in doc.images:
+                doc.images.append(image)
+
+        def take():
+            if image in doc.images:
+                doc.images.remove(image)
+
+        self.undo.push(undo.CallCommand(put, take, "add image"))
+        doc.select_only([image])
+        self.plot.keep_inside(image)
+        self.refresh()
+        self.note.setText("An image: S scales it, R rotates it")
+        return image
+
+    def paste(self):
+        """Ctrl+V: a picture from the clipboard, or an image file copied
+        in the file browser, onto the figure."""
+        from PySide6.QtGui import QImage as _Image
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData()
+        if mime is not None and mime.hasImage():
+            return self.add_image(clipboard.image())
+        if mime is not None and mime.hasUrls():
+            for url in mime.urls():
+                path = url.toLocalFile()
+                if path.lower().endswith(self.IMAGE_TYPES):
+                    return self.add_image(_Image(path))
+        self.note.setText("Nothing to paste: copy a picture first")
+        return None
 
     def remove_selected_files(self):
         samples = []
@@ -1796,6 +2223,16 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         event.acceptProposedAction()
+        pictures = [p for p in paths if p.lower().endswith(self.IMAGE_TYPES)]
+        if pictures:
+            from PySide6.QtGui import QImage as _Image
+            at = self.plot.to_figure(self.plot.mapFrom(
+                self, event.position().toPoint()))
+            for path in pictures:
+                self.add_image(_Image(path), at=at)
+            paths = [p for p in paths if p not in pictures]
+            if not paths:
+                return
         sessions = [p for p in paths
                     if p.lower().endswith(branding.SESSION_EXT)]
         if sessions:
@@ -1814,7 +2251,8 @@ class MainWindow(QMainWindow):
             if not path:
                 continue
             if (loader.looks_readable(path)
-                    or path.lower().endswith(branding.SESSION_EXT)):
+                    or path.lower().endswith(branding.SESSION_EXT)
+                    or path.lower().endswith(MainWindow.IMAGE_TYPES)):
                 out.append(path)
         return out
 
@@ -1842,3 +2280,11 @@ def _exact_svg_size(path, width_mm, height_mm):
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
     return True
+
+
+def _same_pair(a, b, tolerance=1e-9):
+    """True when two (low, high) pairs are the same range - the y range
+    offered by M and not touched."""
+    scale = max(1e-12, abs(b[1] - b[0]))
+    return (abs(a[0] - b[0]) <= tolerance * scale * 1e6
+            and abs(a[1] - b[1]) <= tolerance * scale * 1e6)

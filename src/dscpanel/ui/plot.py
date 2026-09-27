@@ -38,10 +38,10 @@ import time
 
 import numpy as np
 
-from PySide6.QtCore import (QPoint, QPointF, QRect, QRectF, QSize, Qt,
-                            QTimer, Signal)
-from PySide6.QtGui import (QColor, QFont, QFontMetrics, QPainter, QPen,
-                           QPixmap, QPolygonF, QTransform)
+from PySide6.QtCore import (QByteArray, QPoint, QPointF, QRect, QRectF,
+                            QSize, Qt, QTimer, Signal)
+from PySide6.QtGui import (QColor, QFont, QFontMetrics, QImage, QPainter,
+                           QPen, QPixmap, QPolygonF, QTransform)
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..core import figure as figure_module
@@ -330,6 +330,11 @@ class PlotWidget(QWidget):
         self._click_restore = None
         #: A live `S` scale, or None.
         self._scale = None
+        #: When the last presses were, for the click RHYTHM: faster than
+        #: `DOUBLE_CLICK_S` is a double-click, up to `CYCLE_S` steps to the
+        #: next object under the pointer. `_clock` is replaceable in tests.
+        self._clock = time.monotonic
+        self._presses = []
         self._axis_boxes = []       # [(Axis, QRect)] for the captions
         self._text_boxes = []       # [(TextLabel, QRect)]
         self._blink = 0
@@ -958,17 +963,21 @@ class PlotWidget(QWidget):
             if gap <= radius:
                 hits.append((gap, rank, obj, None))
 
+        # A tie - the pointer inside two things - goes to the one drawn on
+        # top: the rank is the stack order, turned round.
         if doc.arrow.visible:
-            near(doc.arrow, self._arrow_rect(), 0)
+            near(doc.arrow, self._arrow_rect(), -model.z_of(doc.arrow))
         legend_box = self.rotated_bounds(doc.legend, self.legend_rect())
         if legend_box is not None:
-            near(doc.legend, legend_box, 1)
+            near(doc.legend, legend_box, -model.z_of(doc.legend))
         for label, box in self._text_boxes:
-            near(label, box, 2)
+            near(label, box, -model.z_of(label))
+        for image, box in getattr(self, "_image_boxes", ()):
+            near(image, box, -model.z_of(image))
         for analysis, box in self._analysis_boxes:
-            near(analysis, box, 3)
+            near(analysis, box, -model.z_of(analysis))
         for marker, box in self._marker_boxes:
-            near(marker, box, 3)
+            near(marker, box, -model.z_of(marker))
         for axis, box in self._axis_boxes:
             gap = _rect_distance(QRectF(box), point)
             if gap <= 4.0:
@@ -984,9 +993,10 @@ class PlotWidget(QWidget):
         for trace, box in self._label_boxes:
             if QRectF(box).contains(point):
                 hits.append((0.0, 6, trace.scan, None))
-        trace, gap = self._nearest_trace(point)
-        if trace is not None and gap <= radius:
-            hits.append((gap, 7, trace.scan, None))
+        for trace in self.traces:
+            gap = self._gap_to(trace, point)
+            if gap is not None and gap <= radius:
+                hits.append((gap, -model.z_of(trace.scan), trace.scan, None))
         hits.sort(key=lambda hit: (hit[0], hit[1]))
         found = []
         for _gap, _rank, obj, axis_hit in hits:
@@ -1023,6 +1033,14 @@ class PlotWidget(QWidget):
             if gap < best_gap:
                 best, best_gap = trace, gap
         return best, best_gap
+
+    def _gap_to(self, trace, pos):
+        """How far `pos` is from a drawn curve, or None."""
+        if trace.px is None or not len(trace.px):
+            if trace.missing is not None:
+                return abs(self.y_to_px(trace.scan.offset) - pos.y())
+            return None
+        return float(np.min(np.hypot(trace.px - pos.x(), trace.py - pos.y())))
 
     def _trace_at(self, pos):
         """The trace whose drawn curve is within the pick distance, or None."""
@@ -1190,7 +1208,7 @@ class PlotWidget(QWidget):
         if isinstance(obj, model.OffsetMarker):
             return ("at", "dy")
         if isinstance(obj, model.Analysis):
-            return ("label_dy",)
+            return ("label_dy", "label_at")
         if isinstance(obj, model.Axis):
             return ("label_along", "label_gap")
         return ("offset",)
@@ -1202,8 +1220,10 @@ class PlotWidget(QWidget):
         over the offset it is BEING DRAWN at, so a drag starts where the eye
         sees the label rather than jumping.
         """
-        if isinstance(obj, model.Analysis) and obj.label_dy is None:
-            return (self.effective_label_dy(obj),)
+        if isinstance(obj, model.Analysis):
+            # Where the label is drawn, and where along its interval it
+            # stands as STORED (None, the peak, stays None unless slid).
+            return (self.effective_label_dy(obj), obj.label_at)
         if isinstance(obj, model.OffsetMarker):
             # The sample it is DRAWN at, so a drag starts under the hand
             # (and a moved marker is pinned to a point ON its curve).
@@ -1219,6 +1239,36 @@ class PlotWidget(QWidget):
         it was DRAWN at instead would turn "follow the house style" into a
         fixed number the moment a drag was cancelled."""
         return tuple(getattr(obj, name) for name in self._fields_of(obj))
+
+    @staticmethod
+    def label_celsius(analysis):
+        """Where an analysis's label stands, in degC: its value, or for an
+        integration slid along it, that place, kept inside its interval."""
+        value = analysis.value()
+        at = getattr(analysis, "label_at", None)
+        if at is None or not getattr(analysis, "slides", False):
+            return value
+        cursors = analysis.cursors()
+        if len(cursors) != 2:
+            return value
+        low, high = sorted(cursors)
+        return min(high, max(low, float(at)))
+
+    def _slid(self, analysis, start, dx_px, rect):
+        """The label's place after sliding `dx_px` along the axis."""
+        if start is None:
+            start = self.label_celsius(analysis)
+        if start is None:
+            return None
+        at = self.x_to_px(self.to_axis(start), rect) + dx_px
+        value = self.px_to_x(at, rect)
+        if self._temperature_axis():
+            value = float(units.to_celsius(value, self.doc.x_unit))
+        cursors = analysis.cursors()
+        if len(cursors) == 2:
+            low, high = sorted(cursors)
+            value = min(high, max(low, value))
+        return value
 
     def effective_label_dy(self, analysis):
         """The offset an analysis label is drawn at, automatic or chosen."""
@@ -1242,6 +1292,8 @@ class PlotWidget(QWidget):
                 obj.y = float(min(0.99, max(0.01, value[1])))
         elif isinstance(obj, model.Analysis):
             obj.label_dy = float(value[0])
+            if len(value) > 1:
+                obj.label_at = value[1]
         elif isinstance(obj, model.OffsetMarker):
             obj.at = value[0]
             obj.dy = float(value[1])
@@ -1250,6 +1302,30 @@ class PlotWidget(QWidget):
             obj.label_gap = float(max(0.0, value[1]))
         else:
             obj.offset = float(value[0])
+
+    def keep_inside(self, artist, rect=None):
+        """Push an artist back inside the axes box - its WHOLE box, text
+        and all - wherever a move left it. Past the spines it only covered
+        the numbers or left the figure (Christian, round 19). One wider or
+        taller than the box sits against its left or top edge."""
+        rect = rect or self.plot_rect()
+        box = self.rotated_bounds(artist, self.artist_box(artist, rect), rect)
+        if box is None:
+            return artist
+        shift_x = shift_y = 0.0
+        if box.width() > rect.width() or box.left() < rect.left():
+            shift_x = rect.left() - box.left()
+        elif box.right() > rect.right():
+            shift_x = rect.right() - box.right()
+        if box.height() > rect.height() or box.top() < rect.top():
+            shift_y = rect.top() - box.top()
+        elif box.bottom() > rect.bottom():
+            shift_y = rect.bottom() - box.bottom()
+        if shift_x or shift_y:
+            x, y = self.artist_point(artist, rect)
+            self.set_artist_point(artist, x + shift_x, y + shift_y, rect,
+                                  clamp=False)
+        return artist
 
     def _artist_origin_px(self, artist, origin, rect):
         """Where an artist stood when the gesture began, in pixels."""
@@ -1301,14 +1377,20 @@ class PlotWidget(QWidget):
                 # handed back in the artist's own space, so a data-space
                 # artist moves under the hand exactly like a relative one.
                 ox, oy = self._artist_origin_px(obj, origin, rect)
-                self.set_artist_point(
-                    obj, _clamp(ox + dx_px, rect.left(), rect.right()),
-                    _clamp(oy + dy_px, rect.top(), rect.bottom()), rect)
+                self.set_artist_point(obj, ox + dx_px, oy + dy_px, rect,
+                                      clamp=False)
+                self.keep_inside(obj, rect)
                 continue
             if isinstance(obj, model.Analysis):
-                # Vertical only: the label stays over its feature and the
-                # leader arrow stretches.
-                self._apply_value(obj, (origin[0] + dy_px,))
+                if axis == "x" and obj.slides:
+                    # G, then X: an integration's label slides ALONG its
+                    # interval, and never out of it.
+                    self._apply_value(obj, (origin[0], self._slid(
+                        obj, origin[1], dx_px, rect)))
+                else:
+                    # Vertical: the label stays over its feature and the
+                    # leader arrow stretches.
+                    self._apply_value(obj, (origin[0] + dy_px, origin[1]))
                 continue
             if isinstance(obj, model.OffsetMarker):
                 # ALONG its curve, sample by sample, as far as the hand
@@ -1382,7 +1464,7 @@ class PlotWidget(QWidget):
 
     #: What the undo history calls moving one of these.
     MOVE_NAMES = ((model.HeatFlowArrow, "arrow"), (model.Legend, "legend"),
-                  (model.TextLabel, "label"),
+                  (model.TextLabel, "label"), (model.ImageArtist, "image"),
                   (model.Analysis, "analysis label"),
                   (model.OffsetMarker, "offset marker"),
                   (model.Axis, "axis caption"))
@@ -1423,7 +1505,8 @@ class PlotWidget(QWidget):
                                            "tail_width", "tail_length",
                                            "size")),
                     (model.Legend, ("size", "sample")),
-                    (model.TextLabel, ("size",)))
+                    (model.TextLabel, ("size",)),
+                    (model.ImageArtist, ("width",)))
 
     #: The point a scale or a rotation is ABOUT, as `(fx, fy)` of the
     #: artist's box - 0 left/top, 1 right/bottom, as `Artist.anchor` - and
@@ -1504,6 +1587,8 @@ class PlotWidget(QWidget):
             box = self.legend_rect(rect)
         elif isinstance(obj, model.TextLabel):
             box = self._label_box(obj, rect, QFont(self.figure_font()))
+        elif isinstance(obj, model.ImageArtist):
+            box = self._image_box(obj, rect)
         if box is None or box.isEmpty():
             x, y = self.artist_point(obj, rect)
             box = QRectF(x - 10.0, y - 10.0, 20.0, 20.0)
@@ -2297,6 +2382,7 @@ class PlotWidget(QWidget):
             wanted = "x" if key == Qt.Key_X else "y"
             if wanted == "x" and not any(
                     self.is_artist(o) or isinstance(o, model.OffsetMarker)
+                    or getattr(o, "slides", False)
                     for o in self._move["objs"]):
                 self.hovered.emit("A scan does not move along x")
             else:
@@ -2378,14 +2464,52 @@ class PlotWidget(QWidget):
         # by proximity makes the gesture work however the hardware sends it;
         # a real double-click-drag still does the same thing.
         add = bool(ev.modifiers() & Qt.ShiftModifier)
+        cycle = self._note_press(pos)
         target = None if add else self.drag_target(pos)
         if target is not None:
             self._press = {"kind": target[0], "obj": target[1],
-                           "start": pos}
+                           "start": pos, "cycle": cycle}
         else:
             self._box = {"start": pos, "now": pos, "add": add,
-                         "moved": False}
+                         "moved": False, "cycle": cycle}
         ev.accept()
+
+    #: The click rhythm (Christian, round 19): two presses at one place
+    #: closer than this are a double-click (settings); between this and
+    #: `CYCLE_S` the second one steps to the next object under the pointer,
+    #: so one buried in a stack can be reached; slower is a new click.
+    DOUBLE_CLICK_S = 0.35
+    CYCLE_S = 0.70
+
+    def _note_press(self, pos):
+        """Remember a press; True when it is the slow second of a pair at
+        the same place - a layer step, not a click."""
+        now = self._clock()
+        previous = [(t, p) for t, p in self._presses if now - t > 0.03]
+        self._presses = (self._presses + [(now, QPointF(pos))])[-4:]
+        if not previous:
+            return False
+        then, where = previous[-1]
+        near = (abs(where.x() - pos.x()) <= self.pick_radius()
+                and abs(where.y() - pos.y()) <= self.pick_radius())
+        return near and self.DOUBLE_CLICK_S <= now - then <= self.CYCLE_S
+
+    def cycle_at(self, pos):
+        """Select the NEXT object under the pointer, nearest first and then
+        down the stack; round again after the last."""
+        found = [o for o in self.objects_at(pos)
+                 if not isinstance(o, model.Axis)]
+        if len(found) < 2:
+            return self.select_at(pos)
+        current = next((i for i, o in enumerate(found) if o.selected), -1)
+        chosen = found[(current + 1) % len(found)]
+        self.doc.select_only([chosen])
+        self.selection_changed.emit()
+        self.hovered.emit("Layer {} of {}: {}".format(
+            found.index(chosen) + 1, len(found),
+            getattr(chosen, "name", "") or chosen.kind))
+        self.update()
+        return chosen
 
     def _press_became_drag(self, pos, mods=Qt.NoModifier):
         """A press near an object has moved far enough: act on the object."""
@@ -2497,6 +2621,11 @@ class PlotWidget(QWidget):
             # if it turns out to be the first half of a double-click, the
             # double-click puts the selection back and acts on all of it.
             press, self._press = self._press, None
+            if press.get("cycle"):
+                self._click_restore = None
+                self.cycle_at(press["start"])
+                ev.accept()
+                return
             before = (list(self.doc.selected()) if self.doc is not None
                       else [])
             chosen = self.select_at(press["start"])
@@ -2509,6 +2638,8 @@ class PlotWidget(QWidget):
             box, self._box = self._box, None
             if box["moved"]:
                 self.select_in_box(box["start"], box["now"], add=box["add"])
+            elif box.get("cycle"):
+                self.cycle_at(box["start"])
             else:
                 self.select_at(box["start"], add=box["add"])
             ev.accept()
@@ -2567,6 +2698,14 @@ class PlotWidget(QWidget):
         # the gesture now.
         self._box = None
         self._press = None
+        if self._measure is None and self._note_press(pos):
+            # Qt calls it a double-click up to the SYSTEM's interval (half
+            # a second on Windows); slower than DOUBLE_CLICK_S it is a step
+            # to the next object under the pointer.
+            self._click_restore = None
+            self.cycle_at(pos)
+            ev.accept()
+            return
         if self._measure is not None:
             held = self.cursor_at(pos)
             if held is not None:
@@ -2684,8 +2823,10 @@ class PlotWidget(QWidget):
         if self.is_artist(first):
             return "MOVE {} to x {:.2f}, y {:.2f} of the plot{}".format(
                 first.kind, first.x, first.y, lock)
+        if isinstance(first, model.Analysis) and state.get("axis") == "x":
+            return "SLIDE the label along its interval{}".format(lock)
         if isinstance(first, model.Analysis):
-            return "MOVE the label {:+.0f} px (vertical only){}".format(
+            return "MOVE the label {:+.0f} px (X slides an integral's){}".format(
                 first.label_dy - state["origin"][0][0],
                 "  - {} together".format(len(state["objs"]))
                 if len(state["objs"]) > 1 else "")
@@ -2972,6 +3113,7 @@ class PlotWidget(QWidget):
         self._label_boxes = []
         self._analysis_boxes = []
         self._marker_boxes = []
+        self._image_boxes = []
         self._axis_boxes = []
         self._text_boxes = []
         p.setRenderHint(QPainter.Antialiasing, False)
@@ -2984,29 +3126,65 @@ class PlotWidget(QWidget):
             self._paint_frame(p, rect)
             return
         p.setRenderHint(QPainter.Antialiasing, True)
-        # CLIPPED to the axes. A zoomed-in view still has points off both
-        # sides, and without this they are drawn across the margins, the
-        # numbers and the caption - which is what appears as soon as anybody
-        # zooms in.
-        p.save()
-        p.setClipRect(rect)
-        self._clip_mark(p, rect, True)
-        for trace in self.traces:
-            if trace.missing is None:
-                self._paint_trace(p, rect, trace)
-            else:
-                self._paint_placeholder(p, rect, trace)
-        for trace in self.traces:
-            if trace.missing is None:
-                self._paint_analyses(p, rect, trace)
-        self._paint_offset_markers(p, rect)
-        self._clip_mark(p, rect, False)
-        p.restore()
-        self._paint_arrow(p, rect)
-        self._paint_legend(p, rect)
-        self._paint_text_labels(p, rect)
+        # In the STACK ORDER: every object's z (`model.z_of`), its kind's
+        # place while nobody has chosen one (Christian, round 19). What is
+        # measured - curves, analyses, markers - is CLIPPED to the axes: a
+        # zoomed-in view still has points off both sides, and without the
+        # clip they are drawn across the margins, the numbers and the
+        # caption. The furniture is not clipped.
+        clipped = False
+        for _z, _order, inside, draw in self._paint_items(p, rect):
+            if inside and not clipped:
+                p.save()
+                p.setClipRect(rect)
+                self._clip_mark(p, rect, True)
+                clipped = True
+            elif clipped and not inside:
+                self._clip_mark(p, rect, False)
+                p.restore()
+                clipped = False
+            draw()
+        if clipped:
+            self._clip_mark(p, rect, False)
+            p.restore()
         p.setRenderHint(QPainter.Antialiasing, False)
         self._paint_frame(p, rect)
+
+    def _paint_items(self, p, rect):
+        """`[(z, order, clipped, draw), ...]` for everything on the figure,
+        bottom first."""
+        doc = self.doc
+        items = []
+
+        def add(obj, inside, draw):
+            items.append((model.z_of(obj), len(items), inside, draw))
+
+        for trace in self.traces:
+            if trace.missing is None:
+                add(trace.scan, True,
+                    lambda t=trace: self._paint_trace(p, rect, t))
+                for analysis in trace.scan.visible_analyses():
+                    add(analysis, True,
+                        lambda t=trace, a=analysis: self._paint_analyses(
+                            p, rect, t, only=a))
+                if doc is not None and doc.offset_markers:
+                    add(trace.scan.marker, True,
+                        lambda t=trace: self._paint_offset_markers(
+                            p, rect, only=t))
+            else:
+                add(trace.scan, True,
+                    lambda t=trace: self._paint_placeholder(p, rect, t))
+        if doc is not None:
+            add(doc.arrow, False, lambda: self._paint_arrow(p, rect))
+            add(doc.legend, False, lambda: self._paint_legend(p, rect))
+            for label in doc.labels:
+                add(label, False, lambda lb=label: self._paint_text_labels(
+                    p, rect, only=lb))
+            for image in getattr(doc, "images", ()):
+                add(image, False, lambda im=image: self._paint_image(
+                    p, rect, im))
+        items.sort(key=lambda item: (item[0], item[1]))
+        return items
 
     # ------------------------------------------------------------ the pieces
     def _paint_frame(self, p, rect):
@@ -3172,6 +3350,43 @@ class PlotWidget(QWidget):
                     else QColor(owner.colour))
         return QColor(_INK)
 
+    @staticmethod
+    def image_pixels(image):
+        """The picture of an `ImageArtist`, decoded once."""
+        if image._pixels is None:
+            pixels = QImage()
+            pixels.loadFromData(QByteArray.fromBase64(
+                image.png.encode("ascii")))
+            image._pixels = pixels
+        return image._pixels
+
+    def _image_box(self, image, rect):
+        """An image's box before rotation: its width, the picture's own
+        proportions, placed by its anchor."""
+        pixels = self.image_pixels(image)
+        width = max(4.0, float(image.width))
+        height = (width * pixels.height() / float(pixels.width())
+                  if not pixels.isNull() and pixels.width() else width)
+        px, py = self.artist_point(image, rect)
+        fx, fy = image.anchor_offsets()
+        return QRectF(px - fx * width, py - fy * height, width, height)
+
+    def _paint_image(self, p, rect, image):
+        if not image.visible:
+            return
+        box = self._image_box(image, rect)
+        with self._rotated(p, image, rect):
+            p.save()
+            p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            p.drawImage(box, self.image_pixels(image))
+            if image.selected:
+                p.setPen(QPen(_SELECT, 1.0, Qt.DashLine))
+                p.setBrush(Qt.NoBrush)
+                p.drawRect(box)
+            p.restore()
+        self._image_boxes.append(
+            (image, self.rotated_bounds(image, box, rect).toRect()))
+
     def _label_box(self, label, rect, base):
         """A label's box before rotation, and the font it is drawn in."""
         font = QFont(base)
@@ -3215,13 +3430,13 @@ class PlotWidget(QWidget):
         turn.translate(-ax, -ay)
         return turn.mapRect(QRectF(box))
 
-    def _paint_text_labels(self, p, rect):
+    def _paint_text_labels(self, p, rect, only=None):
         """The captions the user has put on the figure."""
         doc = self.doc
         if doc is None:
             return
         for label in doc.labels:
-            if not label.visible:
+            if not label.visible or (only is not None and label is not only):
                 continue
             box = self._label_box(label, rect, p.font())
             font = QFont(p.font())
@@ -3428,7 +3643,7 @@ class PlotWidget(QWidget):
         p.setPen(QPen(colour, 1.0, Qt.DashLine))
         p.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
 
-    def _paint_analyses(self, p, rect, trace):
+    def _paint_analyses(self, p, rect, trace, only=None):
         """The analyses switched ON for this scan, as markers on its curve.
 
         Nothing is drawn unless it was ticked: a run carries a dozen stored
@@ -3446,7 +3661,9 @@ class PlotWidget(QWidget):
             return                     # the stored cursors are temperatures
         lo, hi = self.view_x()
         for analysis in trace.scan.visible_analyses():
-            value = analysis.value()
+            if only is not None and analysis is not only:
+                continue
+            value = self.label_celsius(analysis)
             if value is None:
                 continue
             value = self.to_axis(value)
@@ -3809,7 +4026,7 @@ class PlotWidget(QWidget):
         return (for_light(marker.colour) if THEME == THEME_LIGHT
                 else QColor(marker.colour))
 
-    def _paint_offset_markers(self, p, rect):
+    def _paint_offset_markers(self, p, rect, only=None):
         """The template's `add_yoffset_markers`: each drawn scan's offset,
         `+0.5`, under its curve with a small arrow up to it, the left edge
         of the text on the arrow. One object per scan (`Scan.marker`),
@@ -3818,6 +4035,8 @@ class PlotWidget(QWidget):
         if doc is None or not doc.offset_markers:
             return
         for trace in self.drawable():
+            if only is not None and trace is not only:
+                continue
             marker = trace.scan.marker
             if not marker.visible:
                 continue

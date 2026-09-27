@@ -222,6 +222,12 @@ def test_the_exported_driver_runs_and_builds_the_same_figure(qapp, tmp_path):
     layout.margin_left, layout.margin_right = 1.8, 0.4
     layout.margin_top, layout.margin_bottom = 0.4, 1.5
     win.doc.offset_markers = True      # the template's own call, run
+    # the legend and a label with markup, run through matplotlib (round 19)
+    from PySide6.QtCore import QPointF
+    win.doc.legend.visible = True
+    win.doc.legend.line_width = 2.0
+    label = win.add_label("\\Delta*H*_{m} and $x^2$", at=QPointF(200, 80))
+    label.rotation = 15.0
     win.refresh()
     win.plot.grab()
     driver = win.export_driver(str(tmp_path / "DSC_Plotter.py"))

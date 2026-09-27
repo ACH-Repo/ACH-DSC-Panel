@@ -285,6 +285,22 @@ going; this file is about how it is done here.
 * **A step-name analysis is attributed by being shown** (`Analysis.certain`
   includes "by step name" and visible). It is offered under every scan of
   its step; anything that shows analyses in bulk must skip those.
+* **`doc`, `plot` and `undo` are PROPERTIES of the current tab**
+  (`MainWindow._figure`, a `FigureTab`). Never connect a signal to a
+  BOUND method of them (`self.undo.end_group`): that binds the tab that
+  was current at connection time. Connect a lambda that looks it up.
+  Pop-ups are closed before a tab switch, so their undo step lands on
+  their own figure.
+* **Never name a window method after an existing one**: `stack_selected`
+  already meant "stack the scans evenly", and an `enabled` predicate
+  calling the new one would have re-stacked the scans on every menu
+  refresh. Grep first.
+* **Drawing order is the stack order** (`PlotWidget._paint_items`, sorted
+  by `model.z_of`); a new drawn kind adds itself there and to
+  `model.KIND_Z`, or it is never drawn.
+* **Qt's double-click interval is the system's** (500 ms on Windows); the
+  plot's click rhythm re-reads the timing (`_note_press`), and a Qt
+  double-click slower than 350 ms is a layer step.
 * **Qt's SVG writer ignores clipping** (checked, PySide6 6.11). Anything
   inside the axes' clip must stay inside `_paint_all`'s fenced block
   (`_clip_mark`), which `clip_svg` turns into a real `clipPath` after the

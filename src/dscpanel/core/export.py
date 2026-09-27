@@ -231,6 +231,11 @@ def driver_source(doc):
     lines.append("    style(ax)")
     lines.extend(_axis_lines(x_axis, "x"))
     lines.extend(_axis_lines(y_axis, "y"))
+    lines.extend(_legend_lines(doc))
+    lines.extend(_label_lines(doc))
+    if getattr(doc, "images", None):
+        lines.append("    # {} picture(s) on the panel's figure are not "
+                     "written here.".format(len(doc.images)))
     lines.append("    out = HERE / 'dsc.{}'.format(settings['extension'])")
     lines.append("    plt.savefig(out, dpi=settings['dpi'], "
                  "transparent=settings['transparent']) "
@@ -286,6 +291,112 @@ def _offset_marker_lines(doc, index):
         out.append("              color=(.1, .1, .1), fs={:g}, "
                    "arrowcolor=(.1, .1, .1))".format(
                        float(style.value(doc, marker, "size"))))
+    return out
+
+
+#: The panel's anchors as matplotlib's `loc`.
+_LOC = {"top left": "upper left", "top": "upper center",
+        "top right": "upper right", "left": "center left",
+        "center": "center", "right": "center right",
+        "bottom left": "lower left", "bottom": "lower center",
+        "bottom right": "lower right"}
+
+
+def mathtext(text):
+    r"""The panel's markup as matplotlib mathtext: `*T*` -> `$\mathit{T}$`,
+    `_{g}` -> `$_{\mathrm{g}}$`, `^{2}`, `\Delta` -> `$\Delta$`; what is
+    already between dollars is mathtext and stays as it is."""
+    import re
+    out = []
+    parts = re.split(r"(?<!\\)(\$[^$]*(?<!\\)\$)", str(text))
+    for part in parts:
+        if part.startswith("$") and part.endswith("$") and len(part) > 1:
+            out.append(part)
+            continue
+        # Symbols FIRST: the italics and scripts below write backslash
+        # commands of their own, which this must not turn over again.
+        part = re.sub(r"\\([A-Za-z]+)", lambda m: "$\\" + m.group(1) + "$",
+                      part)
+        part = re.sub(r"\*([^*]+)\*",
+                      lambda m: "$\\mathit{" + m.group(1).replace(" ", "\\ ")
+                      + "}$", part)
+        part = re.sub(r"([_^])\{([^}]*)\}",
+                      lambda m: "$" + m.group(1) + "{\\mathrm{"
+                      + m.group(2).replace(" ", "\\ ") + "}}$", part)
+        out.append(part)
+    return "".join(out).replace("$$", "")
+
+
+def _ha_va(anchor):
+    anchor = str(anchor or "center")
+    ha = "left" if "left" in anchor else ("right" if "right" in anchor
+                                          else "center")
+    va = "top" if "top" in anchor else ("bottom" if "bottom" in anchor
+                                        else "center")
+    return ha, va
+
+
+def _placed(doc, artist):
+    """`(x, y, transform)` of an artist for matplotlib: axes fractions
+    (the panel's y runs from the TOP), or data - in degC, as the template
+    plots."""
+    if getattr(artist, "space", "relative") == model.SPACE_DATA:
+        x = float(artist.x)
+        if doc.x_axis == model.AXIS_TEMPERATURE:
+            x = float(units.to_celsius(x, doc.x_unit))
+        return x, float(artist.y), "ax.transData"
+    return float(artist.x), 1.0 - float(artist.y), "ax.transAxes"
+
+
+def _legend_lines(doc):
+    """The panel's legend as `ax.legend`, at its place, with its size,
+    frame, sample length, spacing and line width. matplotlib turns no
+    legend, so a rotation is noted and left out."""
+    legend = doc.legend
+    if not legend.visible or not legend.entries(doc):
+        return []
+    x, y, transform = _placed(doc, legend)
+    size = float(style.value(doc, legend, "size"))
+    out = ["    leg = ax.legend(loc={!r}, bbox_to_anchor=({:.4f}, {:.4f}),"
+           .format(_LOC.get(legend.anchor, "center"), x, y),
+           "                    bbox_transform={}, frameon={}, fontsize={:g},"
+           .format(transform, bool(legend.show_frame), size),
+           "                    handlelength={:.3g}, labelspacing={:.3g})"
+           .format(float(legend.sample) * 0.75 / size,
+                   max(0.0, float(legend.spacing) - 1.0) * 1.5)]
+    if legend.line_width:
+        out.append("    for line in leg.get_lines(): line.set_linewidth("
+                   "{:g})".format(float(legend.line_width) * 0.75))
+    if legend.colour not in (None, "", "auto"):
+        out.append("    for text in leg.get_texts(): text.set_color({!r})"
+                   .format(legend.colour))
+    if legend.rotation:
+        out.append("    # the panel's legend is turned {:g} degrees; "
+                   "matplotlib does not turn legends".format(legend.rotation))
+    return out
+
+
+def _label_lines(doc):
+    """Each label the user added, as `ax.text`: text (markup as mathtext),
+    place, anchor, size, weight, colour and rotation."""
+    out = []
+    for label in doc.labels:
+        if not label.visible:
+            continue
+        x, y, transform = _placed(doc, label)
+        ha, va = _ha_va(label.anchor)
+        colour = label.colour
+        if colour in (None, "", "auto"):
+            colour = label.scan.colour if label.scan is not None else "#1a1a1a"
+        out.append("    ax.text({:.4f}, {:.4f}, {!r}, transform={},".format(
+            x, y, mathtext(label.text), transform))
+        out.append("            ha={!r}, va={!r}, fontsize={:g}, color={!r},"
+                   .format(ha, va, float(style.value(doc, label, "size")),
+                           colour))
+        out.append("            fontweight={!r}, rotation={:g}, "
+                   "rotation_mode='anchor')".format(
+                       "bold" if label.bold else "normal",
+                       float(label.rotation or 0.0)))
     return out
 
 

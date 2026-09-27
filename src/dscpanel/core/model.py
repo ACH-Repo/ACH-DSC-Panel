@@ -92,9 +92,25 @@ class Obj(object):
         #: NOT undoable and NOT saved: a selection is where the hands are,
         #: not a decision about the figure.
         self.selected = False
+        #: Where it is drawn in the stack of the figure, or None for its
+        #: kind's place (`z_of`): higher is on top.
+        self.z = None
 
     def __repr__(self):
         return "{}({!r})".format(type(self).__name__, self.name)
+
+
+#: The drawing order of each kind while nobody has chosen one: curves at
+#: the bottom, then what is drawn on them, then the figure's furniture.
+KIND_Z = {"scan": 0.0, "analysis": 10.0, "offset_marker": 20.0,
+          "arrow": 30.0, "legend": 40.0, "image": 45.0, "label": 50.0}
+
+
+def z_of(obj):
+    """Where `obj` is drawn in the stack: its own z, or its kind's."""
+    own = getattr(obj, "z", None)
+    return float(own) if own is not None else KIND_Z.get(
+        getattr(obj, "kind", ""), 0.0)
 
 
 class Sample(object):
@@ -553,6 +569,10 @@ class Analysis(Obj):
         #: house style's - whole degrees for a temperature, three
         #: significant figures for anything else.
         self.number_format = None
+        #: For an integration, WHERE along its interval the label's arrow
+        #: meets the curve (degC), or None for the peak. G, then X, slides
+        #: it (Christian, round 19); it never leaves the interval.
+        self.label_at = None
 
     @property
     def decoded(self):
@@ -593,6 +613,12 @@ class Analysis(Obj):
             if found is not None:
                 return found
         return None
+
+    @property
+    def slides(self):
+        """True for a kind whose label may slide along its interval: an
+        integration, which labels an area rather than a point."""
+        return "Integration" in self.model_name
 
     @property
     def quantity(self):
@@ -914,6 +940,27 @@ class OffsetMarker(Obj):
         self.number_format = None
 
 
+class ImageArtist(Artist):
+    """A picture on the figure, pasted or dropped: a structure, a photo of
+    the pan. Furniture, not data - moved, scaled (S), rotated (R), layered
+    and aligned like any artist, never measured (Christian, round 19)."""
+
+    kind = "image"
+    can_scale = True
+    can_rotate = True
+
+    def __init__(self, oid, png, x=0.5, y=0.5, width=160.0):
+        Artist.__init__(self, oid, "Image", x, y)
+        #: The picture as PNG, base64 text: what the session stores, so a
+        #: figure never depends on a file that may move.
+        self.png = str(png)
+        #: How wide it is drawn, in figure units; the height keeps the
+        #: picture's own proportions.
+        self.width = float(width)
+        #: The decoded picture, made by the plot when first drawn.
+        self._pixels = None
+
+
 #: The heat-flow arrow's own proportions by default: the DSC_Plotter
 #: template's `add_exo_arrow`, in POINTS (tail 4.5 wide, head 13 wide and
 #: 9 long, the tail 0.9 of the head long), so the panel and the published
@@ -1020,6 +1067,8 @@ class Document(object):
                      "y": Axis(self._next_id(), "y")}
         #: Captions the user has added. Free objects, not tied to a scan.
         self.labels = []
+        #: Pictures pasted or dropped onto the figure (`ImageArtist`).
+        self.images = []
         self.x_axis = AXIS_TEMPERATURE
         #: Which temperature scale the x axis is DRAWN in. The data stays in
         #: Celsius, which is all TRIOS stores; this is a display conversion
@@ -1063,7 +1112,7 @@ class Document(object):
         markers = ([scan.marker for scan in self.scans]
                    if self.offset_markers else [])
         return (list(self.scans) + self.analyses() + markers
-                + list(self.labels)
+                + list(self.labels) + list(self.images)
                 + list(self.axes.values()) + [self.arrow, self.legend])
 
     def add_label(self, text="Label", x=0.5, y=0.5, scan=None):

@@ -1979,7 +1979,11 @@ def test_ctrl_w_closes_the_pop_ups_before_the_window(window):
     assert window.close_step() is first         # then the next one
     assert window.popups() == []
     assert closed == []
-    assert window.close_step() is None          # only now the window
+    # then the tab (round 19), asking about its unsaved changes...
+    window.ask_to_save = lambda: "discard"
+    assert window.close_step() == "tab"
+    assert window.figures() == [] and closed == []
+    assert window.close_step() is None          # ...and only now the window
     assert closed == ["window"]
 
 
@@ -3370,3 +3374,289 @@ def test_an_interval_mark_is_cut_to_the_axes():
     inside = _clip_segment(QPointF(20.0, 20.0), QPointF(30.0, 25.0), box)
     assert inside[0] == QPointF(20.0, 20.0) and inside[1] == QPointF(30.0,
                                                                     25.0)
+
+
+# ------------------------------------------------------------ round 19
+def test_an_export_carries_no_selection(window, tmp_path):
+    from PySide6.QtGui import QImage
+    window.select_all(False)
+    plain = window.export_image(str(tmp_path / "plain.png"), light=True)
+    window.select_all(True)
+    chosen = window.export_image(str(tmp_path / "chosen.png"), light=True)
+    assert QImage(plain) == QImage(chosen)
+    assert all(s.selected for s in window.doc.scans)     # put back after
+
+
+def test_artists_stay_inside_the_axes_box(window):
+    plot = window.plot
+    doc = window.doc
+    doc.legend.visible = True
+    plot.grab()
+    rect = plot.plot_rect()
+    for artist in (doc.legend, doc.arrow):
+        doc.select_only([artist])
+        assert plot.start_grab([artist])
+        plot._update_move(QPointF(plot._move["start"].x() - 5000,
+                                  plot._move["start"].y() + 5000))
+        box = plot.rotated_bounds(artist, plot.artist_box(artist, rect),
+                                  rect)
+        # (the arrow's box is whole pixels: a pixel of rounding)
+        assert box.left() >= rect.left() - 1.0
+        assert box.bottom() <= rect.bottom() + 1.0
+        plot._finish_move()
+
+
+def test_the_stack_order_is_per_object(window):
+    doc = window.doc
+    label = window.add_label("note", at=QPointF(300, 200))
+    scan = doc.scans[0]
+    assert model.z_of(scan) < model.z_of(label)          # curves below
+    doc.select_only([scan])
+    window.run_op("order.front")
+    assert model.z_of(scan) > model.z_of(label)
+    plot = window.plot
+    items = plot._paint_items(None, plot.plot_rect())
+    assert items[-1][0] == model.z_of(scan)              # drawn last
+    window.undo.undo()
+    assert model.z_of(scan) < model.z_of(label)
+    doc.select_only([label])
+    window.run_op("order.back")
+    assert min(model.z_of(o) for o in window.stack_objects()) == \
+        model.z_of(label)
+    keys = {op.id: op.key for op in window.ops.all()}
+    assert keys["order.front"] == "Ctrl+Shift+PgUp"
+
+
+def test_chemdraw_alignment_of_artists(window):
+    plot = window.plot
+    first = window.add_label("a short one", at=QPointF(200, 150))
+    second = window.add_label("a much longer label", at=QPointF(420, 260))
+    plot.grab()
+    window.doc.select_only([first, second])
+    rect = plot.plot_rect()
+
+    def boxes():
+        return [plot.rotated_bounds(a, plot.artist_box(a, rect), rect)
+                for a in (first, second)]
+
+    window.run_op("arrange.align_left")
+    a, b = boxes()
+    assert a.left() == pytest.approx(b.left(), abs=0.5)
+    window.run_op("arrange.align_top")
+    a, b = boxes()
+    assert a.top() == pytest.approx(b.top(), abs=0.5)
+    window.run_op("arrange.align_centre")
+    a, b = boxes()
+    assert a.center().x() == pytest.approx(b.center().x(), abs=0.5)
+    window.undo.undo()
+    keys = {op.id: op.key for op in window.ops.all()}
+    assert keys["arrange.align_right"] == "Ctrl+Shift+Alt+R"
+    assert keys["arrange.align_bottom"] == "Ctrl+Shift+Alt+B"
+
+
+def test_an_integral_label_slides_along_its_interval_with_x(window):
+    from dscpanel.core import measure
+    scan = window.doc.scans[0]
+    area = measure.run("Peak Integration (enthalpy)", scan, 70.0, 150.0)
+    window.refresh()
+    plot = window.plot
+    plot.grab()
+    window.doc.select_only([area])
+    assert plot.start_grab([area])
+    start = plot._move["start"]
+    plot._update_move(QPointF(start.x() + 40, start.y() - 30))
+    assert area.label_at is None                       # vertical by default
+    plot._key_during_move(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key_X,
+                                    Qt.NoModifier, "x"))
+    plot._update_move(QPointF(start.x() + 4000, start.y()))
+    assert area.label_at == pytest.approx(150.0)        # stops at the end
+    plot._finish_move()
+    assert plot.label_celsius(area) == pytest.approx(150.0)
+    window.undo.undo()
+    assert area.label_at is None
+    # an onset labels a point: X does not slide it
+    onset = measure.run("Onset point", scan, 60.0, 120.0)
+    assert not onset.slides and area.slides
+
+
+def test_a_slower_second_click_steps_down_the_stack(window):
+    plot = window.plot
+    doc = window.doc
+    doc.scans[1].offset = 0.0               # the two curves overlap
+    window.refresh()
+    plot.grab()
+    trace = plot._trace_of(doc.scans[0])
+    point = QPointF(float(trace.px[len(trace.px) // 2]),
+                    float(trace.py[len(trace.py) // 2]))
+    found = [o for o in plot.objects_at(point)
+             if not isinstance(o, model.Axis)]
+    assert len(found) >= 2
+    clock = [100.0]
+    plot._clock = lambda: clock[0]
+
+    def click():
+        at = (point.x(), point.y())
+        plot.mousePressEvent(_press(plot, at))
+        plot.mouseReleaseEvent(_release(plot, at))
+
+    click()
+    first = [o for o in doc.selected()]
+    clock[0] += 0.5                                  # 350 to 700 ms: a step
+    click()
+    second = [o for o in doc.selected()]
+    assert second and second != first
+    clock[0] += 0.5
+    click()
+    assert [o for o in doc.selected()] != second or len(found) == 2
+    clock[0] += 2.0                                  # slower: a new click
+    click()
+    assert [o for o in doc.selected()] == [found[0]]
+
+
+def test_tabs_one_per_figure(window, tmp_path, sample):
+    from dscpanel.core import session
+    first = window.doc
+    assert len(window.figures()) == 1
+    window.new_figure()
+    assert len(window.figures()) == 2 and window.doc is not first
+    assert window.doc.scans == []
+    # a session opens in a tab of its own - unless the tab is a new one
+    path = str(tmp_path / "one.dscpanel")
+    session.save(first, path)
+    import dscpanel.ui.window as window_module
+    real = window_module.session.load
+    window_module.session.load = lambda p, r: real(
+        p, lambda _p: model.Sample(sample.path, sample.data))
+    try:
+        window.open_session(path)
+    finally:
+        window_module.session.load = real
+    assert len(window.figures()) == 2               # the empty one reused
+    assert window._tabs.tabText(window._tabs.currentIndex()) == "one.dscpanel"
+    # switching tabs switches the figure, its plot and its undo history
+    window._tabs.setCurrentIndex(0)
+    assert window.doc is first
+    window._tabs.setCurrentIndex(1)
+    assert window.doc is not first
+
+
+def test_closing_tabs_asks_then_leaves_the_blank_window(window):
+    closed = []
+    window.close = lambda: closed.append("window") or True
+    asked = []
+    window.ask_to_save = lambda: asked.append(1) or "discard"
+    window.new_figure()
+    assert window.close_step() == "tab"             # the new one: clean
+    assert asked == []
+    assert window.close_step() == "tab"             # the loaded one asks
+    assert asked == [1]
+    assert window.figures() == []
+    assert window._stack.currentWidget() is window._empty
+    assert not window.ops.get("view.fit").enabled(window)
+    assert window.close_step() is None and closed == ["window"]
+    # Ctrl+N, or opening something, brings a tab back
+    window.run_op("file.new")
+    assert len(window.figures()) == 1
+
+
+def test_the_window_remembers_its_place(qapp, sample):
+    from dscpanel.core import style
+    from dscpanel.ui.window import MainWindow
+    first = MainWindow()
+    first.resize(777, 555)
+    first.save_layout()
+    assert style.window_state() and "geometry" in style.window_state()
+    style.load_preferences()                         # as a new start would
+    second = MainWindow()
+    assert second.restore_layout()
+    assert second.size().width() == 777
+
+
+def test_m_sets_the_y_range_too(window, monkeypatch):
+    from dscpanel.ui import dialogs
+    monkeypatch.setattr(dialogs.RangeDialog, "exec", lambda self: 1)
+    plot = window.plot
+    plot.grab()
+    before_y = plot.view_y()
+    real = window.x_range_dialog
+
+    def only_x():
+        dialog = real()
+        assert dialog.y_low_edit is not None        # the y pair is there
+        dialog.low_edit.setText("70")
+        dialog.high_edit.setText("90")
+        return dialog
+    window.x_range_dialog = only_x
+    window.run_op("view.x_range")
+    assert plot.view_x() == (70.0, 90.0)
+    assert plot.view_y() == pytest.approx(before_y)  # untouched: unchanged
+
+    def with_y():
+        dialog = real()
+        dialog.y_low_edit.setText("-1")
+        dialog.y_high_edit.setText("0,5")
+        return dialog
+    window.x_range_dialog = with_y
+    window.run_op("view.x_range")
+    assert plot.view_y() == (-1.0, 0.5)
+    window.undo.undo()                               # one step
+    assert plot.view_x() == (70.0, 90.0)
+    assert plot.view_y() == pytest.approx(before_y)
+
+
+def test_the_driver_carries_the_legend_and_the_labels(window):
+    from dscpanel.core.export import mathtext
+    window.doc.legend.visible = True
+    label = window.add_label("\\Delta*H* = {}", at=QPointF(300, 200))
+    label.rotation = 30.0
+    source = export.driver_source(window.doc)
+    assert "leg = ax.legend(" in source and "frameon=False" in source
+    assert "ax.text(" in source and "rotation=30" in source
+    assert mathtext("\\Delta*H*") == "$\\Delta\\mathit{H}$"
+    assert mathtext("*T*_{on}") == "$\\mathit{T}_{\\mathrm{on}}$"
+    assert mathtext("(Hbc)$_{1.00}$") == "(Hbc)$_{1.00}$"
+
+
+def test_a_picture_is_an_artist(window, tmp_path, sample):
+    from PySide6.QtGui import QColor, QImage
+    from dscpanel.core import session
+    picture = QImage(120, 60, QImage.Format_ARGB32)
+    picture.fill(QColor("#336699"))
+    image = window.add_image(picture, at=QPointF(300, 200))
+    assert image in window.doc.images and image.selected
+    assert image.width == pytest.approx(120.0)
+    plot = window.plot
+    plot.grab()
+    box = plot.artist_box(image, plot.plot_rect())
+    assert box.height() == pytest.approx(60.0)          # its proportions
+    # S scales it, R turns it, like any artist
+    window.doc.select_only([image])
+    assert plot.start_scale()
+    plot._scale["typed"] = "2"
+    plot._update_transform()
+    plot._finish_transform()
+    assert image.width == pytest.approx(240.0)
+    assert window.rotatable_selected()
+    # kept in the session, picture and all
+    path = tmp_path / "pic.dscpanel"
+    session.save(window.doc, str(path))
+    loaded, _p = session.load(
+        str(path), lambda _p: model.Sample(sample.path, sample.data))
+    assert len(loaded.images) == 1
+    assert plot.image_pixels(loaded.images[0]).width() == 120
+    # Delete takes it off, Ctrl+Z puts it back
+    window.doc.select_only([image])
+    window.run_op("object.remove")
+    assert image not in window.doc.images
+    window.undo.undo()
+    assert image in window.doc.images
+
+
+def test_ctrl_v_pastes_a_picture(window, qapp):
+    from PySide6.QtGui import QColor, QImage
+    picture = QImage(40, 40, QImage.Format_ARGB32)
+    picture.fill(QColor("#aa3300"))
+    qapp.clipboard().setImage(picture)
+    before = len(window.doc.images)
+    window.run_op("edit.paste")
+    assert len(window.doc.images) == before + 1

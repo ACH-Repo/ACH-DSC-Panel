@@ -119,6 +119,7 @@ def _analysis_state(analysis):
              "label_size": analysis.label_size, "flush": analysis.flush,
              "show_interval": analysis.show_interval,
              "number_format": analysis.number_format,
+             "label_at": analysis.label_at, "z": analysis.z,
              "attribution": analysis.attribution,
              "source": analysis.source}
     if analysis.source == "panel":
@@ -145,6 +146,8 @@ def _restore_analysis(analysis, saved, version):
     # dropped such a format on every reopen.
     analysis.number_format = labels.normalise_format(
         saved.get("number_format"))
+    analysis.label_at = _number_or_none(saved.get("label_at"))
+    analysis.z = _number_or_none(saved.get("z"))
     if version < 5 and measure.is_legacy_label(analysis.label):
         # Before round 15 a panel analysis was GIVEN a label with its
         # number written in ("*T*_{onset} = 61.1 degC"), and a version-4
@@ -177,7 +180,8 @@ def to_state(doc):
             "visible": scan.visible,
             "analyses": [_analysis_state(a) for a in scan.analysis_objects],
             "molar_mass_override": scan.molar_mass_override,
-            "marker": {"at": (list(scan.marker.at) if scan.marker.at
+            "z": scan.z,
+            "marker": {"z": scan.marker.z,"at": (list(scan.marker.at) if scan.marker.at
                               else None),
                        "dy": scan.marker.dy,
                        "number_format": scan.marker.number_format,
@@ -211,6 +215,7 @@ def to_state(doc):
                        "colour": lb.colour, "size": lb.size, "bold": lb.bold,
                        "visible": lb.visible, "space": lb.space,
                        "anchor": lb.anchor, "rotation": lb.rotation,
+                       "z": lb.z,
                        "scan": (None if lb.scan is None
                                 else [lb.scan.sample.path, lb.scan.seg])})
     return {
@@ -218,6 +223,11 @@ def to_state(doc):
         "version": VERSION,
         "axes": axes,
         "labels": labels,
+        "images": [{"png": im.png, "x": im.x, "y": im.y,
+                    "space": im.space, "anchor": im.anchor,
+                    "rotation": im.rotation, "width": im.width,
+                    "z": im.z, "visible": im.visible}
+                   for im in doc.images],
         "x_axis": doc.x_axis,
         "x_unit": doc.x_unit,
         "y_unit": doc.y_unit,
@@ -231,7 +241,7 @@ def to_state(doc):
                    "sample": doc.legend.sample,
                    "spacing": doc.legend.spacing,
                    "colour": doc.legend.colour, "x": doc.legend.x,
-                   "rotation": doc.legend.rotation,
+                   "rotation": doc.legend.rotation, "z": doc.legend.z,
                    "line_width": doc.legend.line_width,
                    "y": doc.legend.y, "space": doc.legend.space,
                    "anchor": doc.legend.anchor},
@@ -241,7 +251,7 @@ def to_state(doc):
                   "head_width": arrow.head_width,
                   "tail_width": arrow.tail_width,
                   "tail_length": arrow.tail_length,
-                  "lock": arrow.lock, "size": arrow.size,
+                  "lock": arrow.lock, "size": arrow.size, "z": arrow.z,
                   "colour": arrow.colour, "visible": arrow.visible,
                   "space": arrow.space, "anchor": arrow.anchor},
         "samples": samples,
@@ -340,6 +350,7 @@ def load(path, read_sample):
                 continue
             _restore_analysis(made, saved, version)
         scan.molar_mass_override = entry.get("molar_mass_override")
+        scan.z = _number_or_none(entry.get("z"))
         marker = entry.get("marker") or {}
         scan.marker.at = _marker_at(marker.get("at"))
         scan.marker.number_format = labels.normalise_format(
@@ -349,6 +360,7 @@ def load(path, read_sample):
                                    version)
         scan.marker.colour = marker.get("colour", "auto")
         scan.marker.visible = bool(marker.get("visible", True))
+        scan.marker.z = _number_or_none(marker.get("z"))
         sample.scans.append(scan)
         doc.scans.append(scan)
     arrow = state.get("arrow") or {}
@@ -366,6 +378,7 @@ def load(path, read_sample):
     if arrow.get("lock") in model.ARROW_LOCKS:
         doc.arrow.lock = arrow["lock"]
     doc.arrow.size = _chosen(arrow.get("size"), "arrow_size", version)
+    doc.arrow.z = _number_or_none(arrow.get("z"))
     doc.arrow.colour = arrow.get("colour", doc.arrow.colour)
     doc.arrow.visible = bool(arrow.get("visible", True))
     doc.arrow.space = arrow.get("space", doc.arrow.space)
@@ -420,11 +433,26 @@ def load(path, read_sample):
         label.space = saved.get("space", label.space)
         label.anchor = saved.get("anchor", label.anchor)
         label.rotation = float(_number_or_none(saved.get("rotation")) or 0.0)
+        label.z = _number_or_none(saved.get("z"))
+    for saved in state.get("images") or []:
+        if not saved.get("png"):
+            continue
+        image = model.ImageArtist(doc._next_id(), saved["png"],
+                                  float(saved.get("x", 0.5)),
+                                  float(saved.get("y", 0.5)),
+                                  float(saved.get("width", 160.0)))
+        image.space = saved.get("space", image.space)
+        image.anchor = saved.get("anchor", image.anchor)
+        image.rotation = float(_number_or_none(saved.get("rotation")) or 0.0)
+        image.z = _number_or_none(saved.get("z"))
+        image.visible = bool(saved.get("visible", True))
+        doc.images.append(image)
     for name, value in (state.get("legend") or {}).items():
         if hasattr(doc.legend, name):
             setattr(doc.legend, name, value)
     doc.legend.rotation = float(
         _number_or_none((state.get("legend") or {}).get("rotation")) or 0.0)
+    doc.legend.z = _number_or_none((state.get("legend") or {}).get("z"))
     if version < 5:
         # The frame was on by default until round 17, so an older file's
         # True was the default and not a choice; it follows the new one.

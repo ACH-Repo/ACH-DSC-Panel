@@ -12,7 +12,7 @@ always current.
 
 | Repo | State |
 | :-- | :-- |
-| `ACH-DSC-Panel` | Initial commit `f261ce5` on `master` (2026-09-25, at Christian's request; not pushed - his other repos use `main`). Rounds 10-11 committed as `35b6db4` (not pushed); rounds 12-18 after it are uncommitted. 259 tests pass. |
+| `ACH-DSC-Panel` | Initial commit `f261ce5` on `master` (2026-09-25, at Christian's request; not pushed - his other repos use `main`). Rounds 10-11 committed as `35b6db4` (not pushed); rounds 12-18 committed as `4ab47d0` (2026-09-27, not pushed); round 19 after it is uncommitted. 272 tests pass. |
 | `ACH-DSC-Plotter` | Committed `d743702` on `main` (2026-09-25; not pushed): the Tg decode, the `.txt` mass fix and round 9's step-name length byte (`_step_name`), with TRI-FORMAT.md and the re-vendored template. 33 tests, including the three CN-119 export comparisons (its folder is in the gitignored `tests/local_testdata.txt`). |
 | `ACH-MoloM` | Untouched by this chat. Its tree already had 10 modified files from earlier work. |
 
@@ -148,7 +148,7 @@ Full list in `CLAUDE.md`. The ones that cost the most:
   Write longer patches to a `.py` file in the scratchpad and run that.
 - **`QWidget.grab` exists**; the transform method is `start_grab`.
 
-## 7. What the program does now (0.1.0, 259 tests)
+## 7. What the program does now (0.1.0, 272 tests)
 
 Reading and data: vendored reader; `.tri` and `.txt`; per-file exo detection;
 background loading; sessions (`.dscpanel`); CSV and PNG/SVG export (light

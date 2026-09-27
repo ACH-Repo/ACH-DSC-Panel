@@ -592,25 +592,62 @@ exactly alike, without fiddling.
   colours start with the plotter's sixteen, in its order; the window opens
   maximized.
 
+### Round 19 (2026-09-27): tabs, the stack, pictures
+
+Rounds 12-18 were committed first (`4ab47d0`, Christian's request).
+
+* **Tabs, one per figure** (`FigureTab`: document, plot, undo history,
+  saved state). `doc`, `plot` and `undo` are the CURRENT tab's. A session
+  opens in a tab of its own (an untouched new one is reused); Ctrl+N is a
+  new figure. Ctrl+W closes the pop-up in front, else the tab (asking to
+  save), else - on the blank background left when the last tab closes -
+  the program. Closing the window asks per tab.
+* **The window's place and dock** are remembered (`preferences.json`,
+  `window`); the first start is maximized.
+* **Exports carry no selection** (`MainWindow.unselected`).
+* **Artists stay inside the axes box** when moved (`keep_inside`): their
+  whole box, not their anchor.
+* **Stack order per object** (`Obj.z`, `model.z_of`, kinds in their old
+  order by default): Ctrl+(Shift+)PgUp / PgDown, and the context menu. The
+  figure is drawn in that order, clipped where it is measured; picking a
+  tie goes to the one on top. Page keys, because brackets need AltGr on a
+  German keyboard.
+* **ChemDraw's alignment** of selected artists: Ctrl+Shift+Alt+L / R / T /
+  B to the outermost edge, C centres side to side, M middles up and down.
+* **An integration's label slides**: G, then X, moves it along its
+  interval (`Analysis.label_at`), never out of it; Y or nothing is the
+  vertical move as before.
+* **Click rhythm** (`DOUBLE_CLICK_S`, `CYCLE_S`): a second press at the
+  same place within 350 ms is a double-click; 350-700 ms selects the next
+  object under the pointer, down the stack and round again; slower is a
+  new click. Qt calls anything within the system's interval a double-click,
+  so the plot re-reads the timing itself. On trial: if it is bad, it goes.
+* **M sets the y range too**, after the x pair (Tab reaches it; an
+  untouched y pair changes nothing). One undo step.
+* **The driver carries the legend and added labels** (`ax.legend` at its
+  place with frame, size, sample, spacing, line width; `ax.text` with the
+  markup as mathtext - `export.mathtext` - and the rotation).
+* **Pictures** (`ImageArtist`): Ctrl+V pastes one (or an image file copied
+  in the file browser), dropping an image file puts it where it lands.
+  Moved, scaled (S), rotated (R), layered, aligned, deleted like any
+  artist; stored in the session as PNG. Not in the driver.
+
 ## Next
 
-1. **Analyses drawn properly** - the onset/endset tangents and the Tg
-   construction (`trios_artists`), and the same in the plotter template.
-2. **Controls on a mouse**: everything was built on a trackpad. A plain
-   wheel is read as a swipe (it scales y), there is no middle-button pan,
-   and tap-drag vs press-drag have only been tested with QTest.
-3. **The driver carries neither the legend nor added labels**, nor the
-   rotation of either.
-4. **More artists**: a scale bar, a molecule image, a text note with its own
-   leader arrow.
-5. **Analysis labels may need horizontal freedom** when several clash.
-6. **Picking an object buried in an overlapping stack** (open question).
+1. **Controls on a mouse** (the wheel is read as a swipe; no middle-button
+   pan; press vs drag only tested in code).
+2. **Tangent constructions** for onset/endset and the Tg construction, if
+   the interval marks are not enough (Christian likes them as they are).
+3. **Style presets** as files dropped into the program and chosen from a
+   menu (Christian: TOML). Python 3.10 has no `tomllib` (3.11+): `tomli`,
+   a small dependency, or JSON.
+4. **Pictures and free labels in the outliner.**
+5. **Analysis labels sideways for other kinds** if ever needed (only
+   integrations slide, on purpose).
+6. **A note with its own leader arrow** as an artist.
 7. **Closing a file** (`Document.close_sample` exists, no operator).
-8. **Window geometry and dock state remembered** (QSettings, small).
-9. **A typed y range** (the x range is on `M`).
-10. **Blank-run subtraction**; **SDT / TGA** (a second y axis, weight %).
-11. **Several figures at once** - tabs or windows (round 18: feasible; a
-    second window first, tabs after).
+8. **SDT / TGA** - parked (Christian: maybe later; blank-run subtraction
+   dropped, the instrument's calibration already does it).
 
 ## Settled on 2026-09-23, with the files Christian supplied
 

@@ -17,18 +17,20 @@ This file is GENERATED. After adding an operator, run:
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
 | Open TRIOS files... | `Ctrl+O` | always |  |
+| New figure | `Ctrl+N` | always |  |
 | Open a session... | `Ctrl+Shift+O` | always |  |
 | Save the session | `Ctrl+S` | a scan is open |  |
 | Save the session as... | `Ctrl+Shift+S` | a scan is open |  |
 | Export the figure... | `Ctrl+E` | a scan is open |  |
 | Export the curves as CSV... |  | a scan is open |  |
 | Export as a DSC_Plotter.py driver... |  | a scan is open | hands the arrangement to ACH-DSC-Plotter |
-| Close the window (or the pop-up in front) | `Ctrl+W` | always |  |
+| Close the pop-up in front, the tab, or the window | `Ctrl+W` | always |  |
 
 ## Edit
 
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
+| Paste a picture | `Ctrl+V` | always |  |
 | Undo | `Ctrl+Z` | there is something to undo | also walks back zoom, pan and fit, one gesture at a time |
 | Redo | `Ctrl+Y` | there is something to redo |  |
 | Figure size and margins... |  | always | exact cm/in and margins, saved with the session |
@@ -49,6 +51,12 @@ This file is GENERATED. After adding an operator, run:
 | :-- | :-- | :-- | :-- |
 | Move the selection | `G, then a number, Enter (Esc cancels)` | something is selected | then a number, Enter; Shift is precision, Ctrl snaps |
 | Scale the selection | `S, then move or type a factor, Enter (Esc cancels)` | the arrow, the legend or a label is selected |  |
+| Align the artists' left edges | `Ctrl+Shift+Alt+L` | always |  |
+| Align the artists' right edges | `Ctrl+Shift+Alt+R` | always |  |
+| Align the artists' top edges | `Ctrl+Shift+Alt+T` | always |  |
+| Align the artists' bottom edges | `Ctrl+Shift+Alt+B` | always |  |
+| Align the artists' centres, side to side | `Ctrl+Shift+Alt+C` | always |  |
+| Align the artists' middles, up and down | `Ctrl+Shift+Alt+M` | always |  |
 | Stack the selected scans evenly |  | two or more scans selected |  |
 | Distribute the offsets evenly |  | three or more scans selected |  |
 | Align the selection to the active scan |  | two or more scans selected | closed-form fit to the first selected scan |
@@ -59,6 +67,10 @@ This file is GENERATED. After adding an operator, run:
 
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
+| Bring to front | `Ctrl+Shift+PgUp` | always |  |
+| Bring forward | `Ctrl+PgUp` | always |  |
+| Send backward | `Ctrl+PgDown` | always |  |
+| Send to back | `Ctrl+Shift+PgDown` | always |  |
 | Settings for the selection... | `double-click` | something is selected | double-click does the same |
 | Hide the selection | `H` | something is selected |  |
 | Show everything | `Alt+H` | something is hidden |  |

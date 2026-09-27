@@ -69,7 +69,7 @@ class RangeDialog(QDialog):
     test can fill it without a modal loop.
     """
 
-    def __init__(self, title, unit, low, high, parent=None):
+    def __init__(self, title, unit, low, high, parent=None, y=None):
         QDialog.__init__(self, parent)
         self.setWindowTitle(title)
         row = QHBoxLayout()
@@ -79,11 +79,32 @@ class RangeDialog(QDialog):
             edit.setAlignment(Qt.AlignRight)
             edit.setMinimumWidth(80)
             edit.textEdited.connect(self._clear_mark)
+        if y is not None:
+            row.addWidget(QLabel("x", self))
         row.addWidget(self.low_edit)
         row.addWidget(QLabel("to", self))
         row.addWidget(self.high_edit)
         if unit:
             row.addWidget(QLabel(unit, self))
+        # The y range, AFTER the x one (Christian, round 19): Tab reaches it
+        # only when wanted, and Enter after the x pair leaves it as it is.
+        self.y_low_edit = self.y_high_edit = None
+        y_row = None
+        if y is not None:
+            y_unit, y_low, y_high = y
+            y_row = QHBoxLayout()
+            self.y_low_edit = QLineEdit(_number_text(y_low), self)
+            self.y_high_edit = QLineEdit(_number_text(y_high), self)
+            y_row.addWidget(QLabel("y", self))
+            for edit in (self.y_low_edit, self.y_high_edit):
+                edit.setAlignment(Qt.AlignRight)
+                edit.setMinimumWidth(80)
+                edit.textEdited.connect(self._clear_mark)
+            y_row.addWidget(self.y_low_edit)
+            y_row.addWidget(QLabel("to", self))
+            y_row.addWidget(self.y_high_edit)
+            if y_unit:
+                y_row.addWidget(QLabel(y_unit, self))
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
         buttons.accepted.connect(self.accept)
@@ -92,8 +113,13 @@ class RangeDialog(QDialog):
         buttons.button(QDialogButtonBox.Ok).setDefault(True)
         layout = QVBoxLayout(self)
         layout.addLayout(row)
+        if y_row is not None:
+            layout.addLayout(y_row)
         layout.addWidget(buttons)
         self.setTabOrder(self.low_edit, self.high_edit)
+        if y_row is not None:
+            self.setTabOrder(self.high_edit, self.y_low_edit)
+            self.setTabOrder(self.y_low_edit, self.y_high_edit)
         self.low_edit.setFocus(Qt.OtherFocusReason)
         self.low_edit.selectAll()
 
@@ -107,22 +133,41 @@ class RangeDialog(QDialog):
 
     def values(self):
         """`(low, high)` in increasing order, or None if it is not a range."""
-        low, high = self._read(self.low_edit), self._read(self.high_edit)
+        return self._pair(self.low_edit, self.high_edit)
+
+    def y_values(self):
+        """The y pair like `values`, or None (no y row, or not a range)."""
+        if self.y_low_edit is None:
+            return None
+        return self._pair(self.y_low_edit, self.y_high_edit)
+
+    def _pair(self, first, second):
+        low, high = self._read(first), self._read(second)
         if low is None or high is None or low == high:
             return None
         return (min(low, high), max(low, high))
 
+    def _edits(self):
+        return [e for e in (self.low_edit, self.high_edit, self.y_low_edit,
+                            self.y_high_edit) if e is not None]
+
     def _clear_mark(self, _text=""):
-        for edit in (self.low_edit, self.high_edit):
+        for edit in self._edits():
             edit.setStyleSheet("")
 
     def accept(self):
-        if self.values() is None:
-            for edit in (self.low_edit, self.high_edit):
-                if self._read(edit) is None or self.values() is None:
+        pairs = [((self.low_edit, self.high_edit), self.values())]
+        if self.y_low_edit is not None:
+            pairs.append(((self.y_low_edit, self.y_high_edit),
+                          self.y_values()))
+        wrong = False
+        for edits, value in pairs:
+            if value is None:
+                wrong = True
+                for edit in edits:
                     edit.setStyleSheet("border: 1px solid #d04040;")
-            return
-        QDialog.accept(self)
+        if not wrong:
+            QDialog.accept(self)
 
 
 def _number_text(value):
@@ -2305,3 +2350,46 @@ def install_basic_colours():
         row, column = divmod(order, 8)
         QColorDialog.setStandardColor(row + column * 6, QColor(name))
     return len(colours)
+
+
+class ImageSettings(_LiveDialog):
+    """A picture on the figure: shown or not, its width, where it sits."""
+
+    FIELDS = ("width", "visible", "x", "y", "space", "anchor", "rotation")
+
+    def __init__(self, parent, image, on_change=None):
+        _LiveDialog.__init__(self, parent, image, on_change)
+        self.setWindowTitle("Image")
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        layout.addLayout(form)
+
+        self.shown = QCheckBox("Show")
+        self.shown.setChecked(bool(image.visible))
+        self.shown.setToolTip("Draw the image.")
+        form.addRow("", self.shown)
+
+        self.picture_width = NumberBox()
+        self.picture_width.setDecimals(1)
+        self.picture_width.setRange(4.0, 4000.0)
+        self.picture_width.setSuffix(" px")
+        self.picture_width.setValue(float(image.width))
+        self.picture_width.setToolTip("Drawn width; the height keeps the "
+                                      "picture's proportions. S scales it "
+                                      "by hand.")
+        form.addRow("Width", self.picture_width)
+
+        self.transform = ArtistTransform(image, getattr(parent, "plot", None),
+                                         on_change=self._live, parent=self)
+        form.addRow("Place", self.transform)
+
+        buttons = self._buttons()
+        layout.addWidget(buttons)
+        self.shown.toggled.connect(self._apply)
+        self.picture_width.valueChanged.connect(self._apply)
+
+    def _apply(self, *_args):
+        self.obj.visible = bool(self.shown.isChecked())
+        self.obj.width = float(self.picture_width.value())
+        self._live()
