@@ -65,9 +65,11 @@ def layout(smiles):
     Atoms: `{"el", "x", "y", "h", "charge", "show"}`, positions in BOND
     LENGTHS (the average bond is 1) with y UP, centred on the origin.
     `show` is False for a carbon that is a vertex, as in a skeletal
-    formula. Bonds: `{"a", "b", "order", "ring"}`, `ring` the centre of the
-    smallest ring a double bond is in (its second line is drawn towards
-    it), or None.
+    formula. Bonds: `{"a", "b", "order", "ring", "stereo"}`, `ring` the
+    centre of the smallest ring a double bond is in (its second line is
+    drawn towards it), or None; `stereo` "wedge" (towards the viewer) or
+    "hash" (away) for a bond RDKit wedges at a stereocentre of the SMILES
+    (`@` / `@@`), with `a` the stereocentre - the narrow end - or None.
     """
     molecule = _parse(smiles)
     if molecule is None or molecule.GetNumAtoms() == 0:
@@ -79,6 +81,13 @@ def layout(smiles):
     except Exception:
         pass
     rdDepictor.Compute2DCoords(molecule)
+    # Which single bond at each stereocentre is drawn as a wedge or a hash,
+    # chosen by RDKit from the layout (Christian, round 24). It puts the
+    # stereocentre first in each such bond.
+    try:
+        Chem.WedgeMolBonds(molecule, molecule.GetConformer())
+    except Exception:
+        pass
     try:
         Chem.Kekulize(molecule, clearAromaticFlags=True)
     except Exception:
@@ -118,7 +127,12 @@ def layout(smiles):
                 smallest = min(holding, key=len)
                 ring = [sum(atoms[i]["x"] for i in smallest) / len(smallest),
                         sum(atoms[i]["y"] for i in smallest) / len(smallest)]
-        bonds.append({"a": a, "b": b, "order": order, "ring": ring})
+        stereo = None
+        if order == 1:
+            stereo = {Chem.BondDir.BEGINWEDGE: "wedge",
+                      Chem.BondDir.BEGINDASH: "hash"}.get(bond.GetBondDir())
+        bonds.append({"a": a, "b": b, "order": order, "ring": ring,
+                      "stereo": stereo})
     return {"atoms": atoms, "bonds": bonds}
 
 

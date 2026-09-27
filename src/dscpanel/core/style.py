@@ -116,6 +116,12 @@ SETTINGS = (
     # thing all text shares is the family. Empty is the system's own.
     Setting("font_family", "Font family", "Bahnschrift", kind="font",
             note="Typeface of all figure text."),
+    # The element labels of a structure (Christian, round 23): a rounded
+    # face reads as a drawing rather than as running text. Empty is the
+    # figure's font family.
+    Setting("structure_font", "Structure labels", "Arial Rounded MT",
+            kind="font", note="Typeface of element labels in structures; "
+                              "empty: the figure's."),
     Setting("analysis_size", "Analysis labels", 11.0, low=5.0, high=40.0,
             note="Onset, integral and Tg labels."),
     Setting("analysis_flush", "Analysis label alignment", FLUSH_LEFT,
@@ -180,6 +186,7 @@ FIELDS = {
     ("arrow", "size"): "arrow_size",
     ("offset_marker", "size"): "offset_marker_size",
     ("offset_marker", "number_format"): "offset_format",
+    ("molecule", "label_font"): "structure_font",
 }
 
 

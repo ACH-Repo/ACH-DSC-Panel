@@ -44,6 +44,7 @@ going; this file is about how it is done here.
 | `core/session.py` | the `.dscpanel` file |
 | `core/style.py` | the house style: object -> figure -> user default -> built-in |
 | `core/figure.py` | the figure's size: window, aspect ratio, or exact size and margins |
+| `core/presets.py` | style presets: a figure's look (and size) in a file |
 | `core/labels.py` | what an analysis label says: templates, units, the rules |
 | `core/chem.py` | a SMILES as atoms and bonds to draw (RDKit, optional) |
 | `core/log.py` | the log file, the excepthook, the crash file |
@@ -333,6 +334,39 @@ going; this file is about how it is done here.
   "sup". Every text on the figure goes through it, added labels included.
 * **A painter on an image starts from the APPLICATION font.** `_paint_all`
   sets `figure_font()` first, or exports lose the house font family.
+* **The fitted y range includes the analysis labels** (`data_y`, round 22),
+  and measuring a label asks for the axes box, whose margin asks for the
+  widest y number, which asks for the fitted range: `_fitting` answers that
+  inner call with the curves alone (the box's HEIGHT does not depend on
+  it). `paint_into` memoises the range for one paint (`_fit_memo`); never
+  keep it longer, or a change stops refitting.
+* **Outliner rows remember being CLOSED, not being open.** "Open unless
+  anything was open before" folded every new file away once the Decorators
+  row (always there, always open) existed on an empty figure.
+* **The middle button is a view gesture** (`_nav`, `nav_kind`); a middle
+  double-click must never reach the left-button double-click code, which
+  opens settings.
+* **A label with a parent is drawn `follow()` above its stored place**
+  (round 23): `artist_point` adds its scan's offset change since
+  `parent_offset`, `set_artist_point` takes it off, `_artist_origin_px`
+  adds it. Anything that places a label from pixels must go through them,
+  and a unit change must convert `parent_offset` with the offsets
+  (`Document.set_unit`), or every owned label jumps.
+* **The outliner's drag is COPY, never Move**: after a MoveAction Qt
+  deletes the dragged rows itself (`clearOrRemove`). A drop is a request
+  to the window, deferred, and the rows are rebuilt.
+* **`figure` is a loop variable in `ui/window.py`** (the tabs); the module
+  is `figure_module` there.
+* **Everything drawn is on a SCALED page** (round 24): anything counted in
+  pixels - the curve's decimation columns, whether a line can go without
+  antialiasing - counts DEVICE pixels of the page as shown (`page()[2]`
+  times the device pixel ratio), never figure units. Figure text is laid
+  out unhinted (`figure_font`) so it spaces evenly at any zoom.
+* **A note's tip is `[degC, heat flow]`** (`TextLabel.leader`), with the
+  parent's follow added like the text's. `placed_under` keeps it in place
+  when a label changes hands; a unit change converts it for a note with a
+  parent (a free one has no mass to convert by, like any data-space
+  artist).
 * **A segment can record no heat flow at all** (the ramp of an indium
   calibration run). `missing_for` reports a missing SIGNAL exactly like a
   missing molar mass, so it reaches the placeholder, the blink and the export

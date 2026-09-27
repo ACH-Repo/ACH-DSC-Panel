@@ -16,6 +16,19 @@ always current.
 | `ACH-DSC-Plotter` | Committed `d743702` on `main` (2026-09-25; not pushed): the Tg decode, the `.txt` mass fix and round 9's step-name length byte (`_step_name`), with TRI-FORMAT.md and the re-vendored template. 33 tests, including the three CN-119 export comparisons (its folder is in the gitignored `tests/local_testdata.txt`). |
 | `ACH-MoloM` | Untouched by this chat. Its tree already had 10 modified files from earlier work. |
 
+**Rounds 22-24 (2026-09-27/28, on the desktop PC, committed and pushed at
+Christian's request):** middle-button drag, F fitting the analysis labels,
+the outliner's Decorators; style presets, label parenting, the size pop-up,
+structure label defaults; sharpness on a scaled page, S spreading scans,
+the Boombox theme, notes, stereo wedges - PLAN.md rounds 22 to 24. PLAN's
+"Next" is empty but for optional items. The desktop has Python 3.13 and no
+3.10. Its
+ACH-DSC-Plotter checkout equals GitHub (`a0c9972`): `d743702` exists only on
+the laptop, unpushed, so `vendor.py --check` fails here and must NOT be
+"fixed" by re-vendoring (it would roll the reader back). Push it from the
+laptop, then pull here. The working tree here is CRLF (`core.autocrlf`
+true): a script that rewrites a file writes `"\r\n"` to match.
+
 Christian commits and pushes himself, per message, never as a standing
 order. An initial commit of the panel has been offered and not yet asked for.
 Until it exists, the only recovery for a destroyed file is Claude's own

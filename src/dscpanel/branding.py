@@ -41,6 +41,10 @@ PROG_ID = "DscPanel.Session"
 #: The session file's extension.
 SESSION_EXT = ".dscpanel"
 
+#: A style preset's extension (`core/presets.py`): JSON inside, named so a
+#: dropped one is known for what it is.
+PRESET_EXT = ".dscstyle"
+
 #: QSettings coordinates. Changing these forgets the user's window geometry,
 #: which is why they are written down rather than derived from APP_NAME.
 SETTINGS_ORG = "ACH"

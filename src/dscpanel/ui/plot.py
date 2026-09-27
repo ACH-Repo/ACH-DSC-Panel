@@ -47,17 +47,21 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 from ..core import figure as figure_module
 from ..core import labels, model, numbers, style, units
 
-#: The two ways this program draws.
+#: The ways this program draws.
 #:
 #: `blender-default` is the screen theme: pale ink on a dark ground, the same
 #: choice MoloM and its PXRD window make. `light` is the same plot on white,
 #: which is what a document or a paper wants - and what every export uses,
 #: because a dark figure does not survive being dropped into a page.
 #:
+#: `boombox` is ORCA Workbench's skin of that name (Christian, round 24):
+#: brushed-metal greys, parchment text and an LCD-green accent.
+#:
 #: Everything that has a colour reads it from here, so a third theme is a
 #: dictionary and not a hunt through the drawing code.
 THEME_DARK = "blender-default"
 THEME_LIGHT = "light"
+THEME_BOOMBOX = "boombox"
 
 THEMES = {
     THEME_DARK: {
@@ -89,6 +93,22 @@ THEMES = {
         "_BAND_EDGE": QColor(190, 130, 20),
         "_SELECT": QColor(220, 120, 20),
         "_ALARM": QColor(200, 30, 30),
+    },
+    # OWB's palette: surface #2a2d31, window #232323, text #d6d6c2, muted
+    # #9a9a86, headings #3a3f44, the LCD green #39ff7a, hover #ffd23b.
+    THEME_BOOMBOX: {
+        "_BG": QColor("#2a2d31"),
+        "_SURROUND": QColor("#1c1c1c"),
+        "_AXIS": QColor("#9a9a86"),
+        "_GRID": QColor("#3a3f44"),
+        "_TEXT": QColor("#d6d6c2"),
+        "_TEXT_DIM": QColor("#9a9a86"),
+        "_INK": QColor("#e2e2cf"),
+        "_CURSOR": QColor("#ffd23b"),
+        "_BAND": QColor(57, 255, 122, 50),
+        "_BAND_EDGE": QColor("#39ff7a"),
+        "_SELECT": QColor("#39ff7a"),
+        "_ALARM": QColor("#ff5555"),
     },
 }
 
@@ -257,6 +277,9 @@ class PlotWidget(QWidget):
     transform_done = Signal(list, str)
     #: Double-click on an object: the window opens its settings.
     activated = Signal(object)
+    #: Double-click on one of the page's handles: the window asks for the
+    #: figure's size in numbers.
+    page_size_asked = Signal()
     #: Two cursors are down and Enter was pressed: (scan, x0, x1, analysis
     #: being edited or None, span or None). Both temperatures are in the
     #: FILE's Celsius; the span, when the cursors came from the curve, is
@@ -288,6 +311,17 @@ class PlotWidget(QWidget):
     MODE_CURSOR = {"zoom_h": Qt.SizeHorCursor, "zoom_v": Qt.SizeVerCursor,
                    "zoom_box": Qt.CrossCursor, "pan_h": Qt.SizeHorCursor,
                    "pan_v": Qt.SizeVerCursor, "pan_free": Qt.SizeAllCursor}
+    #: A middle-button drag, by what it does (`nav_kind`).
+    NAV_TEXT = {
+        "scale": "SCALE y about 0 - drag up for taller curves",
+        "zoom": "ZOOM both axes about where the drag started",
+        "pan": "PAN - the figure follows the pointer",
+        "page_zoom": "PAGE zoom - drag up to look closer",
+        "page_pan": "PAGE move - the page follows the pointer",
+    }
+    NAV_CURSOR = {"scale": Qt.SizeVerCursor, "zoom": Qt.SizeVerCursor,
+                  "pan": Qt.ClosedHandCursor, "page_zoom": Qt.SizeVerCursor,
+                  "page_pan": Qt.ClosedHandCursor}
 
     def __init__(self, document=None, parent=None):
         QWidget.__init__(self, parent)
@@ -311,6 +345,8 @@ class PlotWidget(QWidget):
         self._measure = None        # cursors being placed on a scan
         self._interval = None       # a drag along a curve, marking a stretch
         self._press = None          # a press near an object, not yet a drag
+        self._nav = None            # a middle-button drag: the mouse's swipe
+        self._leader_drag = None    # a note's arrow tip being moved
         self._view_burst = None     # (view before, label) while zooming
         self._view_settle = QTimer(self)
         self._view_settle.setSingleShot(True)
@@ -399,6 +435,25 @@ class PlotWidget(QWidget):
             font.setFamilies([family] + [f for f in FALLBACK_FAMILIES
                                          if f != family])
             font.setStyleHint(QFont.SansSerif)
+        # Laid out as the outlines are, not snapped to the pixel grid of
+        # 96-unit design space: hinted advances, scaled onto a zoomed page,
+        # spaced the letters of every number and caption unevenly (round
+        # 24). It also makes the layout the same at any zoom and in every
+        # export, which is what an exact figure promises.
+        font.setHintingPreference(QFont.PreferNoHinting)
+        return font
+
+    def molecule_font(self, molecule):
+        """A structure's element-label font, at its label size: its own
+        family, else the house style's (`structure_font`, Arial Rounded MT
+        built in), else - empty - the figure's."""
+        font = QFont(self.figure_font())
+        family = (style.value(self.doc, molecule, "label_font")
+                  if self.doc is not None else molecule.label_font)
+        if family:
+            font.setFamilies([family] + [f for f in FALLBACK_FAMILIES
+                                         if f != family])
+        font.setPointSizeF(max(3.0, float(molecule.label_size)))
         return font
 
     def _sync_font(self):
@@ -433,6 +488,110 @@ class PlotWidget(QWidget):
         return (lo, hi) if hi > lo else (lo, lo + 1.0)
 
     def data_y(self):
+        """The fitted y range: every drawn curve, and every analysis label
+        on them with its arrow (Christian, round 22: an enthalpy over the
+        highest peak was cut off by F).
+
+        A label is sized in drawing units and hangs a fixed distance from
+        its curve, so how much range it needs depends on the range: the top
+        is raised until each label above its point fits under the top of the
+        axes box (and the bottom lowered for each one below), a few rounds
+        of `hi = y + reach / height * (hi - lo)`, which settles quickly
+        while the labels take less than the box.
+
+        Worked out once per paint (`paint_into` holds `_fit_memo`): a paint
+        converts coordinates a hundred times, and nothing it reads can change
+        while it runs.
+        """
+        memo = getattr(self, "_fit_memo", False)
+        if memo:
+            return memo
+        found = self._fit_y()
+        if memo is None and not getattr(self, "_fitting", False):
+            self._fit_memo = found
+        return found
+
+    def _fit_y(self):
+        lo, hi = self._curves_y()
+        if getattr(self, "_fitting", False):
+            # Measuring the labels asks for the axes box, whose margin asks
+            # for the widest y number, which asks for this range: the curves
+            # alone are the answer there (the box's HEIGHT does not change).
+            return lo, hi
+        last = getattr(self, "_fitted_y", None)
+        moving = getattr(self, "_move", None)
+        if (last is not None and moving is not None
+                and any(isinstance(o, model.Analysis)
+                        for o in moving["objs"])):
+            # An analysis label being dragged: the frame holds still under
+            # the hand and fits again once it is let go.
+            return last
+        self._fitting = True
+        try:
+            rect = self.plot_rect()
+            reach = self.label_reach(rect)
+        finally:
+            self._fitting = False
+        if not reach:
+            self._fitted_y = (lo, hi)
+            return lo, hi
+        height = max(1.0, rect.height())
+        # Labels taller than about half the box cannot all fit: cap each
+        # one's share, so the range stays finite and the curves visible.
+        reach = [(y, min(above / height, 0.45), min(below / height, 0.45))
+                 for y, above, below in reach]
+        top, bottom = hi, lo
+        for _round in range(40):
+            span = top - bottom
+            new_top = max([hi] + [y + up * span for y, up, _down in reach])
+            new_bottom = min([lo] + [y - down * span
+                                     for y, _up, down in reach])
+            settled = (abs(new_top - top) + abs(new_bottom - bottom)
+                       <= 1e-9 * max(span, 1e-12))
+            top, bottom = new_top, new_bottom
+            if settled:
+                break
+        self._fitted_y = (bottom, top)
+        return bottom, top
+
+    def label_reach(self, rect):
+        """`[(y, above, below), ...]`: for each analysis label a fitted view
+        draws, the curve's height it points at (data units) and how far the
+        label and its arrow reach above and below that point (drawing units).
+        The same geometry `_paint_analysis_label` draws, less the painting.
+        """
+        doc = self.doc
+        if doc is None or doc.x_axis != model.AXIS_TEMPERATURE:
+            return []
+        lo, hi = self.view_x()
+        base = self.figure_font()
+        out = []
+        for trace in self.drawable():
+            for analysis in trace.scan.visible_analyses():
+                value = self.label_celsius(analysis)
+                if value is None:
+                    continue
+                value = self.to_axis(value)
+                if not (lo <= value <= hi):
+                    continue
+                index = self._sample_near(
+                    trace, value, self._analysis_slice(trace, analysis))
+                if index is None:
+                    continue
+                font = QFont(base)
+                font.setPointSizeF(max(5.0, float(self.style_of(
+                    analysis, "label_size"))))
+                text = labels.render(analysis, doc).text
+                if not analysis.certain:
+                    text += " ?"
+                half = markup_size(text, font)[1] / 2.0 + 3.0
+                offset = self.label_offset(analysis, trace, rect)
+                out.append((float(trace.y[index]),
+                            max(0.0, half - offset), max(0.0, half + offset)))
+        return out
+
+    def _curves_y(self):
+        """The curves' y range, with `y_margin` of it either side."""
         lows, highs = [], []
         for trace in self.drawable():
             if trace.y is not None and len(trace.y):
@@ -1001,6 +1160,10 @@ class PlotWidget(QWidget):
         cursor back, and so does the area outside the axes, where there is no
         reticle to take over.
         """
+        nav = getattr(self, "_nav", None)
+        if nav is not None:
+            self.setCursor(self.NAV_CURSOR.get(nav["kind"], Qt.ArrowCursor))
+            return
         if self._mode:
             self.setCursor(self.MODE_CURSOR.get(self._mode, Qt.ArrowCursor))
             return
@@ -1037,6 +1200,9 @@ class PlotWidget(QWidget):
         the plain wheel scales intensity, and that gesture must not exist
         here, because a DSC curve whose height changed under the hand is a
         curve whose W/g axis is a lie.
+
+        On a mouse the swipe is the MIDDLE-BUTTON DRAG, as in MoloM and
+        Blender, with the same modifiers (`nav_kind`).
         """
         mods = ev.modifiers()
         pixels = ev.pixelDelta()
@@ -1105,6 +1271,67 @@ class PlotWidget(QWidget):
         if amount:
             self.zoom_page(WHEEL_STEP ** (amount / PANE_STEP_PIXELS),
                            ev.position())
+
+    # ----------------------------------------------------- the middle button
+    @staticmethod
+    def nav_kind(mods):
+        """What a middle-button drag does: the swipe with the same modifier.
+
+        A two-finger swipe on a trackpad is a middle-button drag on a mouse
+        (MoloM's `_nav_drag_kind`, Blender's navigation button). Plain scales
+        y about 0, Shift pans, Ctrl zooms both axes, Alt the page (Shift
+        moves it). Latched at the press, as MoloM does, so a modifier touched
+        mid-drag does not change what the hand is doing.
+        """
+        if mods & Qt.AltModifier:
+            return "page_pan" if mods & Qt.ShiftModifier else "page_zoom"
+        if mods & Qt.ControlModifier:
+            return "zoom"
+        if mods & Qt.ShiftModifier:
+            return "pan"
+        return "scale"
+
+    def _start_nav(self, ev):
+        kind = self.nav_kind(ev.modifiers())
+        at = QPointF(ev.position())
+        self._nav = {"kind": kind, "at": at, "last": at}
+        if not kind.startswith("page"):
+            # The page is looking closer, not a framing: never an undo step.
+            self._view_begin("pan" if kind == "pan" else "zoom")
+        self._sync_pointer()
+        self.hovered.emit(self.NAV_TEXT[kind])
+        self.update()
+
+    def _drag_nav(self, at):
+        """One move of a middle-button drag, by the pane pixels since the
+        last. The same distance as a swipe does the same amount: one
+        `PANE_STEP_PIXELS` is one wheel notch. Up is taller, and closer."""
+        nav = self._nav
+        dx, dy = at.x() - nav["last"].x(), at.y() - nav["last"].y()
+        nav["last"] = QPointF(at)
+        if not dx and not dy:
+            return
+        factor = WHEEL_STEP ** (-dy / PANE_STEP_PIXELS)
+        kind = nav["kind"]
+        if kind == "scale":
+            self.scale_y(factor)
+        elif kind == "zoom":
+            self.zoom_at(self.to_figure(nav["at"]), factor, both=True)
+        elif kind == "pan":
+            k = self.page()[2]
+            self.pan_by(-dx / k, -dy / k)
+        elif kind == "page_zoom":
+            self.zoom_page(factor, nav["at"])
+        else:
+            self.pan_page(dx, dy)
+
+    def _end_nav(self):
+        self._nav = None
+        self.invalidate()
+        self.commit_view()
+        self._sync_pointer()
+        self.hovered.emit("")
+        self.update()
 
     def event(self, ev):
         """Catch a native pinch, where the platform sends one - and, while
@@ -1397,6 +1624,12 @@ class PlotWidget(QWidget):
             return False
         objs = [o for o in (objs if objs is not None else doc.selected())
                 if self._fields_of(o)]
+        # A label whose scan moves too goes WITH it, not twice (Blender
+        # leaves a child alone when its parent is transformed).
+        moving = set(id(o) for o in objs)
+        objs = [o for o in objs
+                if not (isinstance(o, model.TextLabel)
+                        and o.scan is not None and id(o.scan) in moving)]
         if not objs:
             return False
         pos = self._cursor or QPointF(self.plot_rect().center())
@@ -1565,12 +1798,14 @@ class PlotWidget(QWidget):
         return artist
 
     def _artist_origin_px(self, artist, origin, rect):
-        """Where an artist stood when the gesture began, in pixels."""
+        """Where an artist stood when the gesture began, in pixels (a
+        label with a parent as drawn, following its scan)."""
+        follow = self.follow_px(artist, rect)
         if getattr(artist, "space", model.SPACE_RELATIVE) == model.SPACE_DATA:
             return (float(self.x_to_px(origin[0], rect)),
-                    float(self.y_to_px(origin[1], rect)))
+                    float(self.y_to_px(origin[1], rect)) + follow)
         return (rect.left() + float(origin[0]) * rect.width(),
-                rect.top() + float(origin[1]) * rect.height())
+                rect.top() + float(origin[1]) * rect.height() + follow)
 
     def _typed_value(self):
         state = self._move
@@ -1775,8 +2010,101 @@ class PlotWidget(QWidget):
         selected artists - further out is bigger - until a click or Enter;
         Esc or the right button puts them back. A typed number is the
         factor; Shift is precision, Ctrl snaps to tenths. X, Y, M and C
-        choose the point it is about (`pivot_key`)."""
+        choose the point it is about (`pivot_key`).
+
+        With only SCANS selected, S spreads them instead (`start_spread`)."""
+        doc = self.doc
+        chosen = list(objs) if objs is not None else (
+            doc.selected() if doc is not None else [])
+        if chosen and all(isinstance(o, model.Scan) for o in chosen):
+            return self.start_spread(chosen)
         return self._start_transform("scale", objs)
+
+    def start_spread(self, scans):
+        """S on scans (Christian, round 24): EVENLY spaced offsets, with
+        y = 0 as the neutral line. The scans keep their order (by offset,
+        ties in the outliner's order); the one nearest zero sits on it and
+        the others at whole steps above and below. Moving the pointer away
+        from y = 0 widens the step, towards it closes the stack onto the
+        line. A typed number is the STEP in the axis unit - a spacing that
+        means something in W/g, where a factor of an arbitrary start would
+        not; Ctrl snaps the step to a round number, Shift is precision.
+        Enter or a click keeps it, Esc or the right button puts it back."""
+        doc = self.doc
+        if doc is None or self._move is not None or self._scale is not None:
+            return False
+        listed = [s for s in doc.scans if s in scans and s.visible]
+        if len(listed) < 2:
+            return False
+        ordered = sorted(listed, key=lambda s: (float(s.offset),
+                                                listed.index(s)))
+        anchor = min(range(len(ordered)),
+                     key=lambda i: (abs(float(ordered[i].offset)), i))
+        low, high = float(ordered[0].offset), float(ordered[-1].offset)
+        step = (high - low) / (len(ordered) - 1)
+        if step <= 0:
+            # Laid on top of one another: start from the tallest curve's
+            # height, as "Stack evenly" does.
+            spans = [float(np.nanmax(t.y) - np.nanmin(t.y))
+                     for t in self.traces
+                     if t.scan in ordered and t.y is not None and len(t.y)]
+            step = 0.6 * max(spans) if spans else 1.0
+        zero = self.y_to_px(0.0)
+        cursor = self._cursor or QPointF(self.plot_rect().center())
+        # The frame holds still under the hand; a fitted one fits the new
+        # stack once it is let go.
+        framed = self._view_y
+        self._view_y = self.view_y()
+        self._scale = {"mode": "spread", "entries": [], "scans": ordered,
+                       "framed": framed,
+                       "anchor": anchor, "base": step, "step": step,
+                       "stored": [s.offset for s in ordered], "typed": "",
+                       "zero": zero,
+                       "start": max(abs(cursor.y() - zero), 20.0),
+                       "factor": 1.0, "turn": 0.0, "pivot": (0.0, 0.0),
+                       "last": None}
+        self._apply_spread(step)
+        self._transform_readout()
+        self.update()
+        return True
+
+    @staticmethod
+    def _round_step(step):
+        """A round spacing near `step`: 1, 2 or 5 times a power of ten, or
+        halfway between them - what Ctrl snaps to."""
+        if step <= 0:
+            return step
+        decade = 10.0 ** math.floor(math.log10(step))
+        choices = [decade * m for m in (1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0,
+                                        6.0, 8.0, 10.0)]
+        return min(choices, key=lambda c: abs(c - step))
+
+    def _apply_spread(self, step):
+        state = self._scale
+        state["step"] = step
+        anchor = state["anchor"]
+        for i, scan in enumerate(state["scans"]):
+            scan.offset = (i - anchor) * step
+        self.rebuild()
+
+    def _update_spread(self, pos=None, mods=Qt.NoModifier):
+        state = self._scale
+        typed = self._typed_number()
+        if typed is not None:
+            step = typed
+        else:
+            pos = pos or self._cursor
+            factor = state["factor"]
+            if pos is not None:
+                factor = abs(pos.y() - state["zero"]) / state["start"]
+                if mods & Qt.ShiftModifier:
+                    factor = 1.0 + (factor - 1.0) * 0.1
+            state["factor"] = max(0.0, factor)
+            step = state["base"] * state["factor"]
+            if mods & Qt.ControlModifier:
+                step = self._round_step(step)
+        self._apply_spread(max(0.0, step))
+        self._transform_readout()
 
     def start_rotate(self, objs=None):
         """Blender's R: the cursor's angle about the pivot turns the
@@ -1910,6 +2238,14 @@ class PlotWidget(QWidget):
 
     def _transform_readout(self):
         state = self._scale
+        if state["mode"] == "spread":
+            unit = self.doc.y_unit if self.doc is not None else ""
+            text = ("SPREAD {} scans {:.4g} {} apart about y = 0 - away from "
+                    "0 wider, type the step, Ctrl round, Enter, Esc").format(
+                        len(state["scans"]), state["step"], unit)
+            self.mode_changed.emit(text)
+            self.hovered.emit(text)
+            return
         if state["mode"] == "scale":
             what = "SCALE x{:.3g}".format(state["factor"])
         else:
@@ -1931,6 +2267,9 @@ class PlotWidget(QWidget):
 
     def _update_transform(self, pos=None, mods=Qt.NoModifier):
         state = self._scale
+        if state["mode"] == "spread":
+            self._update_spread(pos, mods)
+            return
         rect = self.plot_rect()
         pos = pos or self._cursor
         cx, cy = self._centre_of_pivots()
@@ -1996,6 +2335,21 @@ class PlotWidget(QWidget):
         state, self._scale = self._scale, None
         if state is None:
             return
+        if state["mode"] == "spread":
+            now = [s.offset for s in state["scans"]]
+            for scan, old in zip(state["scans"], state["stored"]):
+                scan.offset = old
+            changes = ([] if cancel else
+                       [(s, "offset", v) for s, v, old in
+                        zip(state["scans"], now, state["stored"]) if v != old])
+            self._view_y = state["framed"]
+            self.rebuild()
+            self.mode_changed.emit(self.MODE_TEXT.get(self._mode,
+                                                       self.SELECT_TEXT))
+            if changes:
+                self.transform_done.emit(changes, "spread {} scans".format(
+                    len(state["scans"])))
+            return
         idle = (state["factor"] == 1.0 if state["mode"] == "scale"
                 else state["turn"] == 0.0)
         changes = []
@@ -2035,6 +2389,8 @@ class PlotWidget(QWidget):
             self._finish_transform(cancel=True)
         elif key in (Qt.Key_Return, Qt.Key_Enter):
             self._finish_transform()
+        elif key in self.TRANSFORM_KEYS and state["mode"] == "spread":
+            pass                       # a spread is about y = 0, always
         elif key in self.TRANSFORM_KEYS:
             self.pivot_key(self.TRANSFORM_KEYS[key])
         elif key == Qt.Key_Backspace:
@@ -2058,6 +2414,15 @@ class PlotWidget(QWidget):
             return
         rect = self.plot_rect()
         p.setRenderHint(QPainter.Antialiasing, True)
+        if state["mode"] == "spread":
+            # The neutral line, and the pointer's distance from it.
+            zero = self.y_to_px(0.0, rect)
+            p.setPen(QPen(_SELECT, 1.0, Qt.DashLine))
+            p.drawLine(QPointF(rect.left(), zero), QPointF(rect.right(), zero))
+            if self._cursor is not None:
+                p.setPen(QPen(_CURSOR, 1.0, Qt.DashLine))
+                p.drawLine(QPointF(self._cursor.x(), zero),
+                           QPointF(self._cursor))
         for entry in state["entries"]:
             obj = entry["obj"]
             box = self.artist_box(obj, rect)
@@ -2667,6 +3032,10 @@ class PlotWidget(QWidget):
             self.context_menu.emit(obj, ev.globalPosition().toPoint())
             ev.accept()
             return
+        if ev.button() == Qt.MiddleButton:
+            self._start_nav(ev)
+            ev.accept()
+            return
         if ev.button() != Qt.LeftButton:
             QWidget.mousePressEvent(self, ev)
             return
@@ -2715,6 +3084,12 @@ class PlotWidget(QWidget):
         # drag, not as a double-click, so it was a box every time. Deciding
         # by proximity makes the gesture work however the hardware sends it;
         # a real double-click-drag still does the same thing.
+        tipped = self.leader_at(pos)
+        if tipped is not None:
+            # A selected note's arrow tip: it moves, and snaps onto a curve.
+            self._leader_drag = {"label": tipped, "stored": tipped.leader}
+            ev.accept()
+            return
         add = bool(ev.modifiers() & Qt.ShiftModifier)
         cycle = self._note_press(pos)
         target = None if add else self.drag_target(pos)
@@ -2800,6 +3175,12 @@ class PlotWidget(QWidget):
         pos = self.to_figure(ev.position())
         self._cursor = pos
         self._sync_pointer()
+        if self._nav is not None:
+            self._drag_nav(ev.position())
+            return
+        if self._leader_drag is not None:
+            self._drag_leader(pos)
+            return
         if getattr(self, "_page_drag", None) is not None:
             self._drag_page(ev.position())
             return
@@ -2865,6 +3246,14 @@ class PlotWidget(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, ev):
+        if self._nav is not None and ev.button() == Qt.MiddleButton:
+            self._end_nav()
+            ev.accept()
+            return
+        if self._leader_drag is not None:
+            self._finish_leader()
+            ev.accept()
+            return
         if getattr(self, "_page_drag", None) is not None:
             self._finish_page_drag()
             ev.accept()
@@ -2961,6 +3350,22 @@ class PlotWidget(QWidget):
         * on an ARTIST (the arrow, the legend, a label), an analysis label or
           an axis caption it moves that thing, as it always did.
         """
+        if ev.button() == Qt.MiddleButton:
+            # Two quick middle presses are two drags, never "settings" (Qt
+            # may or may not have sent this one as a press first).
+            if self._nav is None:
+                self._start_nav(ev)
+            ev.accept()
+            return
+        if (ev.button() == Qt.LeftButton
+                and self.page_handle_at(ev.position()) is not None):
+            # A page handle: the size in numbers (Christian, round 23). The
+            # drag the second press may have started is dropped unchanged.
+            self._page_drag = None
+            self.update()
+            self.page_size_asked.emit()
+            ev.accept()
+            return
         pos = self.to_figure(ev.position())
         # Whatever an extra press of the pair started, the double-click owns
         # the gesture now.
@@ -3369,10 +3774,25 @@ class PlotWidget(QWidget):
         from the screen was judged worse than no export.
         """
         previous, self._columns_override = self._columns_override, columns
+        # The fitted y range, worked out once for the whole paint (`data_y`).
+        memo, self._fit_memo = getattr(self, "_fit_memo", False), None
         try:
             self._paint_all(painter)
         finally:
             self._columns_override = previous
+            self._fit_memo = memo
+
+    @staticmethod
+    def _crisp(p):
+        """True where a frame line may go without antialiasing and stay
+        even: one drawing unit is a whole number of device pixels. A page
+        scaled 1.4 onto a 150 % screen is not, and an aliased line there is
+        two or three pixels wide by where it falls - the choppy spines and
+        ticks of round 24. There it is antialiased like the curves."""
+        device = p.device()
+        ratio = float(device.devicePixelRatioF() or 1.0) if device else 1.0
+        scale = abs(p.transform().m11()) * ratio
+        return scale >= 1.0 and abs(scale - round(scale)) < 0.01
 
     def _paint_all(self, p):
         # A painter on an image or an SVG starts from the APPLICATION font,
@@ -3385,7 +3805,8 @@ class PlotWidget(QWidget):
         self._image_boxes = []
         self._axis_boxes = []
         self._text_boxes = []
-        p.setRenderHint(QPainter.Antialiasing, False)
+        frame_aa = not self._crisp(p)
+        p.setRenderHint(QPainter.Antialiasing, frame_aa)
         self._paint_grid(p, rect)
         if not self.traces:
             p.setPen(_TEXT_DIM)
@@ -3397,7 +3818,7 @@ class PlotWidget(QWidget):
             p.setRenderHint(QPainter.Antialiasing, True)
             for _z, _order, _inside, draw in self._paint_items(p, rect):
                 draw()
-            p.setRenderHint(QPainter.Antialiasing, False)
+            p.setRenderHint(QPainter.Antialiasing, frame_aa)
             self._paint_frame(p, rect)
             return
         p.setRenderHint(QPainter.Antialiasing, True)
@@ -3422,7 +3843,7 @@ class PlotWidget(QWidget):
         if clipped:
             self._clip_mark(p, rect, False)
             p.restore()
-        p.setRenderHint(QPainter.Antialiasing, False)
+        p.setRenderHint(QPainter.Antialiasing, frame_aa)
         self._paint_frame(p, rect)
 
     def _paint_items(self, p, rect):
@@ -3670,8 +4091,7 @@ class PlotWidget(QWidget):
         atom's place in it, and the margin kept round the atoms for their
         labels."""
         length = max(2.0, float(molecule.bond_length))
-        font = QFont(self.figure_font())
-        font.setPointSizeF(max(3.0, float(molecule.label_size)))
+        font = self.molecule_font(molecule)
         pad = max(0.4 * length, 0.75 * QFontMetrics(font).height())
         atoms = molecule.atoms or [{"x": 0.0, "y": 0.0}]
         low_x = min(a["x"] for a in atoms)
@@ -3718,10 +4138,7 @@ class PlotWidget(QWidget):
         else:
             ink = (for_light(molecule.colour) if THEME == THEME_LIGHT
                    else QColor(molecule.colour))
-        font = QFont(p.font())
-        if molecule.label_font:
-            font.setFamilies([molecule.label_font] + list(FALLBACK_FAMILIES))
-        font.setPointSizeF(max(3.0, float(molecule.label_size)))
+        font = self.molecule_font(molecule)
         metrics = QFontMetrics(font)
         upright = bool(molecule.upright_labels)
         p.save()
@@ -3760,6 +4177,11 @@ class PlotWidget(QWidget):
                 end = QPointF(end.x() - ux * clear, end.y() - uy * clear)
             nx, ny = -uy, ux
             order = int(bond.get("order", 1))
+            stereo = bond.get("stereo") if order == 1 else None
+            if stereo in ("wedge", "hash"):
+                self._paint_stereo_bond(p, start, end, stereo, length,
+                                        float(molecule.bond_width), ink)
+                continue
             if order == 2 and bond.get("ring"):
                 centre = place(*bond["ring"])
                 side = ((end.x() - start.x()) * (centre.y() - start.y())
@@ -3821,6 +4243,48 @@ class PlotWidget(QWidget):
         self._image_boxes.append(
             (molecule, self.rotated_bounds(molecule, box, rect).toRect()))
 
+    #: A stereo bond in the ACS 1996 document style: the wide end of a
+    #: wedge is the "bold width", 2.0 pt on a 14.4 pt bond; a hash's rungs
+    #: are 2.5 pt apart. As fractions of the bond length, so they scale with
+    #: the structure.
+    WEDGE_WIDE = 2.0 / 14.4
+    HASH_SPACING = 2.5 / 14.4
+
+    def _paint_stereo_bond(self, p, start, end, kind, length, width, ink):
+        """A wedge (towards the viewer) or a hash (away) from `start`, the
+        stereocentre and narrow end, to `end` (Christian, round 24)."""
+        dx, dy = end.x() - start.x(), end.y() - start.y()
+        span = math.hypot(dx, dy)
+        if span < 1e-6:
+            return
+        ux, uy = dx / span, dy / span
+        nx, ny = -uy, ux
+        half_wide = self.WEDGE_WIDE * length / 2.0
+        half_narrow = max(0.05, width / 2.0)
+        p.save()
+        if kind == "wedge":
+            p.setPen(QPen(ink, 0.3))
+            p.setBrush(ink)
+            p.drawPolygon(QPolygonF([
+                QPointF(start.x() + nx * half_narrow,
+                        start.y() + ny * half_narrow),
+                QPointF(end.x() + nx * half_wide, end.y() + ny * half_wide),
+                QPointF(end.x() - nx * half_wide, end.y() - ny * half_wide),
+                QPointF(start.x() - nx * half_narrow,
+                        start.y() - ny * half_narrow)]))
+        else:
+            pen = QPen(ink, max(0.1, width))
+            pen.setCapStyle(Qt.FlatCap)
+            p.setPen(pen)
+            rungs = max(3, int(round(span / (self.HASH_SPACING * length))))
+            for k in range(rungs + 1):
+                t = k / float(rungs)
+                half = half_narrow + (half_wide - half_narrow) * t
+                cx, cy = start.x() + dx * t, start.y() + dy * t
+                p.drawLine(QPointF(cx + nx * half, cy + ny * half),
+                           QPointF(cx - nx * half, cy - ny * half))
+        p.restore()
+
     def _label_box(self, label, rect, base):
         """A label's box before rotation, and the font it is drawn in."""
         font = QFont(base)
@@ -3866,7 +4330,7 @@ class PlotWidget(QWidget):
         return turn.mapRect(QRectF(box))
 
     def _paint_text_labels(self, p, rect, only=None):
-        """The captions the user has put on the figure."""
+        """The captions the user has put on the figure, and a note's arrow."""
         doc = self.doc
         if doc is None:
             return
@@ -3885,8 +4349,114 @@ class PlotWidget(QWidget):
                 draw_lines(p, box, label.text, font,
                            self.label_colour(label), _flush_of(label))
                 p.restore()
-            self._text_boxes.append(
-                (label, self.rotated_bounds(label, box, rect).toRect()))
+            bounds = self.rotated_bounds(label, box, rect)
+            self._paint_leader(p, label, bounds, rect)
+            self._text_boxes.append((label, bounds.toRect()))
+
+    # ------------------------------------------------------------- notes
+    #: A note's arrowhead, in figure units: its length and half its width.
+    LEADER_HEAD = (6.0, 2.4)
+
+    def leader_tip(self, label, rect=None):
+        """Where a note's arrow points, in figure units, or None."""
+        leader = getattr(label, "leader", None)
+        if not leader or not self._temperature_axis():
+            return None
+        rect = rect or self.plot_rect()
+        return QPointF(float(self.x_to_px(self.to_axis(leader[0]), rect)),
+                       float(self.y_to_px(leader[1], rect))
+                       + self.follow_px(label, rect))
+
+    def leader_value(self, label, point, rect=None):
+        """`[celsius, heat flow]` that puts `label`'s tip at `point` (figure
+        units), as its scan now stands. Changes nothing."""
+        rect = rect or self.plot_rect()
+        x = self.px_to_x(point.x(), rect)
+        if self._temperature_axis():
+            x = float(units.to_celsius(x, self.doc.x_unit))
+        y = self.px_to_y(point.y() - self.follow_px(label, rect), rect)
+        return [float(x), float(y)]
+
+    def curve_point_near(self, pos, rect=None):
+        """The nearest DRAWN point of any curve within the pick distance of
+        `pos`, or None: where a note's tip snaps to."""
+        best = None
+        for trace in self.drawable():
+            if trace.px is None or not len(trace.px):
+                continue
+            gaps = np.hypot(trace.px - pos.x(), trace.py - pos.y())
+            i = int(np.argmin(gaps))
+            if gaps[i] <= self.pick_radius() and (best is None
+                                                   or gaps[i] < best[0]):
+                best = (float(gaps[i]), QPointF(float(trace.px[i]),
+                                                 float(trace.py[i])),
+                        trace)
+        return None if best is None else (best[1], best[2])
+
+    def _paint_leader(self, p, label, bounds, rect):
+        """A note's arrow: from the edge of its text nearest the point, to
+        the point, with a filled head; a ring at the tip while selected, to
+        grab it by."""
+        tip = self.leader_tip(label, rect)
+        if tip is None or bounds is None or bounds.contains(tip):
+            return
+        start = QPointF(min(max(tip.x(), bounds.left()), bounds.right()),
+                        min(max(tip.y(), bounds.top()), bounds.bottom()))
+        dx, dy = tip.x() - start.x(), tip.y() - start.y()
+        span = math.hypot(dx, dy)
+        if span < 3.0:
+            return
+        ux, uy = dx / span, dy / span
+        start = QPointF(start.x() + ux * 2.0, start.y() + uy * 2.0)
+        length, half = self.LEADER_HEAD
+        colour = self.label_colour(label)
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setPen(QPen(colour, 0.9))
+        base = QPointF(tip.x() - ux * length, tip.y() - uy * length)
+        p.drawLine(start, base)
+        p.setBrush(colour)
+        p.setPen(QPen(colour, 0.5))
+        p.drawPolygon(QPolygonF([
+            tip, QPointF(base.x() - uy * half, base.y() + ux * half),
+            QPointF(base.x() + uy * half, base.y() - ux * half)]))
+        if label.selected:
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(_SELECT, 1.2))
+            p.drawEllipse(tip, 3.5, 3.5)
+        p.restore()
+
+    def leader_at(self, pos):
+        """A SELECTED note whose arrow tip is within the pick distance of
+        `pos`, or None: pressing there moves the tip."""
+        doc = self.doc
+        if doc is None:
+            return None
+        for label in doc.labels:
+            if not (label.selected and label.visible and label.leader):
+                continue
+            tip = self.leader_tip(label)
+            if tip is not None and math.hypot(
+                    tip.x() - pos.x(), tip.y() - pos.y()) <= self.pick_radius():
+                return label
+        return None
+
+    def _drag_leader(self, pos):
+        """The tip follows the pointer, snapping onto a curve near it."""
+        state = self._leader_drag
+        near = self.curve_point_near(pos)
+        point = near[0] if near is not None else pos
+        state["label"].leader = self.leader_value(state["label"], point)
+        self.invalidate()
+
+    def _finish_leader(self, cancel=False):
+        state, self._leader_drag = self._leader_drag, None
+        label = state["label"]
+        new, label.leader = label.leader, state["stored"]
+        if not cancel and new != state["stored"]:
+            self.transform_done.emit([(label, "leader", new)],
+                                     "move a note's arrow")
+        self.invalidate()
 
     def _paint_grid(self, p, rect):
         """Ticks, numbers and (only if asked for) grid lines, each axis on
@@ -3990,7 +4560,9 @@ class PlotWidget(QWidget):
         """
         if self._columns_override:
             return max(1, int(self._columns_override))
-        return max(1, int(round(rect.width()
+        # ...and at the PAGE's zoom: an exact figure scaled 1.4 onto the
+        # pane had 1.4-pixel treads, the staircase Christian saw (round 24).
+        return max(1, int(round(rect.width() * self.page()[2]
                                 * float(self.devicePixelRatioF() or 1.0))))
 
     def _polylines(self, trace, rect):
@@ -4541,18 +5113,27 @@ class PlotWidget(QWidget):
         through twice, and the sample the analysis was computed from is the
         one that matters.
         """
+        index = self._sample_near(trace, value, within)
+        if index is None:
+            return None
+        return self.y_to_px(float(trace.y[index]), rect)
+
+    @staticmethod
+    def _sample_near(trace, value, within=None):
+        """The index of the kept sample nearest x = `value` (inside the
+        stretch `within`), or None."""
         if trace.x is None or not len(trace.x):
             return None
         lo, hi = within if within is not None else (0, len(trace.x) - 1)
         xs = trace.x[lo:hi + 1]
         if not len(xs):
             return None
-        index = lo + int(np.argmin(np.abs(xs - value)))
-        return self.y_to_px(float(trace.y[index]), rect)
+        return lo + int(np.argmin(np.abs(xs - value)))
 
     def _paint_names(self, p):
-        """Which curve is which - for the one under the cursor, and for the
-        selected ones. Nothing else.
+        """Which curve is which - for the one under the cursor. Nothing
+        else: a selected curve is orange already, and its name sat over
+        whatever was drawn at the right edge (Christian, round 24).
 
         These are a READOUT, not part of the figure: they appear when you
         point at a curve and go when you stop. A caption that belongs in the
@@ -4564,8 +5145,7 @@ class PlotWidget(QWidget):
         hovered = (self._trace_at(self._cursor)
                    if self._cursor is not None and self._move is None
                    else None)
-        wanted = [t for t in self.traces
-                  if t.scan.selected or t is hovered]
+        wanted = [t for t in self.traces if t is hovered]
         if not wanted:
             self._label_boxes = []
             return
@@ -4613,14 +5193,27 @@ class PlotWidget(QWidget):
         return QRect(int(cx - half), int(top), int(2 * half),
                      int(bottom - top))
 
+    def follow_px(self, artist, rect=None):
+        """How far a label is drawn below its stored place because its scan
+        moved (negative: up) - `TextLabel.follow` in pixels. Zero for
+        anything that is not a label with a parent."""
+        follow = artist.follow() if hasattr(artist, "follow") else 0.0
+        if not follow:
+            return 0.0
+        rect = rect or self.plot_rect()
+        return float(self.y_to_px(follow, rect) - self.y_to_px(0.0, rect))
+
     def artist_point(self, artist, rect=None):
-        """Where an artist sits, in pixels, whichever space it is stored in."""
+        """Where an artist sits, in pixels, whichever space it is stored in
+        - and, for a label with a parent, as far up as its scan has moved."""
         rect = rect or self.plot_rect()
         if getattr(artist, "space", "relative") == model.SPACE_DATA:
             return (float(self.x_to_px(artist.x, rect)),
-                    float(self.y_to_px(artist.y, rect)))
+                    float(self.y_to_px(artist.y, rect))
+                    + self.follow_px(artist, rect))
         return (rect.left() + float(artist.x) * rect.width(),
-                rect.top() + float(artist.y) * rect.height())
+                rect.top() + float(artist.y) * rect.height()
+                + self.follow_px(artist, rect))
 
     def set_artist_point(self, artist, px, py, rect=None, clamp=True):
         """Put an artist at a pixel position, in its own space.
@@ -4629,6 +5222,7 @@ class PlotWidget(QWidget):
         rotation (`clamp=False`) must not, or the point it is about moves
         whenever the anchor would pass the edge."""
         rect = rect or self.plot_rect()
+        py = py - self.follow_px(artist, rect)
         if getattr(artist, "space", "relative") == model.SPACE_DATA:
             artist.set_position(self.px_to_x(px, rect), self.px_to_y(py, rect))
         else:
@@ -4638,6 +5232,36 @@ class PlotWidget(QWidget):
                 fx, fy = _clamp(fx, 0.01, 0.99), _clamp(fy, 0.01, 0.99)
             artist.set_position(fx, fy)
         return artist
+
+    def placed_under(self, label, scan, rect=None):
+        """`(x, y, parent_offset, leader)` that keep `label` - and a note's
+        arrow tip - exactly where it is drawn once it belongs to `scan`
+        (None: free). Changes nothing."""
+        rect = rect or self.plot_rect()
+        px, py = self.artist_point(label, rect)
+        tip = self.leader_tip(label, rect)
+        saved = (label.scan, label.parent_offset, label.x, label.y,
+                 label.leader)
+        try:
+            label.scan = scan
+            label.parent_offset = (None if scan is None
+                                   else float(scan.offset))
+            self.set_artist_point(label, px, py, rect, clamp=False)
+            leader = (self.leader_value(label, tip, rect) if tip is not None
+                      else label.leader)
+            return label.x, label.y, label.parent_offset, leader
+        finally:
+            (label.scan, label.parent_offset, label.x, label.y,
+             label.leader) = saved
+
+    def rebase(self, label):
+        """Store an owned label's place as drawn NOW, with its scan's offset
+        now, so a settings window shows where it is. Nothing moves."""
+        if getattr(label, "scan", None) is None or not label.follow():
+            return label
+        (label.x, label.y, label.parent_offset,
+         label.leader) = self.placed_under(label, label.scan)
+        return label
 
     def convert_artist_space(self, artist, space, rect=None):
         """Change which space an artist is stored in, keeping it in place."""
@@ -4833,7 +5457,8 @@ class PlotWidget(QWidget):
         reading a stack, so the plain cursor is a ring with four ticks and a
         small cross - a sight, which is what a pointer on a figure is.
         """
-        if self._cursor is None or self._measure is not None:
+        if (self._cursor is None or self._measure is not None
+                or self._nav is not None):
             return
         rect = self.plot_rect()
         x, y = float(self._cursor.x()), float(self._cursor.y())
@@ -4928,13 +5553,14 @@ class PlotWidget(QWidget):
             x = rect.left() + 26
             colour = QColor(scan.colour)
             p.setPen(QPen(colour, 1.0, Qt.DashLine))
-            p.drawLine(int(rect.left()), int(here), int(x + 40), int(here))
+            p.drawLine(QPointF(rect.left(), here), QPointF(x + 40, here))
             p.setPen(QPen(colour, 1.2))
-            p.drawLine(int(x), int(zero), int(x), int(here))
-            for end, sign in ((zero, 1), (here, -1)):
-                p.drawLine(int(x), int(end), int(x - 4), int(end + 5 * sign))
-                p.drawLine(int(x), int(end), int(x + 4), int(end + 5 * sign))
-            p.drawText(QPoint(int(x) + 6, int((zero + here) / 2) + 4),
+            p.drawLine(QPointF(x, zero), QPointF(x, here))
+            # A dimension line: a short horizontal cap at each end, not an
+            # arrowhead - the two ends are levels (Christian, round 24).
+            for end in (zero, here):
+                p.drawLine(QPointF(x - 5, end), QPointF(x + 5, end))
+            p.drawText(QPointF(x + 8, (zero + here) / 2.0 + 4),
                        "{:+.4g} {}".format(scan.offset, doc.y_unit))
 
     def _paint_alarms(self, p):
@@ -5434,4 +6060,4 @@ def element_colour(symbol, ink):
     if name is None:
         return QColor(ink)
     colour = QColor(name)
-    return colour.lighter(150) if THEME == THEME_DARK else colour
+    return colour if THEME == THEME_LIGHT else colour.lighter(150)

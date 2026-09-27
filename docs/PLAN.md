@@ -686,22 +686,136 @@ Round 19 committed first (`f411f26`, Christian's request).
   aspect ratio - one undo step - and the page is fitted again, as Alt+F.
   Esc or a click elsewhere puts them away.
 
+### Round 22 (2026-09-27): the desktop, F, the outliner
+
+Testing on the desktop PC with a mouse.
+
+* **The middle-button drag is the mouse's two-finger swipe**, as in MoloM
+  (`_nav_drag_kind`: its trackpad scroll orbits, its middle drag orbits) and
+  Blender. Same modifiers as the swipe, latched at the press as MoloM does:
+  plain scales y about 0 (drag up, taller), Shift pans with the figure
+  following the pointer, Ctrl zooms both axes about where the drag started,
+  Alt zooms the page and Alt+Shift moves it. One undo step per drag, the
+  page ones none (as with Alt+wheel). The same distance as a swipe does the
+  same amount (60 px a notch). A middle double-click opens nothing. The
+  plain wheel is unchanged: Windows delivers his touchpad's swipes as
+  notches too, so the wheel and the swipe cannot be told apart.
+* **F makes room for the analysis labels** ("an enthalpy at the highest
+  peak is cut off"). The fitted y range (`PlotWidget.data_y`) grows until
+  every shown analysis label and its arrow is inside the axes box. Labels
+  are sized in drawing units and hang a fixed distance from the curve, so
+  the range needed depends on the range: a few rounds of `hi = y + reach /
+  height * span` settle it. Worked out once per paint; held still while a
+  label is dragged.
+* **The outliner: data, a line, Decorators.** Files and their segments on
+  top, and under each scan what belongs to that trace: its analyses, its
+  own labels, and its offset marker while the markers are shown. Below a
+  line, **Decorators**: the heat-flow arrow, the legend, free labels,
+  pictures and structures - everything drawn that belongs to no scan
+  (pictures, structures and free labels had no row at all). Clicking
+  Decorators selects all of them; each row ticks, selects, opens and
+  hides like any other. A label's row is its first line.
+* Found on the way: a file opened into an empty figure came in folded,
+  because the Decorators row made "was anything open before?" true. Rows
+  now remember being CLOSED instead.
+* On this PC: no Python 3.10 (3.13 runs the tests), and ACH-DSC-Plotter
+  here lacks `d743702`, so `vendor.py --check` calls the panel's (newer)
+  reader stale. Do NOT re-vendor here: it would roll the reader back.
+
+### Round 23 (2026-09-27): presets, parents, the size in numbers
+
+Christian on round 22: the middle drag "works perfectly", the click rhythm
+works.
+
+* **Style presets** (`core/presets.py`): a figure's look in a file,
+  chosen from Edit > Style presets (filled from the folder each time it
+  opens) or F3 "Apply a style preset...". A preset holds every figure
+  setting RESOLVED - the values drawn, not "follow my defaults", so it looks
+  the same on another machine - and, optionally, the size and margins, so
+  two figures given one preset have the same axes box. Applying is one
+  undo step on the figure's column; an object's own choices, the handling
+  settings and the theme are left alone. A hand-written preset may name
+  only some settings; the rest stay as they are. Files are JSON with the
+  extension `branding.PRESET_EXT` (`.dscstyle`) in `presets` beside the
+  preferences; "Save this figure's style as a preset...", "Open the style
+  presets folder", and dropping a preset file on the window installs and
+  applies it. JSON, not TOML: Python 3.10 has no TOML reader.
+* **Structure labels**: Arial Rounded MT by default, a house-style setting
+  of their own ("Structure labels" in Settings; empty is the figure's
+  font), and colour by element on for a new structure.
+* **Parenting** (Christian: "giving a free label to a scan is a parenting
+  operation"). A label given to a scan stays exactly where it is drawn and
+  from then on MOVES WITH THE SCAN's offset - G, stacking, R, typed offsets
+  - as well as being listed under it, wearing its colour and going with it.
+  Stored as the scan's offset at the moment (`TextLabel.parent_offset`);
+  `PlotWidget.artist_point` / `set_artist_point` add and remove the
+  difference, so nothing stored is rewritten when a scan moves. Ways in:
+  drag label rows onto a scan (or anything under it) in the outliner, onto
+  the Decorators to free them; Ctrl+P (selected labels to the one selected
+  scan), Ctrl+Shift+P frees (Blender's Alt+P is Help's mnemonic here);
+  right-click a label, "Belongs to". G on a scan and its own label moves
+  the label once, with the scan. A unit change converts the record with
+  the offsets; an older session's owned labels stay where they were drawn;
+  the driver places them where they are drawn.
+* **The size in numbers**: double-click a page handle for a small pop-up,
+  width and height in cm or inches. With "Keep the aspect ratio" (on)
+  typing one fills in the other; off, the ratio follows. Enter makes the
+  figure EXACT at that size - one undo step - keeping the margins it was
+  drawn with, rounded up, so the axes box keeps its room; a page smaller
+  than its margins is refused.
+* Found on the way: ACH-DSC-Plotter's `d743702` was never pushed, which is
+  why this PC's checkout is older than the panel's reader (and why GitHub
+  Desktop's clone failed: the folder already is the clone).
+
+### Round 24 (2026-09-28): sharp on screen, S on scans, notes, wedges
+
+Christian on round 23: dragging labels in the outliner, the size pop-up
+and Arial Rounded MT work; presets mostly.
+
+* **Choppy curves, spines and numbers on a scaled page.** Three causes,
+  all from drawing an exact figure scaled onto the pane (k 1.47 in his
+  screenshot): the curve was thinned to one point per FIGURE column, so
+  each tread was k pixels wide (`columns` now counts device columns of the
+  page as shown); the frame is drawn without antialiasing to stay crisp,
+  which only holds where a drawing unit is a whole number of device pixels
+  (`_crisp`; elsewhere it is antialiased); and hinted glyph advances,
+  scaled, spaced the letters unevenly (`figure_font` lays text out
+  unhinted - which also makes the layout the same at every zoom and in
+  every export).
+* **S on scans spreads them** evenly about y = 0 (`start_spread`): order
+  kept, the scan nearest zero on it, the rest at whole steps; away from 0
+  wider, towards it closer; a typed number is the step in the axis unit;
+  Ctrl a round step; one undo step. The frame holds still during it.
+* **The offset arrow has caps**, a dimension line, not arrowheads.
+* **A trace's name shows on hover only**, no longer while selected.
+* **Alt+P frees labels** (Blender's); Help has no mnemonic any more.
+* **The Boombox theme** from ORCA Workbench (`orca_workbench/core/
+  theme.py`): #2a2d31 paper, #d6d6c2 text, the LCD green #39ff7a for the
+  selection; the window's palette follows (`appearance.boombox_palette`).
+* **Presets carry the frame and the furniture**: both axes (caption text
+  and sizes, distances, ticks, numbers, sides), the heat-flow arrow's place,
+  shape and text size, the legend. Not the arrow's direction (the data's).
+  Every value in a file is checked before it is used.
+* **Stereo wedges**: RDKit picks the wedged bond at each `@`/`@@` centre
+  (`WedgeMolBonds`); drawn as a filled wedge or a hash in the ACS
+  proportions (2 pt wide end on a 14.4 pt bond, rungs 2.5 pt apart). A
+  structure pasted before this has no stereo in its stored layout: retype
+  its SMILES in its settings to redraw it.
+* **Notes**: a label with a leader arrow to a point (`TextLabel.leader`,
+  [degC, heat flow]). Ctrl+Shift+T at the pointer, or right-click a curve
+  "Add a note with an arrow here..." - on a curve the tip lands on it and
+  the note belongs to that scan, so it moves with it. Selected, the ring at
+  the tip is dragged, snapping onto a curve near it; a label's settings
+  turn the arrow on or off. The driver writes `ax.annotate`.
+
 ## Next
 
-1. **Controls on a mouse** - Christian tests on his desktop next: the
-   plain wheel (read as a swipe: scales y about 0), Ctrl+wheel (zoom both),
-   Shift+wheel (pan), Alt+wheel (page zoom) and Alt+Shift+wheel (page pan,
-   which relies on the Windows message for its direction), press vs drag
-   near curves and artists, the click rhythm, the outliner sweep, the page
-   handles. There is no middle-button pan.
-2. **Tangent constructions** for onset/endset and Tg, if wanted.
-3. **Style presets** as dropped files chosen from a menu (TOML needs
-   `tomli` on Python 3.10, or JSON).
-4. **Pictures, structures and free labels in the outliner.**
-5. **Structures**: stereo wedges; the driver writes them only as a comment.
-6. **A note with its own leader arrow** as an artist.
-7. **Closing a file** (`Document.close_sample` exists, no operator).
-8. **SDT / TGA** - parked.
+Nothing is waiting. Open, and only if wanted:
+
+1. **Tangent constructions** drawn for onset/endset and Tg.
+2. **A preset as the user's default** (a preset goes onto one figure;
+   Settings holds the defaults).
+3. **SDT / TGA** - parked.
 
 ## Settled on 2026-09-23, with the files Christian supplied
 
@@ -744,16 +858,8 @@ Round 19 committed first (`f411f26`, Christian's request).
   which is the third independent confirmation of exo down.
 
 ## Open questions for Christian
-* **Picking an object buried under others** (2026-09-25). Where several
-  overlap, only the nearest / topmost can be clicked; a lower one is out of
-  reach except through the outliner. Click-cycling (each click takes the
-  next one down) was considered and DROPPED: the second click of a cycle is
-  a double-click, which opens settings. Wants another mechanism - an
-  Alt+click that cycles, a small "which one?" list on an ambiguous click,
-  or a key that steps down the stack. His call.
-* **What should a scaled scan look like?** `y_scale` is allowed and is
-  labelled `x2` beside the name and in the export warnings. A stronger
-  option is to refuse it outright.
+* ~~Picking an object buried under others~~: settled by the click rhythm
+  (round 19; "click rhythm works", round 24).
 * **Isothermal segments**: they can appear in a run and Christian has never
   used one deliberately (2026-09-23). They read and draw already - the indium
   run's Equilibrate segment is one, labelled "#1 iso 106 degC" - and on a

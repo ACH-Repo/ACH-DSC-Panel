@@ -7,8 +7,8 @@ the plot is dark, so should every window be.
 
 So the application palette follows the plot's theme: MoloM's dark greys
 (`apply_dark_theme` there, Fusion style plus a Blender-ish palette) for
-`blender-default`, Fusion's own light palette for `light`. Fusion in both
-cases, because a palette only fully applies under a style that draws with it,
+`blender-default`, Fusion's own light palette for `light`, ORCA Workbench's
+Boombox skin for `boombox`. Fusion in every case, because a palette only fully applies under a style that draws with it,
 and switching styles between two themes would change the widgets' shapes as
 well as their colours.
 """
@@ -80,6 +80,40 @@ def light_palette():
     return p
 
 
+def boombox_palette():
+    """ORCA Workbench's Boombox skin (`orca_workbench/core/theme.py`):
+    brushed-metal greys, parchment text, the LCD green."""
+    p = QPalette()
+    window = QColor("#232323")
+    text = QColor("#d6d6c2")
+    disabled = QColor("#6b7178")
+    p.setColor(QPalette.Window, window)
+    p.setColor(QPalette.WindowText, text)
+    p.setColor(QPalette.Base, QColor("#2a2d31"))
+    p.setColor(QPalette.AlternateBase, QColor("#2e3236"))
+    p.setColor(QPalette.ToolTipBase, QColor("#0c130c"))
+    p.setColor(QPalette.ToolTipText, QColor("#39ff7a"))
+    p.setColor(QPalette.PlaceholderText, QColor("#9a9a86"))
+    p.setColor(QPalette.Text, text)
+    p.setColor(QPalette.Button, QColor("#3a3f44"))
+    p.setColor(QPalette.ButtonText, text)
+    p.setColor(QPalette.BrightText, QColor("#ff5555"))
+    p.setColor(QPalette.Link, QColor("#39ff7a"))
+    p.setColor(QPalette.Highlight, QColor("#2f7d4a"))
+    p.setColor(QPalette.HighlightedText, QColor("#caffd9"))
+    p.setColor(QPalette.Mid, QColor("#15171a"))
+    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+        p.setColor(QPalette.Disabled, role, disabled)
+    p.setColor(QPalette.Disabled, QPalette.Highlight, QColor("#3a3f44"))
+    return p
+
+
+#: The window's palette for each of the plot's themes.
+PALETTES = {plot_module.THEME_DARK: dark_palette,
+            plot_module.THEME_LIGHT: light_palette,
+            plot_module.THEME_BOOMBOX: boombox_palette}
+
+
 def apply(theme, app=None):
     """Give the whole application the palette that goes with `theme`.
 
@@ -102,7 +136,7 @@ def apply(theme, app=None):
                              else Qt.ColorScheme.Light)
     except AttributeError:
         pass                       # an older Qt: the title bar stays as it is
-    app.setPalette(dark_palette() if dark else light_palette())
+    app.setPalette(PALETTES.get(theme, dark_palette)())
     _applied = theme
     return True
 

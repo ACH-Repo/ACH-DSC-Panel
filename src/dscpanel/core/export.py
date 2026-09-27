@@ -345,12 +345,19 @@ def _placed(doc, artist):
     """`(x, y, transform)` of an artist for matplotlib: axes fractions
     (the panel's y runs from the TOP), or data - in degC, as the template
     plots."""
+    # A label with a parent stands as far up as its scan has moved since
+    # it was placed (`TextLabel.follow`); in axes fractions that is the
+    # distance over the y range the figure is framed at.
+    follow = artist.follow() if hasattr(artist, "follow") else 0.0
     if getattr(artist, "space", "relative") == model.SPACE_DATA:
         x = float(artist.x)
         if doc.x_axis == model.AXIS_TEMPERATURE:
             x = float(units.to_celsius(x, doc.x_unit))
-        return x, float(artist.y), "ax.transData"
-    return float(artist.x), 1.0 - float(artist.y), "ax.transAxes"
+        return x, float(artist.y) + follow, "ax.transData"
+    view_y = getattr(doc, "view_y_hint", None)
+    lift = (follow / (view_y[1] - view_y[0])
+            if follow and view_y and view_y[1] > view_y[0] else 0.0)
+    return float(artist.x), 1.0 - float(artist.y) + lift, "ax.transAxes"
 
 
 def _legend_lines(doc):
@@ -393,6 +400,30 @@ def _label_lines(doc):
         colour = label.colour
         if colour in (None, "", "auto"):
             colour = label.scan.colour if label.scan is not None else "#1a1a1a"
+        if (getattr(label, "leader", None)
+                and doc.x_axis == model.AXIS_TEMPERATURE):
+            # A note: matplotlib's annotate, the arrow from the text to the
+            # point it names (in degC, as the template plots, and as far up
+            # as its scan has moved).
+            out.append("    ax.annotate({!r}, xy=({:.6g}, {:.6g}), "
+                       "xycoords='data',".format(
+                           mathtext(label.text), float(label.leader[0]),
+                           float(label.leader[1]) + label.follow()))
+            out.append("                xytext=({:.4f}, {:.4f}), "
+                       "textcoords={!r},".format(
+                           x, y, "axes fraction"
+                           if transform == "ax.transAxes" else "data"))
+            out.append("                ha={!r}, va={!r}, fontsize={:g}, "
+                       "color={!r},".format(
+                           ha, va, float(style.value(doc, label, "size")),
+                           colour))
+            out.append("                fontweight={!r}, rotation={:g},"
+                       .format("bold" if label.bold else "normal",
+                               float(label.rotation or 0.0)))
+            out.append("                arrowprops=dict(arrowstyle='-|>', "
+                       "color={!r}, lw=0.8, shrinkA=2, shrinkB=0, "
+                       "mutation_scale=8))".format(colour))
+            continue
         out.append("    ax.text({:.4f}, {:.4f}, {!r}, transform={},".format(
             x, y, mathtext(label.text), transform))
         out.append("            ha={!r}, va={!r}, fontsize={:g}, color={!r},"

@@ -73,12 +73,13 @@ The navigation is MoloM's PXRD window and ORCA Workbench's, key for key.
 | drag from an artist | move it: the arrow, the legend, a label, an analysis label, an axis caption |
 | drag from empty space | **box select** (with `Shift`, a box from anywhere, adding) |
 | double-click | settings: a curve, an analysis, an axis spine, a caption |
-| two-finger swipe | scale the y axis about the cursor |
-| `Shift` + swipe | pan the view, in whichever direction the fingers go |
-| pinch | zoom both axes about the cursor (Windows sends this as `Ctrl+wheel`) |
+| two-finger swipe, mouse wheel, or middle-button drag | scale the y axis about y = 0 (drag up: taller) |
+| `Shift` + swipe or middle drag | pan the view, in whichever direction the hand goes |
+| pinch, `Ctrl` + wheel or middle drag | zoom both axes about the pointer (Windows sends a pinch as `Ctrl+wheel`) |
+| `Alt` + swipe or middle drag | zoom the page, like a document; with `Shift`, move it (`Alt+F` fits it again) |
 | `Z` | cycle zoom: box, horizontal, vertical (`Esc` leaves) |
 | `P` | cycle pan: horizontal, vertical, free |
-| `F` / `Home` | fit the view (x first, then y) |
+| `F` / `Home` | fit the view (x first, then y), with room for every analysis label shown |
 | `Esc` | back to plain select |
 | `G` | grab the selection: move, or type a number, `Enter` to confirm - the only way a scan moves |
 | `X` / `Y` while moving | lock an axis (x only applies to artists) |
@@ -86,6 +87,10 @@ The navigation is MoloM's PXRD window and ORCA Workbench's, key for key.
 | `R` | reset the selected offsets to zero (or all of them) |
 | a number | move the selected scans by it; `Enter` confirms, `Esc` cancels |
 | `Ctrl+T` | add a caption where the cursor is |
+| `Ctrl+Shift+T` | add a note: a caption with an arrow to the point under the cursor (on a curve, it belongs to that scan); drag the ring at its tip to re-aim it |
+| `S` with only scans selected | spread them evenly about y = 0; type the step, `Ctrl` for a round one |
+| `Ctrl+P` / `Alt+P` | give the selected labels to the selected scan (they then move with it) / free them; or drag a label onto a scan in the outliner |
+| double-click a page handle | type the figure's size in cm or inches, the aspect ratio kept |
 | `Ctrl+L` / `Ctrl+R` / `Ctrl+M` | align analysis labels left / right / centred on their arrows |
 | `C` | measure by typing: two temperatures, then `Enter` |
 | `Delete` | remove the selection: an analysis, a caption, or scans |

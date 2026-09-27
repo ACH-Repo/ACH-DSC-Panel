@@ -856,11 +856,32 @@ class TextLabel(Artist):
         #: None follows the house style (`core/style.py`).
         self.size = None
         self.bold = False
-        #: The scan this label belongs to, or None for a free one. An owned
-        #: label takes that scan's colour while its own is "auto", is listed
-        #: under it in the outliner, and goes when the scan goes - which is
-        #: what "a label per line" means. It is still positioned freely.
+        #: The scan this label belongs to - its PARENT - or None for a free
+        #: one. An owned label takes that scan's colour while its own is
+        #: "auto", is listed under it in the outliner, goes when the scan
+        #: goes, and MOVES WITH IT (Christian, round 23: "a parenting
+        #: operation"): see `parent_offset`.
         self.scan = scan
+        #: The scan's offset when the label's position was last set, in the
+        #: axis unit. The label is drawn `scan.offset - parent_offset` higher,
+        #: so it follows every later offset change without its stored place
+        #: being rewritten - and parenting keeps it where it is (Blender's
+        #: "keep transform"). None for a free label.
+        self.parent_offset = (float(scan.offset) if scan is not None
+                              else None)
+        #: A NOTE's leader arrow (Christian, round 24): `[celsius, heat
+        #: flow]`, the point it points at - the temperature in degC like
+        #: every stored temperature, the heat flow in the axis unit - or None
+        #: for a plain label. With a parent it follows the scan like the
+        #: text does (stored at `parent_offset`).
+        self.leader = None
+
+    def follow(self):
+        """How far its scan has moved since the label was placed, in the
+        axis unit: 0.0 for a free label."""
+        if self.scan is None or self.parent_offset is None:
+            return 0.0
+        return float(self.scan.offset) - float(self.parent_offset)
 
 
 class Legend(Artist):
@@ -989,11 +1010,13 @@ class MoleculeArtist(Artist):
         self.label_size = 10.0
         #: Keep the element labels upright when the structure is rotated.
         self.upright_labels = True
-        #: The element labels' font family, or None for the figure's.
+        #: The element labels' font family, or None for the house style's
+        #: (`structure_font`: Arial Rounded MT built in).
         self.label_font = None
         #: Colour each element label by its element (N blue, O red...);
-        #: the bonds keep the structure's colour.
-        self.colour_by_element = False
+        #: the bonds keep the structure's colour. On for a new structure
+        #: (Christian, round 23); an older session keeps what it had.
+        self.colour_by_element = True
 
 
 #: The heat-flow arrow's own proportions by default: the DSC_Plotter
@@ -1314,6 +1337,28 @@ class Document(object):
             if old and new and scan.offset:
                 changes.append((scan, "offset",
                                 units.convert_offset(old, new, scan.offset)))
+        # A label's record of its scan's offset is in the same unit, and
+        # converts with it, or every owned label would jump on a unit change.
+        for label in self.labels:
+            if label.scan is None or not label.parent_offset:
+                continue
+            old = label.scan.factor(self.y_unit)
+            new = label.scan.factor(unit)
+            if old and new:
+                changes.append((label, "parent_offset", units.convert_offset(
+                    old, new, label.parent_offset)))
+        # A note on a scan points at a height of that scan's curve, which
+        # converts with it. (A free note's point has no sample mass to
+        # convert by, like any artist placed in data units.)
+        for label in self.labels:
+            if label.scan is None or not label.leader:
+                continue
+            old = label.scan.factor(self.y_unit)
+            new = label.scan.factor(unit)
+            if old and new:
+                changes.append((label, "leader", [
+                    label.leader[0],
+                    units.convert_offset(old, new, label.leader[1])]))
         self.y_unit = unit
         return changes
 

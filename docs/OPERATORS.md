@@ -35,6 +35,9 @@ This file is GENERATED. After adding an operator, run:
 | Undo | `Ctrl+Z` | there is something to undo | also walks back zoom, pan and fit, one gesture at a time |
 | Redo | `Ctrl+Y` | there is something to redo |  |
 | Figure size and margins... |  | always | exact cm/in and margins, saved with the session |
+| Apply a style preset... |  | always |  |
+| Save this figure's style as a preset... |  | always |  |
+| Open the style presets folder |  | always |  |
 
 ## Select
 
@@ -51,7 +54,7 @@ This file is GENERATED. After adding an operator, run:
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
 | Move the selection | `G, then a number, Enter (Esc cancels)` | something is selected | then a number, Enter; Shift is precision, Ctrl snaps |
-| Scale the selection | `S, then move or type a factor, Enter (Esc cancels)` | the arrow, the legend or a label is selected |  |
+| Scale the selection | `S, then move or type a factor, Enter (Esc cancels); with only scans selected, spreads them about y = 0` | the arrow, the legend or a label is selected |  |
 | Align the artists' left edges | `Ctrl+Shift+Alt+L` | always |  |
 | Align the artists' right edges | `Ctrl+Shift+Alt+R` | always |  |
 | Align the artists' top edges | `Ctrl+Shift+Alt+T` | always |  |
@@ -90,6 +93,9 @@ This file is GENERATED. After adding an operator, run:
 | Align analysis labels centred | `Ctrl+M` | an analysis, or a scan with one shown, is selected |  |
 | Legend settings... |  | always |  |
 | Add a label... | `Ctrl+T` | always |  |
+| Add a note with an arrow... | `Ctrl+Shift+T, or right-click a curve` | always |  |
+| Give the selected labels to the selected scan | `Ctrl+P, or drag the label onto the scan in the outliner` | always |  |
+| Free the selected labels from their scan | `Alt+P` | always |  |
 
 ## View
 
@@ -105,6 +111,7 @@ This file is GENERATED. After adding an operator, run:
 | Y axis: W/mol |  | the y axis is not W/mol |  |
 | Theme: blender-default |  | always |  |
 | Theme: light |  | always |  |
+| Theme: boombox |  | always |  |
 | Show or hide the outliner | `N` | always | the dock on the right |
 | X axis in Celsius |  | always |  |
 | X axis in Kelvin |  | always |  |

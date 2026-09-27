@@ -13,12 +13,24 @@ between typing it once and typing it seven times.
 
 Selection is shared with the plot in both directions: clicking a row selects
 the curve, and clicking a curve highlights the row.
+
+Two parts, with a line between them (Christian, round 22): the DATA on top -
+each file, its segments, and under each scan what belongs to that trace (its
+analyses, its own labels, its offset marker while the markers are shown) -
+and below the line the DECORATORS, everything drawn on the figure that
+belongs to no trace: the heat-flow arrow, the legend, free labels, pictures
+and structures.
+
+A label row can be DRAGGED onto a scan (or anything under one) to give the
+label to that scan - parenting, round 23 - and onto the Decorators to free
+it again. The window does the work (`MainWindow.parent_labels`).
 """
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont
+from PySide6.QtGui import QBrush, QColor, QFont, QPalette, QPen
 from PySide6.QtWidgets import (QAbstractItemView, QHeaderView, QStyle,
-                               QTreeWidget, QTreeWidgetItem)
+                               QStyledItemDelegate, QTreeWidget,
+                               QTreeWidgetItem)
 
 from ..core import model
 from . import plot as plot_module
@@ -26,9 +38,58 @@ from . import plot as plot_module
 _ALARM = QColor(232, 76, 76)
 _DIM = QColor(150, 150, 150)
 
+#: The keys of the two rows that are not objects.
+SEPARATOR = ("separator", 0)
+DECORATORS = ("decorators", 0)
+
+
+class _Rows(QStyledItemDelegate):
+    """Every row as usual, except the separator, which is a line - and the
+    row a dragged label would be dropped on, which is framed."""
+
+    def paint(self, painter, option, index):
+        if index.data(Qt.UserRole) != SEPARATOR:
+            QStyledItemDelegate.paint(self, painter, option, index)
+            tree = self.parent()
+            target = getattr(tree, "_drop_item", None)
+            if (target is not None and index.column() == 0
+                    and index == tree.indexFromItem(target, 0)):
+                painter.save()
+                painter.setPen(QPen(option.palette.color(QPalette.Highlight),
+                                    2))
+                painter.drawRect(option.rect.adjusted(1, 1, -2, -2))
+                painter.restore()
+            return
+        painter.save()
+        painter.setPen(QPen(option.palette.color(QPalette.Mid), 1))
+        y = option.rect.center().y()
+        painter.drawLine(option.rect.left() + 2, y, option.rect.right() - 6, y)
+        painter.restore()
+
+
+def first_line(text, limit=60):
+    """A label's text as one row: its first line, and a mark if there is
+    more (a label runs over several lines since round 20)."""
+    lines = str(text).strip().splitlines() or [""]
+    head = lines[0].strip()
+    if len(lines) > 1:
+        head += " ..."
+    return head[:limit]
+
+
+def decorators(doc):
+    """What goes under Decorators, in order: the arrow, the legend, free
+    labels, pictures, structures."""
+    if doc is None:
+        return []
+    return ([doc.arrow, doc.legend]
+            + [label for label in doc.labels if label.scan is None]
+            + list(doc.images) + list(doc.structures))
+
 
 class Outliner(QTreeWidget):
-    """Samples, their scans, and the heat-flow arrow."""
+    """The data (files, scans, what hangs on each scan), then a line, then
+    the decorators."""
 
     #: The user ticked or unticked something: (object, visible).
     visibility_changed = Signal(object, bool)
@@ -41,6 +102,9 @@ class Outliner(QTreeWidget):
     #: two is ONE undo step.
     sweep_started = Signal()
     sweep_finished = Signal()
+    #: Label rows were dropped: (labels, the scan to give them to, or None
+    #: to free them).
+    parent_requested = Signal(object, object)
 
     def __init__(self, parent=None):
         QTreeWidget.__init__(self, parent)
@@ -58,6 +122,7 @@ class Outliner(QTreeWidget):
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setMinimumSectionSize(40)
+        self.setItemDelegate(_Rows(self))
         self.headerItem().setToolTip(0, "The figure's objects; tick to show.")
         self.headerItem().setToolTip(1, "Mass, molar mass, exotherm, "
                                         "offset, analyses shown.")
@@ -66,6 +131,16 @@ class Outliner(QTreeWidget):
         #: While a sweep is live, the state it paints onto every box it
         #: passes (ORCA Workbench's, Blender's), else None.
         self._sweep = None
+        # Label rows drag onto scans. The tree never moves its own rows:
+        # a drop is a request to the window, and the rows are rebuilt.
+        # Copy, not Move: after a MOVE, Qt deletes the dragged rows itself.
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDrop)
+        self.setDefaultDropAction(Qt.CopyAction)
+        self.setDropIndicatorShown(False)
+        #: The row a drag is over and would drop on, framed by `_Rows`.
+        self._drop_item = None
         self.itemChanged.connect(self._item_changed)
         self.itemSelectionChanged.connect(self._selection_changed)
         self.itemDoubleClicked.connect(self._double_clicked)
@@ -88,8 +163,14 @@ class Outliner(QTreeWidget):
             return
         self._filling = True
         try:
+            # A file or the Decorators is open unless it was CLOSED by hand;
+            # a scan is closed unless it was opened. "Open unless anything
+            # was open before" folded every new file away once the
+            # Decorators existed on an empty figure.
             expanded = {self._key(item) for item in self._items()
                         if item.isExpanded()}
+            collapsed = {self._key(item) for item in self._items()
+                         if item.childCount() and not item.isExpanded()}
             self.clear()
             if doc is None:
                 return
@@ -116,32 +197,62 @@ class Outliner(QTreeWidget):
                         self._add_scan(row, scan)
                     else:
                         self._add_segment(row, sample, seg)
-                row.setExpanded(("sample", id(sample)) in expanded
-                                or not expanded)
+                row.setExpanded(("sample", id(sample)) not in collapsed)
                 for k in range(row.childCount()):
                     child = row.child(k)
                     child.setExpanded(self._key(child) in expanded)
+            if doc.samples:
+                line = QTreeWidgetItem(self)
+                line.setData(0, Qt.UserRole, SEPARATOR)
+                line.setFlags(Qt.NoItemFlags)
+                line.setFirstColumnSpanned(True)
+            group = QTreeWidgetItem(self)
+            group.setText(0, "Decorators")
+            group.setData(0, Qt.UserRole, DECORATORS)
+            font = QFont(self.font())
+            font.setBold(True)
+            group.setFont(0, font)
+            group.setToolTip(0, "Drawn on the figure, belonging to no scan")
+            for obj in decorators(doc):
+                self._add_decorator(group, obj)
+            group.setExpanded(DECORATORS not in collapsed)
+            self._drop_item = None
             for item in self._items():
                 for column in (0, 1):
-                    item.setToolTip(column, item.text(column))
-            legend = QTreeWidgetItem(self)
-            legend.setText(0, doc.legend.name)
-            legend.setText(1, "{} entries".format(
-                len(doc.legend.entries(doc))))
-            legend.setData(0, Qt.UserRole, ("legend", id(doc.legend)))
-            legend.setCheckState(0, Qt.Checked if doc.legend.visible
-                                 else Qt.Unchecked)
-            legend.setSelected(doc.legend.selected)
-            arrow = QTreeWidgetItem(self)
-            arrow.setText(0, doc.arrow.name)
-            arrow.setText(1, "{} {}".format(doc.arrow.word,
-                                            doc.arrow.direction))
-            arrow.setData(0, Qt.UserRole, ("arrow", id(doc.arrow)))
-            arrow.setCheckState(0, Qt.Checked if doc.arrow.visible
-                                else Qt.Unchecked)
-            arrow.setSelected(doc.arrow.selected)
+                    if item.text(column):
+                        item.setToolTip(column, item.text(column))
+                # Only a label is dragged anywhere.
+                key = self._key(item)
+                if not key or key[0] != "label":
+                    item.setFlags(item.flags() & ~Qt.ItemIsDragEnabled)
         finally:
             self._filling = False
+
+    def _add_decorator(self, parent, obj):
+        """One row under Decorators: a name, and what it is."""
+        if isinstance(obj, model.TextLabel):
+            return self._add_label_row(parent, obj)
+        item = QTreeWidgetItem(parent)
+        if isinstance(obj, model.HeatFlowArrow):
+            name, state = obj.name, "{} {}".format(obj.word, obj.direction)
+        elif isinstance(obj, model.Legend):
+            name = obj.name
+            state = "{} entries".format(len(obj.entries(self.doc)))
+        elif isinstance(obj, model.ImageArtist):
+            number = self.doc.images.index(obj) + 1
+            name = ("Picture {}".format(number) if len(self.doc.images) > 1
+                    else "Picture")
+            state = "picture"
+        else:                            # a MoleculeArtist
+            name, state = (obj.smiles or obj.name), "structure"
+        item.setText(0, name)
+        item.setText(1, state)
+        if isinstance(obj, (model.ImageArtist, model.MoleculeArtist)):
+            item.setForeground(1, QBrush(_DIM))
+        item.setData(0, Qt.UserRole, (obj.kind, id(obj)))
+        item.setCheckState(0, Qt.Checked if obj.visible else Qt.Unchecked)
+        item.setSelected(obj.selected)
+        return item
 
     def _add_scan(self, parent, scan):
         item = QTreeWidgetItem(parent)
@@ -175,14 +286,28 @@ class Outliner(QTreeWidget):
             self._add_analysis(item, analysis)
         for label in (self.doc.labels_for(scan) if self.doc else ()):
             self._add_label_row(item, label)
+        if self.doc is not None and self.doc.offset_markers:
+            self._add_marker_row(item, scan.marker)
+        return item
+
+    def _add_marker_row(self, parent, marker):
+        """The scan's offset marker, while the figure's markers are shown -
+        it is only an object then (`Document.objects`)."""
+        item = QTreeWidgetItem(parent)
+        item.setText(0, marker.name)
+        item.setData(0, Qt.UserRole, ("offset_marker", id(marker)))
+        item.setCheckState(0, Qt.Checked if marker.visible else Qt.Unchecked)
+        item.setText(1, "marker")
+        item.setForeground(1, QBrush(_DIM))
+        item.setSelected(marker.selected)
         return item
 
     def _add_label_row(self, parent, label):
         item = QTreeWidgetItem(parent)
-        item.setText(0, label.text)
+        item.setText(0, first_line(label.text))
         item.setData(0, Qt.UserRole, ("label", id(label)))
         item.setCheckState(0, Qt.Checked if label.visible else Qt.Unchecked)
-        item.setText(1, "label")
+        item.setText(1, "note" if label.leader else "label")
         item.setForeground(1, QBrush(_DIM))
         item.setSelected(label.selected)
         return item
@@ -288,6 +413,82 @@ class Outliner(QTreeWidget):
             return
         QTreeWidget.mouseReleaseEvent(self, ev)
 
+    # ------------------------------------------------ dragging labels over
+    def dragged_labels(self):
+        """The labels among the selected rows: what a drag carries."""
+        out = []
+        for item in self.selectedItems():
+            obj = self._object(item)
+            if isinstance(obj, model.TextLabel):
+                out.append(obj)
+        return out
+
+    def drop_target(self, item):
+        """`(True, scan)` for a row that gives a label to `scan` - the
+        scan's own row or anything under it - `(True, None)` for the
+        Decorators and what is under them (free the label), and
+        `(False, None)` for anywhere else."""
+        while item is not None:
+            key = self._key(item)
+            if key == DECORATORS:
+                return True, None
+            obj = self._object(item)
+            if isinstance(obj, model.Scan):
+                return True, obj
+            item = item.parent()
+        return False, None
+
+    def drop_labels_on(self, item):
+        """Hand the dragged labels to what `item` stands for. True when it
+        was somewhere a label can go. The window is told after the drop has
+        finished, since it rebuilds these rows."""
+        ok, scan = self.drop_target(item)
+        labels = self.dragged_labels()
+        if not ok or not labels:
+            return False
+        QTimer.singleShot(0, lambda: self.parent_requested.emit(labels, scan))
+        return True
+
+    def _mark_drop(self, item):
+        if item is not self._drop_item:
+            self._drop_item = item
+            self.viewport().update()
+
+    def dragEnterEvent(self, ev):
+        if ev.source() is self and self.dragged_labels():
+            ev.setDropAction(Qt.CopyAction)
+            ev.accept()
+            return
+        ev.ignore()
+
+    def dragMoveEvent(self, ev):
+        # The base class scrolls near the edges; whether the drop is
+        # allowed is decided here.
+        QTreeWidget.dragMoveEvent(self, ev)
+        item = self.itemAt(ev.position().toPoint())
+        ok, _scan = self.drop_target(item)
+        if ev.source() is self and ok and self.dragged_labels():
+            self._mark_drop(item)
+            ev.setDropAction(Qt.CopyAction)
+            ev.accept()
+        else:
+            self._mark_drop(None)
+            ev.ignore()
+
+    def dragLeaveEvent(self, ev):
+        self._mark_drop(None)
+        QTreeWidget.dragLeaveEvent(self, ev)
+
+    def dropEvent(self, ev):
+        """Never the base class's: it would move the rows themselves."""
+        item = self.itemAt(ev.position().toPoint())
+        self._mark_drop(None)
+        if ev.source() is self and self.drop_labels_on(item):
+            ev.setDropAction(Qt.CopyAction)
+            ev.accept()
+        else:
+            ev.ignore()
+
     # ------------------------------------------------------------- plumbing
     def _items(self):
         out = []
@@ -323,12 +524,20 @@ class Outliner(QTreeWidget):
         if not key:
             return None
         kind, ident = key[0], key[1]
-        if kind == "segment":
-            return None                # not an object until it is ticked
+        if kind in ("segment", "separator", "decorators"):
+            return None                # not an object (a segment: not yet)
         if kind == "legend":
             return doc.legend
         if kind == "arrow":
             return doc.arrow
+        if kind in ("image", "molecule"):
+            for obj in (doc.images if kind == "image" else doc.structures):
+                if id(obj) == ident:
+                    return obj
+        if kind == "offset_marker":
+            for scan in doc.scans:
+                if id(scan.marker) == ident:
+                    return scan.marker
         if kind == "scan":
             for scan in doc.scans:
                 if id(scan) == ident:
@@ -398,6 +607,8 @@ class Outliner(QTreeWidget):
                 chosen.append(obj)
             elif isinstance(obj, model.Sample):
                 chosen.extend(obj.scans)
+            elif self._key(item) == DECORATORS:
+                chosen.extend(decorators(self.doc))
         self.doc.select_only(chosen)
         self.selection_picked.emit()
 

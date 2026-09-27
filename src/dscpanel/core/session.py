@@ -217,7 +217,9 @@ def to_state(doc):
                        "anchor": lb.anchor, "rotation": lb.rotation,
                        "z": lb.z,
                        "scan": (None if lb.scan is None
-                                else [lb.scan.sample.path, lb.scan.seg])})
+                                else [lb.scan.sample.path, lb.scan.seg]),
+                       "parent_offset": lb.parent_offset,
+                       "leader": lb.leader})
     return {
         "format": FORMAT,
         "version": VERSION,
@@ -446,6 +448,16 @@ def load(path, read_sample):
         label.anchor = saved.get("anchor", label.anchor)
         label.rotation = float(_number_or_none(saved.get("rotation")) or 0.0)
         label.z = _number_or_none(saved.get("z"))
+        # Where its scan stood when it was placed. A session from before
+        # labels followed their scan has none: it stays where it was drawn.
+        followed = _number_or_none(saved.get("parent_offset"))
+        if owner is not None and followed is not None:
+            label.parent_offset = followed
+        # A note's arrow: the point it names, [degC, heat flow].
+        leader = saved.get("leader")
+        if (isinstance(leader, (list, tuple)) and len(leader) == 2
+                and all(_number_or_none(v) is not None for v in leader)):
+            label.leader = [float(leader[0]), float(leader[1])]
     for saved in state.get("structures") or []:
         if not saved.get("atoms"):
             continue

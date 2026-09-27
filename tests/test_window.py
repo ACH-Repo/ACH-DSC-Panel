@@ -243,7 +243,7 @@ def test_stack_then_align_then_undo(window):
 def test_the_outliner_lists_what_is_there(window):
     window.refresh()
     tree = window.outliner
-    # the sample, the legend and the arrow
+    # the sample, the line, and the Decorators
     assert tree.topLevelItemCount() == 3
     sample_row = tree.topLevelItem(0)
     assert sample_row.childCount() == 2
@@ -663,7 +663,9 @@ def test_typing_a_number_moves_the_selection_without_g(window):
     assert window.doc.scans[0].offset == pytest.approx(0.4)
 
 
-def test_trace_names_appear_only_on_hover_or_selection(window):
+def test_trace_names_appear_only_on_hover(window):
+    """Not for a selected curve any more (Christian, round 24): it is
+    orange already, and its name covered what sat at the right edge."""
     plot = window.plot
     window.select_all(False)
     plot._cursor = None
@@ -671,17 +673,24 @@ def test_trace_names_appear_only_on_hover_or_selection(window):
     assert plot._label_boxes == []
     window.doc.scans[0].selected = True
     plot.grab()
-    assert len(plot._label_boxes) == 1
+    assert plot._label_boxes == []
+    trace = plot.traces[0]
+    middle = len(trace.px) // 2
+    plot._cursor = QPointF(float(trace.px[middle]), float(trace.py[middle]))
+    plot.grab()
+    assert [t.scan for t, _box in plot._label_boxes] == [trace.scan]
 
 
 def test_the_trace_menu_stays_short(window):
-    """Settings, the molar mass, and adding a label to this line. Nothing
-    else: everything else lives in the outliner, the menus or F3."""
+    """Settings, the molar mass, and adding a label or a note (round 24) to
+    this line. Nothing else: everything else lives in the outliner, the
+    menus or F3."""
     from PySide6.QtWidgets import QMenu
     menu = QMenu(window)
     window._scan_menu(menu, window.doc.scans[0])
     labels = [a.text() for a in menu.actions() if a.text()]
-    assert len(labels) == 3
+    assert len(labels) == 4
+    assert any("note" in text.lower() for text in labels)
     assert any("Settings for" in text for text in labels)
     assert any("molar mass" in text.lower() for text in labels)
     assert any("label" in text.lower() for text in labels)
@@ -1156,11 +1165,12 @@ def test_the_legend_is_an_artist_that_starts_off(window):
     assert legend.visible is False
     assert legend.can_scale and legend.can_rotate    # S and R
     assert legend.anchor == "bottom left"
-    # ...and it is in the outliner, ticked off
+    # ...and it is in the outliner, under Decorators, ticked off
     window.refresh()
-    rows = [window.outliner.topLevelItem(i).text(0)
-            for i in range(window.outliner.topLevelItemCount())]
-    assert "Legend" in rows
+    rows = [item for item in window.outliner._items()
+            if item.text(0) == "Legend"]
+    assert len(rows) == 1 and rows[0].parent().text(0) == "Decorators"
+    assert rows[0].checkState(0) == Qt.Unchecked
 
 
 def test_the_legend_names_the_scans_that_are_drawn(window):
@@ -1699,13 +1709,17 @@ def test_a_framing_from_another_unit_comes_back_as_the_fit(window):
 # ------------------------------------------ round 9: the window around it
 def test_the_menu_bar_is_file_edit_search_help(window):
     titles = [a.text() for a in window.menuBar().actions()]
-    assert titles == ["Fi&le", "&Edit", "&Search", "Hel&p"]
+    # Help has no Alt key at all: Alt+P is Blender's "clear parent" (round 24)
+    assert titles == ["Fi&le", "&Edit", "&Search", "Help"]
     # a menu's Alt+letter must not take an operator's key: two claims on
     # one key fire neither (Alt+F fits the page; "&Help" took Alt+H)
     keys = {op.key.upper() for op in window.ops.all() if op.key}
     for title in titles:
+        if "&" not in title:
+            continue
         letter = title[title.index("&") + 1]
         assert "ALT+" + letter.upper() not in keys, title
+    assert "ALT+P" in keys
     from dscpanel import branding
     about = [a.text() for a in window.menus["Help"].actions()]
     assert about == ["Open the log folder", "About " + branding.APP_NAME]
@@ -3289,7 +3303,8 @@ def test_the_outliner_state_column_is_never_cut_off(window):
 def test_the_theme_is_in_the_edit_menu(window):
     theme = window.menus["Theme"]
     texts = [a.text() for a in theme.actions()]
-    assert any("light" in t for t in texts) and len(texts) == 2
+    assert texts == ["Theme: blender-default", "Theme: light",
+                     "Theme: boombox"]
     window._sync_menu_state()
     ticked = [a.text() for a in theme.actions() if a.isChecked()]
     assert ticked == ["Theme: {}".format(window.doc.theme)]
@@ -3949,3 +3964,728 @@ def test_the_page_handles_set_the_aspect_of_a_free_figure(window):
     assert layout.mode == figure.MODE_ASPECT
     page = plot.page_on_pane()
     assert layout.aspect_w > 1.0
+
+
+# ------------------------------------------ round 22: the mouse, F, outliner
+def _middle_drag(plot, start, end, mods=Qt.NoModifier, release=True):
+    """A middle-button drag in pane pixels: the mouse's two-finger swipe."""
+    plot.mousePressEvent(_press(plot, start, Qt.MiddleButton, mods))
+    middle = ((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0)
+    plot.mouseMoveEvent(_move(plot, middle, Qt.MiddleButton))
+    plot.mouseMoveEvent(_move(plot, end, Qt.MiddleButton))
+    if release:
+        plot.mouseReleaseEvent(_release(plot, end, Qt.MiddleButton))
+
+
+def test_a_middle_drag_is_the_swipe_and_one_step(window):
+    """MoloM's mapping: what two fingers do on a trackpad, the middle
+    button does on a mouse. Plain scales y about 0, up is taller."""
+    plot = window.plot
+    plot.grab()
+    before = plot.view_state()
+    x_before = plot.view_x()
+    lo, hi = plot.view_y()
+    _middle_drag(plot, (300, 300), (300, 180))
+    new_lo, new_hi = plot.view_y()
+    assert new_hi - new_lo < hi - lo                 # taller curves
+    assert new_lo / new_hi == pytest.approx(lo / hi)  # about y = 0
+    assert plot.view_x() == x_before
+    assert plot._nav is None
+    window.undo_step()                              # ONE step
+    assert plot.view_state() == before
+
+
+def test_a_middle_drag_with_shift_pans_and_with_ctrl_zooms(window):
+    plot = window.plot
+    plot.grab()
+    x0, y0 = plot.view_x(), plot.view_y()
+    _middle_drag(plot, (300, 300), (360, 260), Qt.ShiftModifier)
+    x1, y1 = plot.view_x(), plot.view_y()
+    # the figure follows the pointer: right and up show what was left of
+    # and below the old view
+    assert x1[0] < x0[0] and y1[0] < y0[0]
+    assert x1[1] - x1[0] == pytest.approx(x0[1] - x0[0])
+    assert y1[1] - y1[0] == pytest.approx(y0[1] - y0[0])
+    _middle_drag(plot, (300, 300), (300, 200), Qt.ControlModifier)
+    x2, y2 = plot.view_x(), plot.view_y()
+    assert x2[1] - x2[0] < x1[1] - x1[0] and y2[1] - y2[0] < y1[1] - y1[0]
+    # Alt is the page, never the data
+    _middle_drag(plot, (300, 300), (300, 200), Qt.AltModifier)
+    assert plot.page_zoomed() and plot.view_x() == x2
+
+
+def test_a_middle_double_click_opens_nothing(window):
+    plot = window.plot
+    plot.grab()
+    trace = plot.traces[0]
+    point = plot.to_widget(QPointF(float(trace.px[len(trace.px) // 2]),
+                                   float(trace.py[len(trace.py) // 2])))
+    at = (point.x(), point.y())
+    plot.activated.disconnect(window.edit_object)
+    seen = []
+    plot.activated.connect(seen.append)
+    try:
+        plot.mousePressEvent(_press(plot, at, Qt.MiddleButton))
+        plot.mouseReleaseEvent(_release(plot, at, Qt.MiddleButton))
+        plot.mouseDoubleClickEvent(_double(plot, at, Qt.MiddleButton))
+        plot.mouseReleaseEvent(_release(plot, at, Qt.MiddleButton))
+    finally:
+        plot.activated.disconnect(seen.append)
+        plot.activated.connect(window.edit_object)
+    assert seen == [] and plot._nav is None
+
+
+def _analysis_at_the_extreme(window, offset, dy):
+    """A visible file analysis on the first scan - moved by `offset` to be
+    the highest (or lowest) curve - at its highest (or lowest) point, with
+    its label `dy` drawing units from the curve."""
+    doc, plot = window.doc, window.plot
+    scan = doc.scans[0]
+    scan.offset = float(offset)
+    window.refresh()
+    plot.grab()
+    trace = next(t for t in plot.traces if t.scan is scan)
+    pick = np.argmax if offset > 0 else np.argmin
+    index = 20 + int(pick(trace.y[20:-20]))
+    temperature = "{:.2f} °C".format(float(trace.x[index]))
+    scan._analyses = None
+    scan.sample.data["analyses"] = {
+        "Ramp 10,00 C/min to 250 C #1": {
+            "Onset point": [{"segment": 1,
+                             "Onset x": temperature.replace(".", ",")}]}}
+    analysis = scan.analysis_objects[0]
+    analysis.visible = True
+    analysis.label_dy = float(dy)
+    window.refresh()
+    return analysis
+
+
+def test_f_fits_the_analysis_labels_as_well_as_the_curves(window):
+    """Christian, round 22: an enthalpy over the highest peak was cut off
+    when F rescaled. The fitted range makes room for every label."""
+    plot = window.plot
+    plot.grab()
+    assert plot.data_y() == plot._curves_y()        # no labels, no room
+    analysis = _analysis_at_the_extreme(window, 1.0, -90.0)
+    plot.fit()
+    plot.grab()
+    box = [b for a, b in plot._analysis_boxes if a is analysis][0]
+    assert box.top() >= plot.plot_rect().top() - 1.0
+    assert plot.data_y()[1] > plot._curves_y()[1]
+    assert plot.data_y()[0] == pytest.approx(plot._curves_y()[0])
+    # dragging the label holds the frame still until it is let go
+    held = plot.data_y()
+    plot._move = {"objs": [analysis]}
+    analysis.label_dy = -150.0
+    assert plot.data_y() == held
+    plot._move = None
+    assert plot.data_y()[1] > held[1]
+
+
+def test_f_fits_a_label_below_its_curve_too(window):
+    plot = window.plot
+    analysis = _analysis_at_the_extreme(window, -1.0, 90.0)
+    plot.fit()
+    plot.grab()
+    box = [b for a, b in plot._analysis_boxes if a is analysis][0]
+    assert box.bottom() <= plot.plot_rect().bottom() + 1.0
+
+
+def test_the_outliner_has_the_data_a_line_and_the_decorators(window, qapp):
+    from PySide6.QtGui import QColor, QImage
+    from dscpanel.ui import outliner as outliner_module
+    doc, tree = window.doc, window.outliner
+    scan = doc.scans[0]
+    scan._analyses = None
+    scan.sample.data["analyses"] = {
+        "Ramp 10,00 C/min to 250 C #1": {
+            "Onset point": [{"segment": 1, "Onset x": "61,08 °C"}]}}
+    assert scan.analysis_objects
+    free = window.add_label("Free\nand a second line")
+    owned = window.add_label("Mine", scan=scan)
+    picture = QImage(40, 20, QImage.Format_ARGB32)
+    picture.fill(QColor("#336699"))
+    image = window.add_image(picture, at=QPointF(300, 200))
+    structure = model.MoleculeArtist(doc._next_id(), "CCO",
+                                     {"atoms": [], "bonds": []})
+    doc.structures.append(structure)
+    doc.offset_markers = True
+    window.refresh()
+    keys = [tree._key(tree.topLevelItem(i))[0]
+            for i in range(tree.topLevelItemCount())]
+    assert keys == ["sample", "separator", "decorators"]
+    assert tree.topLevelItem(1).flags() == Qt.NoItemFlags
+    group = tree.topLevelItem(2)
+    assert group.text(0) == "Decorators" and group.isExpanded()
+    names = [group.child(i).text(0) for i in range(group.childCount())]
+    assert names == ["Heat-flow arrow", "Legend", "Free ...", "Picture",
+                     "CCO"]
+    # what belongs to a trace hangs under it: analyses, its labels, marker
+    sample_row = tree.topLevelItem(0)
+    assert sample_row.isExpanded()          # a new file opens unfolded
+    scan_row = next(sample_row.child(i) for i in range(sample_row.childCount())
+                    if tree._object(sample_row.child(i)) is scan)
+    under = [tree._object(scan_row.child(i))
+             for i in range(scan_row.childCount())]
+    assert scan.analysis_objects[0] in under and owned in under
+    assert scan.marker in under and free not in under
+
+    def row_of(obj):
+        return next(item for item in tree._items() if tree._object(item) is obj)
+
+    # a row selects its object, the group selects all of them
+    tree.clearSelection()
+    row_of(image).setSelected(True)
+    assert doc.selected() == [image]
+    tree.clearSelection()
+    group.setSelected(True)
+    assert set(map(id, doc.selected())) == set(
+        map(id, outliner_module.decorators(doc)))
+    # and its box hides it, undoably
+    row_of(image).setCheckState(0, Qt.Unchecked)
+    for _ in range(3):
+        qapp.processEvents()
+    assert image.visible is False
+    window.undo.undo()
+    assert image.visible is True
+    tree.grab()                              # the line paints
+
+
+# ------------------------------- round 23: structures, parents, size, presets
+def test_a_structure_labels_in_arial_rounded_and_by_element(window):
+    """Christian, round 23: Arial Rounded MT and colour by element are the
+    defaults for a structure's element labels."""
+    from dscpanel.core import style
+    doc, plot = window.doc, window.plot
+    molecule = model.MoleculeArtist(doc._next_id(), "CCO",
+                                    {"atoms": [], "bonds": []})
+    assert molecule.colour_by_element is True
+    assert molecule.label_font is None             # follows the house style
+    assert style.value(doc, molecule, "label_font") == "Arial Rounded MT"
+    assert plot.molecule_font(molecule).families()[0] == "Arial Rounded MT"
+    # the figure's column reaches it; empty there means the figure's font
+    doc.style.structure_font = ""
+    assert plot.molecule_font(molecule).families()[0] == \
+        plot.figure_font().families()[0]
+    molecule.label_font = "Consolas"               # its own wins
+    assert plot.molecule_font(molecule).families()[0] == "Consolas"
+
+
+def _owned_setup(window):
+    """A free label, drawn, and the first scan; the view pinned so pixels
+    compare across offset changes."""
+    plot = window.plot
+    scan = window.doc.scans[0]
+    label = window.add_label("A", at=QPointF(300.0, 200.0))
+    plot.grab()
+    plot.set_view_y(*plot.view_y())
+    plot.set_view_x(*plot.view_x())
+    return plot, scan, label
+
+
+def test_giving_a_label_to_a_scan_keeps_it_in_place_and_it_follows(window):
+    """Parenting (Christian, round 23): the label stays where it is drawn,
+    and from then on moves with its scan's offset."""
+    plot, scan, label = _owned_setup(window)
+    scan.offset = 0.3
+    window.refresh()
+    before = plot.artist_point(label)
+    assert window.parent_labels([label], scan) == 1
+    assert label.scan is scan and label in window.doc.labels_for(scan)
+    assert plot.artist_point(label) == pytest.approx(before)
+    # the scan moves by 0.5: the label moves exactly as far as the curve
+    curve_before = plot.y_to_px(0.0 + scan.offset)
+    scan.offset = 0.8
+    moved = plot.y_to_px(0.0 + scan.offset) - curve_before
+    assert plot.artist_point(label)[1] == pytest.approx(before[1] + moved)
+    assert plot.artist_point(label)[0] == pytest.approx(before[0])
+    # freeing it keeps it where it now is
+    here = plot.artist_point(label)
+    window.parent_labels([label], None)
+    assert label.scan is None and label.parent_offset is None
+    assert plot.artist_point(label) == pytest.approx(here)
+    scan.offset = 0.0
+    assert plot.artist_point(label) == pytest.approx(here)   # free: stays
+    # each was ONE step
+    window.undo.undo()
+    assert label.scan is scan
+    window.undo.undo()
+    assert label.scan is None
+
+
+def test_ctrl_p_gives_the_selected_labels_to_the_selected_scan(window):
+    plot, scan, label = _owned_setup(window)
+    window.doc.select_only([label, scan])
+    assert window.run_op("label.parent")
+    assert label.scan is scan
+    window.doc.select_only([label])
+    assert window.run_op("label.unparent")
+    assert label.scan is None
+    window.doc.select_only([label, scan, window.doc.scans[1]])
+    assert not window.run_op("label.parent")       # which scan? not said
+
+
+def test_g_moves_a_label_with_its_scan_once_not_twice(window):
+    plot, scan, label = _owned_setup(window)
+    window.parent_labels([label], scan)
+    window.doc.select_only([scan, label])
+    assert plot.start_grab()
+    assert plot._move["objs"] == [scan]            # the label rides along
+    plot._finish_move(cancel=True)
+
+
+def test_a_label_row_dropped_on_a_scan_gives_it_to_that_scan(window, qapp):
+    plot, scan, label = _owned_setup(window)
+    tree = window.outliner
+    window.refresh()
+
+    def row_of(obj):
+        return next(item for item in tree._items()
+                    if tree._object(item) is obj)
+
+    tree.clearSelection()
+    row_of(label).setSelected(True)
+    assert tree.dragged_labels() == [label]
+    # only label rows drag at all
+    assert row_of(label).flags() & Qt.ItemIsDragEnabled
+    assert not row_of(scan).flags() & Qt.ItemIsDragEnabled
+    assert tree.drop_target(row_of(scan)) == (True, scan)
+    assert tree.drop_target(tree.topLevelItem(0)) == (False, None)  # a file
+    assert tree.drop_labels_on(row_of(scan))
+    for _ in range(3):
+        qapp.processEvents()
+    assert label.scan is scan
+    # now under the scan; dropped on the Decorators, it is free again
+    tree.clearSelection()
+    row_of(label).setSelected(True)
+    decorators = next(item for item in tree._items()
+                      if tree._key(item) == ("decorators", 0))
+    assert tree.drop_labels_on(decorators)
+    for _ in range(3):
+        qapp.processEvents()
+    assert label.scan is None
+
+
+def test_a_label_menu_says_which_scan_it_belongs_to(window):
+    from PySide6.QtWidgets import QMenu
+    plot, scan, label = _owned_setup(window)
+    window.parent_labels([label], scan)
+    menu = QMenu(window)
+    owner = window._label_menu(menu, label)
+    entries = [a for a in owner.actions() if a.text()]
+    assert entries[0].text() == "No scan (free)" and not entries[0].isChecked()
+    chosen = [a.text() for a in entries if a.isChecked()]
+    assert chosen == [scan.display_name()]
+    entries[0].trigger()
+    assert label.scan is None
+
+
+def test_an_owned_label_survives_a_save_and_a_unit_change(window, tmp_path,
+                                                         sample):
+    from dscpanel.core import session
+    plot, scan, label = _owned_setup(window)
+    scan.offset = 0.2
+    window.parent_labels([label], scan)         # given at 0.2...
+    scan.offset = 0.4                           # ...and followed it to 0.4
+    window.refresh()
+    path = tmp_path / "owned.dscpanel"
+    session.save(window.doc, str(path))
+    reopened, _problems = session.load(
+        str(path), lambda _p: model.Sample(sample.path, sample.data))
+    again = reopened.labels[0]
+    assert again.scan is not None and again.follow() == pytest.approx(0.2)
+    # an old session (no parent_offset) stays where it was drawn
+    import json
+    state = json.loads(path.read_text(encoding="utf-8"))
+    del state["labels"][0]["parent_offset"]
+    path.write_text(json.dumps(state), encoding="utf-8")
+    older, _problems = session.load(
+        str(path), lambda _p: model.Sample(sample.path, sample.data))
+    assert older.labels[0].follow() == 0.0
+    # W/g to mW: the record converts with the offset, nothing jumps
+    changes = window.doc.set_unit(units.UNIT_MW)
+    converted = dict(((id(o), a), v) for o, a, v in changes)
+    factor = converted[(id(scan), "offset")] / 0.4
+    assert converted[(id(label), "parent_offset")] == pytest.approx(
+        label.parent_offset * factor)
+
+
+def test_the_driver_places_an_owned_label_where_it_is_drawn(window):
+    plot, scan, label = _owned_setup(window)
+    label.space = model.SPACE_DATA
+    label.x, label.y = 100.0, 0.2
+    window.parent_labels([label], scan)
+    scan.offset = 0.5
+    x, y, transform = export._placed(window.doc, label)
+    assert transform == "ax.transData" and y == pytest.approx(0.7)
+
+
+def test_a_double_click_on_a_page_handle_asks_for_the_size(window):
+    plot = window.plot
+    plot.grab()
+    plot._page_handles_shown = True
+    square = dict(plot.page_handles())[(1.0, 1.0)]
+    at = (square.center().x(), square.center().y())
+    asked = []
+    plot.page_size_asked.disconnect(window.ask_page_size)
+    plot.page_size_asked.connect(lambda: asked.append(True))
+    plot.activated.disconnect(window.edit_object)
+    opened = []
+    plot.activated.connect(opened.append)
+    try:
+        plot.mousePressEvent(_press(plot, at))
+        plot.mouseReleaseEvent(_release(plot, at))
+        plot.mousePressEvent(_press(plot, at))
+        plot.mouseDoubleClickEvent(_double(plot, at))
+        plot.mouseReleaseEvent(_release(plot, at))
+    finally:
+        plot.activated.disconnect(opened.append)
+        plot.activated.connect(window.edit_object)
+        plot.page_size_asked.connect(window.ask_page_size)
+    assert asked == [True] and opened == []
+    assert window.doc.figure.mode != "size"        # nothing changed yet
+
+
+def test_the_size_pop_up_keeps_the_aspect_ratio(window):
+    from dscpanel.core import figure
+    plot = window.plot
+    plot.grab()
+    dialog = window.page_size_dialog()
+    width, height, unit = dialog.values()
+    canvas_w, canvas_h = plot.canvas_size()
+    assert unit == "cm"
+    assert width == pytest.approx(canvas_w / figure.DESIGN_DPI * 2.54,
+                                  abs=0.001)
+    ratio = width / height
+    dialog.width_edit.setText("8.5")
+    dialog._typed("width")
+    assert dialog.values()[1] == pytest.approx(8.5 / ratio, abs=0.001)
+    dialog.height_edit.setText("5")
+    dialog._typed("height")
+    assert dialog.values()[0] == pytest.approx(5 * ratio, abs=0.001)
+    # in inches, the same page
+    dialog.unit_box.setCurrentIndex(1)
+    assert dialog.values()[2] == "in"
+    assert dialog.values()[1] == pytest.approx(5 / 2.54, abs=0.001)
+    # free: the ratio follows the two numbers
+    dialog.keep.setChecked(False)
+    dialog.width_edit.setText("4")
+    dialog._typed("width")
+    assert dialog.values()[1] == pytest.approx(5 / 2.54, abs=0.001)
+    shown_w, shown_h, _unit = dialog.values()
+    assert "{:.4g}".format(shown_w / shown_h) in dialog.ratio_note.text()
+    # a page smaller than its margins is refused
+    dialog.width_edit.setText("0,5")
+    dialog.accept()
+    assert dialog.result() == 0 and "d04040" in dialog.width_edit.styleSheet()
+
+
+def test_a_typed_size_makes_the_figure_exact_as_one_step(window):
+    from dscpanel.core import figure
+    plot = window.plot
+    plot.grab()
+    drawn = plot.margins()
+    layout = window.doc.figure
+    assert plot.layout_mode() == figure.MODE_WINDOW
+    window.set_page_size(8.5, 6.0, "cm")
+    assert layout.mode == figure.MODE_SIZE
+    assert (layout.width, layout.height, layout.unit) == (8.5, 6.0, "cm")
+    # the margins it was drawn with, so the axes box keeps its room
+    assert layout.margin_left * figure.DESIGN_DPI / 2.54 >= drawn[0] - 1e-6
+    plot.grab()
+    assert plot.canvas_size()[0] == pytest.approx(
+        8.5 / 2.54 * figure.DESIGN_DPI)
+    window.undo.undo()
+    assert layout.mode == figure.MODE_WINDOW
+
+
+def test_a_style_preset_carries_a_look_to_another_figure(window):
+    from dscpanel.core import figure, presets, style
+    doc = window.doc
+    doc.style.font_family = "Arial"
+    doc.style.analysis_size = 7.0
+    doc.figure.mode, doc.figure.width, doc.figure.height = (
+        figure.MODE_SIZE, 8.25, 6.0)
+    window.ask_preset_name = lambda: ("ACS column", True)
+    made = window.save_preset()
+    assert made is not None and os.path.isfile(made.path)
+    assert made.path.endswith(".dscstyle")
+    # every setting, resolved - not "follow the defaults"
+    assert made.values["caption_size"] == style.builtin("caption_size")
+    found, problems = presets.available()
+    assert [p.name for p in found] == ["ACS column"] and not problems
+    # another figure takes it in one step
+    window.new_figure()
+    other = window.doc
+    assert other is not doc
+    assert window.apply_preset(found[0]) > 0
+    assert other.style.font_family == "Arial"
+    assert other.style.analysis_size == 7.0
+    assert other.figure.mode == figure.MODE_SIZE
+    assert other.figure.width == pytest.approx(8.25)
+    window.undo.undo()
+    assert other.style.font_family is None and other.figure.mode != "size"
+
+
+def test_a_partial_or_broken_preset_file(window, tmp_path):
+    import json
+    from dscpanel.core import presets
+    partial = tmp_path / "Poster.dscstyle"
+    partial.write_text(json.dumps({
+        "format": "style-preset", "version": 1, "name": "Poster",
+        "style": {"caption_size": 24, "no_such_setting": 3,
+                  "analysis_flush": "sideways", "pick_radius": 40}}),
+        encoding="utf-8")
+    broken = tmp_path / "broken.dscstyle"
+    broken.write_text("{not json", encoding="utf-8")
+    preset = presets.read(str(partial))
+    # unknown, illegal and handling settings are left out
+    assert preset.values == {"caption_size": 24.0} and preset.layout is None
+    with pytest.raises(ValueError):
+        presets.read(str(broken))
+    # dropped on the window: installed and applied, style only
+    window.doc.style.label_size = 9.0
+    made = window.install_preset(str(partial))
+    assert os.path.dirname(made.path) == presets.folder()
+    assert window.doc.style.caption_size == 24.0
+    assert window.doc.style.label_size == 9.0       # left as it was
+    assert window.install_preset(str(broken)) is None
+    # the menu lists it, then saving and the folder
+    from PySide6.QtWidgets import QMenu
+    menu = window._fill_presets_menu(QMenu(window))
+    texts = [a.text() for a in menu.actions() if a.text()]
+    assert texts[0] == "Poster"
+    assert texts[-2:] == ["Save this figure's style as a preset...",
+                          "Open the style presets folder"]
+    assert "Style presets" in window.menus
+
+
+# --------------------- round 24: sharpness, S on scans, themes, notes, wedges
+def test_a_scaled_page_is_thinned_at_the_screens_resolution(window):
+    """The curve is reduced per DEVICE column of the page as shown: an
+    exact figure scaled 1.4 onto the pane had 1.4-pixel treads (round 24)."""
+    from dscpanel.core import figure
+    plot = window.plot
+    layout = window.doc.figure
+    layout.mode, layout.unit, layout.width, layout.height = (
+        figure.MODE_SIZE, "cm", 5.0, 3.5)          # smaller than the pane
+    window.refresh()
+    plot.grab()
+    rect = plot.plot_rect()
+    k = plot.page()[2]
+    assert k > 1.2
+    assert plot.columns(rect) == int(round(rect.width() * k
+                                           * plot.devicePixelRatioF()))
+
+
+def test_the_frame_is_antialiased_unless_it_lands_on_whole_pixels(qapp):
+    from PySide6.QtGui import QImage, QPainter
+    from dscpanel.ui.plot import PlotWidget
+    image = QImage(40, 40, QImage.Format_ARGB32)
+    painter = QPainter(image)
+    assert PlotWidget._crisp(painter)               # 1:1 - crisp
+    painter.scale(1.4, 1.4)
+    assert not PlotWidget._crisp(painter)           # 1.4 - antialiased
+    painter.end()
+
+
+def test_figure_text_is_laid_out_without_hinting(window):
+    from PySide6.QtGui import QFont
+    assert (window.plot.figure_font().hintingPreference()
+            == QFont.PreferNoHinting)
+
+
+def test_s_on_scans_spreads_them_evenly_about_zero(window):
+    """Christian, round 24: S with only scans selected gives evenly spaced
+    offsets, y = 0 the neutral line."""
+    plot, doc = window.plot, window.doc
+    first, second = doc.scans
+    first.offset, second.offset = 1.0, 0.3
+    window.refresh()
+    plot.grab()
+    doc.select_only([first, second])
+    plot._cursor = QPointF(300.0, plot.y_to_px(0.0) - 80.0)
+    assert window.run_op("transform.scale")
+    state = plot._scale
+    assert state["mode"] == "spread"
+    # ordered by offset; the one nearest zero sits ON zero
+    assert state["scans"] == [second, first]
+    assert second.offset == 0.0
+    assert first.offset == pytest.approx(0.7)       # the old spacing
+    # twice as far from zero, twice the step
+    plot._update_transform(QPointF(300.0, state["zero"] - 160.0))
+    assert first.offset == pytest.approx(1.4)
+    # a typed number is the step itself
+    state["typed"] = "0.5"
+    plot._update_transform()
+    assert (second.offset, first.offset) == (0.0, 0.5)
+    plot._finish_transform()
+    assert plot._scale is None
+    assert (second.offset, first.offset) == (0.0, 0.5)
+    window.undo.undo()                              # one step
+    assert (first.offset, second.offset) == (1.0, 0.3)
+    # Esc puts them back; overlaid scans start from the tallest curve
+    first.offset = second.offset = 0.0
+    window.refresh()
+    plot.grab()
+    assert plot.start_scale()
+    assert plot._scale["step"] > 0 and first.offset == 0.0
+    assert second.offset == pytest.approx(plot._scale["step"])
+    plot._finish_transform(cancel=True)
+    assert (first.offset, second.offset) == (0.0, 0.0)
+    # with an artist in the selection it is the ordinary S
+    doc.select_only([first, second, doc.arrow])
+    assert plot.start_scale() and plot._scale["mode"] == "scale"
+    plot._finish_transform(cancel=True)
+
+
+def test_the_offset_arrow_and_the_boombox_theme(window):
+    from dscpanel.ui import appearance, plot as plot_module
+    plot = window.plot
+    window.doc.scans[1].offset = 0.4
+    window.doc.select_only([window.doc.scans[1]])
+    window.refresh()
+    plot.grab()                                     # the capped arrow draws
+    window.set_theme(plot_module.THEME_BOOMBOX)
+    assert plot_module.THEME == "boombox"
+    assert plot_module._BG.name() == "#2a2d31"
+    assert plot_module._SELECT.name() == "#39ff7a"
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtGui import QPalette
+    assert QApplication.instance().palette().color(
+        QPalette.Window).name() == "#232323"
+    assert appearance.applied() == "boombox"
+    plot.grab()
+    # an export is still on paper
+    with plot_module.paper_palette(plot, True):
+        assert plot_module._BG.lightness() > 200
+    window.set_theme(plot_module.THEME_DARK)
+
+
+def test_clear_parent_is_alt_p(window):
+    assert window.ops.get("label.unparent").key == "Alt+P"
+    assert window.ops.get("label.parent").key == "Ctrl+P"
+
+
+def test_a_preset_carries_the_arrow_and_the_axes(window):
+    import json
+    from dscpanel.core import presets
+    doc = window.doc
+    doc.arrow.x, doc.arrow.y = 0.8, 0.2
+    doc.axes["y"].label = "Heat flow / W g$^{-1}$"
+    doc.axes["x"].label_gap = 20.0
+    doc.legend.visible = True
+    window.ask_preset_name = lambda: ("Frame", False)
+    made = window.save_preset()
+    assert made.objects["arrow"]["x"] == 0.8
+    assert made.layout is None                      # size not asked for
+    window.new_figure()
+    other = window.doc
+    assert window.apply_preset(presets.read(made.path)) > 0
+    assert (other.arrow.x, other.arrow.y) == (0.8, 0.2)
+    assert other.axes["y"].label == "Heat flow / W g$^{-1}$"
+    assert other.axes["x"].label_gap == 20.0
+    assert other.legend.visible is True
+    # the direction is the data's: never carried
+    assert "direction" not in made.objects["arrow"]
+    # a hand-edited file: illegal values are left out
+    state = json.loads(open(made.path, encoding="utf-8").read())
+    state["objects"]["axis_x"]["side"] = "left"     # not an x side
+    state["objects"]["arrow"]["x"] = "far"
+    state["objects"]["arrow"]["y"] = True
+    state["objects"]["legend"]["anchor"] = "top left"
+    read = presets.from_state(state)
+    assert "side" not in read.objects["axis_x"]
+    assert "x" not in read.objects["arrow"] and "y" not in read.objects[
+        "arrow"]
+    assert read.objects["legend"]["anchor"] == "top left"
+
+
+def test_a_structure_draws_its_stereocentres_as_wedges(window):
+    from dscpanel.core import chem
+    if not chem.available():
+        pytest.skip("RDKit")
+    drawing = chem.layout("C[C@H](N)C(=O)O")
+    stereo = [b for b in drawing["bonds"] if b.get("stereo")]
+    assert len(stereo) == 1 and stereo[0]["stereo"] in ("wedge", "hash")
+    # the stereocentre is the narrow end: its atom is the chiral carbon
+    assert drawing["atoms"][stereo[0]["a"]]["el"] == "C"
+    assert not [b for b in chem.layout("CC(N)C(=O)O")["bonds"]
+                if b.get("stereo")]                  # none without @
+    made = window.add_molecule(
+        "OC[C@H]1O[C@@H](O)[C@H](O)[C@@H](O)[C@@H]1O")
+    kinds = sorted(b["stereo"] for b in made.bonds if b.get("stereo"))
+    assert "wedge" in kinds and "hash" in kinds
+    window.plot.grab()                               # both kinds draw
+
+
+def test_a_note_points_at_a_curve_and_follows_its_scan(window, tmp_path,
+                                                       sample):
+    """Christian, round 24: a label with an arrow to a point. Made on a
+    curve, it points at the curve and belongs to that scan."""
+    from dscpanel.core import session
+    plot, doc = window.plot, window.doc
+    plot.grab()
+    trace = plot.traces[0]
+    i = len(trace.px) // 3
+    on_curve = QPointF(float(trace.px[i]), float(trace.py[i]))
+    note = window.add_note("melt", at=on_curve)
+    assert note.scan is trace.scan and note.leader is not None
+    plot.grab()
+    tip = plot.leader_tip(note)
+    assert (tip.x(), tip.y()) == (pytest.approx(on_curve.x(), abs=0.5),
+                                  pytest.approx(on_curve.y(), abs=0.5))
+    # the scan moves: the tip and the text move with it
+    plot.set_view_y(*plot.view_y())
+    before_tip, before_text = plot.leader_tip(note), plot.artist_point(note)
+    trace.scan.offset += 0.2
+    lift = plot.y_to_px(0.2) - plot.y_to_px(0.0)
+    assert plot.leader_tip(note).y() == pytest.approx(before_tip.y() + lift)
+    assert plot.artist_point(note)[1] == pytest.approx(before_text[1] + lift)
+    trace.scan.offset -= 0.2
+    window.refresh()
+    plot.grab()
+    # selected, its tip is dragged by the ring - one undo step
+    doc.select_only([note])
+    plot.grab()
+    tip = plot.leader_tip(note)
+    start = plot.to_widget(tip)
+    end = plot.to_widget(QPointF(tip.x() + 60.0, tip.y() - 70.0))
+    old = list(note.leader)
+    plot.mousePressEvent(_press(plot, (start.x(), start.y())))
+    assert plot._leader_drag is not None
+    plot.mouseMoveEvent(_move(plot, (end.x(), end.y())))
+    plot.mouseReleaseEvent(_release(plot, (end.x(), end.y())))
+    assert note.leader != old
+    window.undo.undo()
+    assert note.leader == old
+    # listed as a note; saved and read back; written as annotate
+    window.refresh()
+    rows = [item for item in window.outliner._items()
+            if window.outliner._object(item) is note]
+    assert rows and rows[0].text(1) == "note"
+    path = tmp_path / "note.dscpanel"
+    session.save(doc, str(path))
+    again, _problems = session.load(
+        str(path), lambda _p: model.Sample(sample.path, sample.data))
+    assert again.labels[0].leader == pytest.approx(note.leader)
+    source = export.driver_source(doc)
+    assert "ax.annotate('melt', xy=(" in source and "arrowprops" in source
+    # freed from its scan, the tip stays where it points
+    here = plot.leader_tip(note)
+    window.parent_labels([note], None)
+    assert note.scan is None
+    assert plot.leader_tip(note).y() == pytest.approx(here.y())
+
+
+def test_a_label_becomes_a_note_in_its_settings(window):
+    from dscpanel.ui.dialogs import LabelSettings
+    label = window.add_label("plain", at=QPointF(300.0, 200.0))
+    window.plot.grab()
+    dialog = LabelSettings(window, label)
+    assert not dialog.leader.isChecked()
+    dialog.leader.setChecked(True)
+    assert label.leader is not None
+    dialog.leader.setChecked(False)
+    assert label.leader is None
+    dialog.revert()

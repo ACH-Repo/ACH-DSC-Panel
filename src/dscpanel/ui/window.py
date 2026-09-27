@@ -14,11 +14,12 @@ over what a gesture did (`transform_done`) rather than writing history itself.
 
 import contextlib
 import json
+import math
 import os
 import re
 import sys
 
-from PySide6.QtCore import QByteArray, QPoint, QRectF, Qt
+from PySide6.QtCore import QByteArray, QPoint, QPointF, QRectF, Qt
 from PySide6.QtGui import (QAction, QColor, QCursor, QImage, QKeySequence,
                            QPainter)
 from PySide6.QtWidgets import (QApplication, QColorDialog, QDialog,
@@ -27,15 +28,16 @@ from PySide6.QtWidgets import (QApplication, QColorDialog, QDialog,
                                QStackedWidget, QTabWidget, QWidget)
 
 from .. import branding
-from ..core import (arrange, export, loader, measure, model, ops, session,
-                    style, undo, units)
+from ..core import (arrange, export, loader, measure, model, ops, presets,
+                    session, style, undo, units)
 from ..core.log import LOGGER
 from ..core import figure as figure_module
 from .dialogs import (AnalysisSettings, ArrowSettings, AxisSettings,
                       CaptionSettings, FigureSettings, LabelSettings,
                       ExportDialog, ImageSettings, LegendSettings,
                       MoleculeSettings, NumberSettings,
-                      OffsetMarkerSettings, RangeDialog, SampleSettings,
+                      OffsetMarkerSettings, PageSizeDialog,
+                      PresetSaveDialog, RangeDialog, SampleSettings,
                       ScanSettings, install_basic_colours)
 from . import appearance
 from .loading import Loader
@@ -142,6 +144,9 @@ class MainWindow(QMainWindow):
         self.outliner.activated_object.connect(self.edit_object)
         self.outliner.menu_for.connect(
             lambda obj, pos: self._context_menu(obj, pos))
+        # Label rows dropped on a scan (or the Decorators): parenting.
+        self.outliner.parent_requested.connect(
+            lambda labels, scan: self.parent_labels(labels, scan))
 
         self.ops = ops.OperatorRegistry()
         self._last_operator = ""
@@ -213,6 +218,7 @@ class MainWindow(QMainWindow):
         plot.view_committed.connect(self._view_committed)
         plot.selection_changed.connect(self._selection_changed)
         plot.activated.connect(self.edit_object)
+        plot.page_size_asked.connect(self.ask_page_size)
 
     def new_figure(self, doc=None):
         """A new tab with an empty figure (or `doc`), made current."""
@@ -567,10 +573,13 @@ class MainWindow(QMainWindow):
         # arrow, the legend, a label. Christian, round 16.
         r("transform.scale", "Scale the selection", lambda c: c.plot.start_scale(),
           category="Transform", key="S",
-          shortcut="S, then move or type a factor, Enter (Esc cancels)",
-          enabled=lambda c: any(c.plot.scale_fields(o)
-                                for o in c.doc.selected()),
-          aliases=("size", "bigger", "smaller", "resize", "grow"))
+          shortcut="S, then move or type a factor, Enter (Esc cancels); "
+                   "with only scans selected, spreads them about y = 0",
+          enabled=lambda c: (any(c.plot.scale_fields(o)
+                                 for o in c.doc.selected())
+                             or c.spreadable()),
+          aliases=("size", "bigger", "smaller", "resize", "grow", "spread",
+                   "spacing", "stack", "even"))
         # ChemDraw's alignment of what is drawn on the figure (Christian,
         # round 19): edges to the outermost one, centres to the middle of
         # them all.
@@ -690,11 +699,13 @@ class MainWindow(QMainWindow):
               "Y axis: {}".format(unit),
               (lambda u: lambda c: c.set_unit(u))(unit), category="View",
               enabled=(lambda u: lambda c: c.doc.y_unit != u)(unit))
-        for theme in (plot_module.THEME_DARK, plot_module.THEME_LIGHT):
+        for theme in (plot_module.THEME_DARK, plot_module.THEME_LIGHT,
+                      plot_module.THEME_BOOMBOX):
             r("view.theme_" + theme.replace("-", "_"),
               "Theme: {}".format(theme),
               (lambda name: lambda c: c.set_theme(name))(theme),
-              category="View", aliases=("dark", "light", "colours"),
+              category="View", aliases=("dark", "light", "colours",
+                                        "boombox", "owb", "green"),
               enabled=(lambda name: lambda c: c.doc.theme != name)(theme))
         r("view.outliner", "Show or hide the outliner",
           lambda c: c._outliner_dock.setVisible(
@@ -746,6 +757,25 @@ class MainWindow(QMainWindow):
         r("label.add", "Add a label...", lambda c: c.add_label(),
           category="Object", key="Ctrl+T", shortcut="Ctrl+T",
           aliases=("text", "caption", "annotate", "title"))
+        r("label.note", "Add a note with an arrow...",
+          lambda c: c.add_note(), category="Object", key="Ctrl+Shift+T",
+          shortcut="Ctrl+Shift+T, or right-click a curve",
+          aliases=("note", "callout", "annotate", "arrow", "leader",
+                   "pointer", "comment"))
+        # Blender's Ctrl+P and Alt+P (Christian, round 24: Help needs no
+        # key of its own).
+        r("label.parent", "Give the selected labels to the selected scan",
+          lambda c: c.parent_selected(), category="Object", key="Ctrl+P",
+          shortcut="Ctrl+P, or drag the label onto the scan in the outliner",
+          enabled=lambda c: (bool(c.selected_labels())
+                             and len(c.doc.selected_scans()) == 1),
+          aliases=("parent", "attach", "belongs to", "owner", "link"))
+        r("label.unparent", "Free the selected labels from their scan",
+          lambda c: c.unparent_selected(), category="Object",
+          key="Alt+P", shortcut="Alt+P",
+          enabled=lambda c: any(lb.scan is not None
+                                for lb in c.selected_labels()),
+          aliases=("unparent", "clear parent", "detach", "free"))
         for which in ("x", "y"):
             for part, words in (("spine", "axis: ticks and frame"),
                                 ("numbers", "axis numbers"),
@@ -778,6 +808,16 @@ class MainWindow(QMainWindow):
           lambda c: c.edit_figure(), category="Edit",
           aliases=("size", "aspect ratio", "width", "height", "margins",
                    "centimetres", "inches", "page", "export size", "word"))
+        r("style.preset_apply", "Apply a style preset...",
+          lambda c: c.choose_preset(), category="Edit",
+          aliases=("preset", "style", "template", "look", "thesis",
+                   "journal", "poster"))
+        r("style.preset_save", "Save this figure's style as a preset...",
+          lambda c: c.save_preset(), category="Edit",
+          aliases=("preset", "style", "template", "look", "house style"))
+        r("style.preset_folder", "Open the style presets folder",
+          lambda c: c.open_presets_folder(), category="Edit",
+          aliases=("preset", "share", "copy", "folder"))
         r("app.settings", "Settings...", lambda c: c.open_settings(),
           category="App", key="Ctrl+,", shortcut="Ctrl+,",
           aliases=("preferences", "defaults", "house style", "font size",
@@ -816,9 +856,10 @@ class MainWindow(QMainWindow):
                    "select.all",
                    "select.none", "select.invert", "select.same_sample",
                    None, "figure.layout", "app.settings",
+                   ("Style presets", "presets"),
                    ("Theme", ("view.theme_blender_default",
-                              "view.theme_light")))),
-        ("Hel&p", ("app.log", "app.about")),
+                              "view.theme_light", "view.theme_boombox")))),
+        ("Help", ("app.log", "app.about")),
     )
 
     def _build_menus(self):
@@ -849,6 +890,13 @@ class MainWindow(QMainWindow):
         for op_id in ids:
             if op_id is None:
                 menu.addSeparator()
+                continue
+            if isinstance(op_id, tuple) and op_id[1] == "presets":
+                # Filled from the presets folder each time it opens.
+                submenu = menu.addMenu(op_id[0])
+                self.menus[op_id[0]] = submenu
+                submenu.aboutToShow.connect(
+                    (lambda m: lambda: self._fill_presets_menu(m))(submenu))
                 continue
             if isinstance(op_id, tuple):
                 submenu = menu.addMenu(op_id[0])
@@ -983,6 +1031,8 @@ class MainWindow(QMainWindow):
             scan = menu.addAction("Settings for {}...".format(
                 obj.scan.display_name()))
             scan.triggered.connect(lambda _c=False: self.edit_object(obj.scan))
+        elif isinstance(obj, model.TextLabel):
+            self._label_menu(menu, obj)
         elif isinstance(obj, model.Sample):
             act = menu.addAction("Sample settings for {}...".format(obj.name))
             act.triggered.connect(lambda _c=False: self.edit_sample(obj))
@@ -1001,12 +1051,13 @@ class MainWindow(QMainWindow):
             menu.exec(pos if isinstance(pos, QPoint) else QPoint(pos))
 
     def _scan_menu(self, menu, scan):
-        """Two entries, and only two.
+        """Four entries, and only these.
 
         Everything else a right-click used to offer is in the outliner, the
         menus or F3 already, and Christian's report was blunt: the menu that
         pops up on a curve should be small. The molar mass stays because it
-        is the one thing worth reaching for without leaving the curve.
+        is the one thing worth reaching for without leaving the curve; a
+        label and a note (round 24) because they are made AT the curve.
         """
         act = menu.addAction("Settings for {}...".format(scan.display_name()))
         act.triggered.connect(lambda _c=False: self.edit_object(scan))
@@ -1014,6 +1065,12 @@ class MainWindow(QMainWindow):
         molar.triggered.connect(lambda _c=False: self.ask_molar_mass([scan]))
         caption = menu.addAction("Add a label...")
         caption.triggered.connect(lambda _c=False: self.add_label(scan=scan))
+        # Where the right-click was: the pointer leaves the plot for the
+        # menu, and the note must point at the curve, not at the menu.
+        at = (QPointF(self.plot._cursor) if self.plot._cursor is not None
+              else None)
+        note = menu.addAction("Add a note with an arrow here...")
+        note.triggered.connect(lambda _c=False: self.add_note(at=at))
 
     def _menu_op(self, menu, op_id):
         op = self.ops.get(op_id)
@@ -1431,6 +1488,14 @@ class MainWindow(QMainWindow):
         # an alignment any more than it steers the fit.
         return scan.kept_curve(self.doc.x_axis, self.doc.y_unit,
                           self.doc.exo, self.doc.x_unit)
+
+    def spreadable(self):
+        """S spreads the selection when it is scans and nothing else, two
+        or more of them drawn (`PlotWidget.start_spread`)."""
+        chosen = self.doc.selected()
+        return (len([s for s in chosen if isinstance(s, model.Scan)
+                     and s.visible]) >= 2
+                and all(isinstance(o, model.Scan) for o in chosen))
 
     def stack_selected(self):
         scans = self.doc.selected_scans() or self.doc.visible_scans()
@@ -1961,6 +2026,274 @@ class MainWindow(QMainWindow):
         self.refresh()
         return label
 
+    def add_note(self, text=None, at=None):
+        """A NOTE: a label with an arrow to a point (Christian, round 24).
+
+        The arrow's tip goes where the pointer is (or `at`, figure units);
+        on a curve, onto the curve, and the note then belongs to that scan,
+        so it moves with it. The text starts up and to the right of the
+        tip. The tip is moved by its handle while the note is selected, and
+        snaps onto a curve near it. One undo step.
+        """
+        from PySide6.QtWidgets import QInputDialog as _Input
+        if text is None:
+            text, ok = _Input.getText(self, "Add a note", "Text:")
+            if not ok or not text.strip():
+                return None
+            text = text.strip()
+        plot = self.plot
+        rect = plot.plot_rect()
+        tip = QPointF(at if at is not None
+                      else (plot._cursor or rect.center()))
+        near = plot.curve_point_near(tip)
+        scan = None
+        if near is not None:
+            tip, trace = near
+            scan = trace.scan
+        corner_x = min(rect.right() - 20.0, tip.x() + 28.0)
+        corner_y = max(rect.top() + 20.0, tip.y() - 34.0)
+        label = model.TextLabel(
+            self.doc._next_id(), text,
+            (corner_x - rect.left()) / max(1.0, rect.width()),
+            (corner_y - rect.top()) / max(1.0, rect.height()), scan)
+        label.anchor = "bottom left"
+        label.leader = plot.leader_value(label, tip, rect)
+        self.undo.push(undo.CallCommand(
+            lambda: self.doc.labels.append(label),
+            lambda: self.doc.remove_label(label),
+            "add a note"))
+        self.refresh()
+        return label
+
+    # ------------------------------------------------------------ parenting
+    def parent_labels(self, labels, scan):
+        """Give labels to `scan` - or free them, `scan` None: a PARENTING
+        operation (Christian, round 23). A label with a parent is listed
+        under it, wears its colour while its own is automatic, goes with it
+        when it is removed and moves with it when it is offset. Each label
+        stays exactly where it is drawn (Blender's "keep transform"). One
+        undo step."""
+        changes = []
+        moved = 0
+        for label in labels:
+            if not isinstance(label, model.TextLabel) or label.scan is scan:
+                continue
+            x, y, followed, leader = self.plot.placed_under(label, scan)
+            changes += [(label, "scan", scan), (label, "parent_offset",
+                                                followed),
+                        (label, "x", x), (label, "y", y)]
+            if leader != label.leader:
+                changes.append((label, "leader", leader))
+            moved += 1
+        if not changes:
+            return 0
+        self.undo.set_props(changes, "free the labels" if scan is None
+                            else "give labels to a scan")
+        self.note.setText(
+            "{} label(s) freed".format(moved) if scan is None else
+            "{} label(s) now belong to {}".format(moved, scan.display_name()))
+        return moved
+
+    def parent_selected(self):
+        """Ctrl+P: the selected labels to the ONE selected scan."""
+        scans = self.doc.selected_scans()
+        if len(scans) != 1:
+            return 0
+        return self.parent_labels(self.selected_labels(), scans[0])
+
+    def unparent_selected(self):
+        """Ctrl+Shift+P: the selected labels free again."""
+        return self.parent_labels(
+            [lb for lb in self.selected_labels() if lb.scan is not None],
+            None)
+
+    def selected_labels(self):
+        return [o for o in self.doc.selected()
+                if isinstance(o, model.TextLabel)]
+
+    def _label_menu(self, menu, label):
+        """A label's right-click menu: its settings, and which scan it
+        belongs to - every scan on the plot, or none."""
+        act = menu.addAction("Label settings...")
+        act.triggered.connect(lambda _c=False: self.edit_object(label))
+        owner = menu.addMenu("Belongs to")
+        free = owner.addAction("No scan (free)")
+        free.setCheckable(True)
+        free.setChecked(label.scan is None)
+        free.triggered.connect(
+            lambda _c=False: self.parent_labels([label], None))
+        owner.addSeparator()
+        for scan in self.doc.scans:
+            entry = owner.addAction(scan.display_name())
+            entry.setCheckable(True)
+            entry.setChecked(label.scan is scan)
+            entry.triggered.connect(
+                (lambda s: lambda _c=False: self.parent_labels([label], s))(
+                    scan))
+        hide = menu.addAction("Hide this label")
+        hide.triggered.connect(lambda _c=False: self._set_visible(label, False))
+        return owner
+
+    # --------------------------------------------------------- style presets
+    def apply_preset(self, preset):
+        """Put a style preset on this figure (`core/presets.py`): its
+        style column and, when the preset carries them, its size and
+        margins. One undo step; an object's own choices are left alone."""
+        changes = presets.changes(self.doc, preset)
+        if changes:
+            self.undo.set_props(changes, "style preset {}".format(
+                preset.name))
+            if any(obj is self.doc.figure for obj, _a, _v in changes):
+                self.plot.fit_page()
+        self.note.setText("Style preset: {}".format(preset.name)
+                          if changes else
+                          "{} is already this figure's style".format(
+                              preset.name))
+        return len(changes)
+
+    def ask_preset_name(self):
+        """`(name, with_layout)` for a new preset, or None. A method of its
+        own so a test can answer it without a modal loop."""
+        found, _problems = presets.available()
+        dialog = PresetSaveDialog(
+            self, with_layout=(self.plot.layout_mode()
+                               != figure_module.MODE_WINDOW),
+            taken=[p.name for p in found])
+        if not dialog.exec():
+            return None
+        return dialog.name(), dialog.with_layout.isChecked()
+
+    def save_preset(self):
+        """This figure's look as a preset, in the presets folder."""
+        answer = self.ask_preset_name()
+        if not answer:
+            return None
+        name, with_layout = answer
+        preset = presets.from_figure(self.doc, name, with_layout)
+        try:
+            path = presets.save(preset)
+        except OSError as exc:
+            self.note.setText("Could not save the preset: {}".format(exc))
+            return None
+        self.plot.flash("Preset saved: {}".format(name))
+        self.note.setText(path)
+        return preset
+
+    def open_presets_folder(self):
+        """Where the preset files are: to copy one to a colleague, or to
+        take one out."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        folder = presets.folder()
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+        self.note.setText(folder)
+        return folder
+
+    def install_preset(self, path):
+        """A dropped preset file: into the presets folder, and onto this
+        figure."""
+        try:
+            preset = presets.install(path)
+        except (ValueError, OSError) as exc:
+            self.note.setText("Not a style preset: {}".format(exc))
+            return None
+        self.apply_preset(preset)
+        return preset
+
+    def _fill_presets_menu(self, menu):
+        """Edit > Style presets: every preset in the folder, then saving
+        one and the folder. Rebuilt each time it opens, so a preset copied
+        into the folder is there without a restart."""
+        menu.clear()
+        found, problems = presets.available()
+        for preset in found:
+            act = menu.addAction(preset.name)
+            act.setToolTip("Size and margins too" if preset.layout
+                           else "Style only")
+            act.triggered.connect(
+                (lambda p: lambda _c=False: self.apply_preset(p))(preset))
+        if not found:
+            none = menu.addAction("(none yet: save this figure's style)")
+            none.setEnabled(False)
+        if problems:
+            bad = menu.addAction("{} unreadable file(s) in the folder".format(
+                len(problems)))
+            bad.setEnabled(False)
+            bad.setToolTip("\n".join(problems))
+        menu.addSeparator()
+        for op_id in ("style.preset_save", "style.preset_folder"):
+            op = self.ops.get(op_id)
+            act = menu.addAction(op.label)
+            act.triggered.connect(
+                (lambda o: lambda _c=False: self.run_op(o))(op_id))
+        return menu
+
+    def choose_preset(self):
+        """F3's "Apply a style preset...": the list, where the pointer is."""
+        menu = self._fill_presets_menu(QMenu(self))
+        menu.exec(QCursor.pos())
+
+    # ------------------------------------------------ the size in numbers
+    def _page_margins(self, unit):
+        """The margins a figure made exact would keep, in `unit`: its own
+        when it already is exact, else the ones it is drawn with now (sized
+        to its numbers), rounded UP to a hundredth so nothing overflows."""
+        layout = self.doc.figure
+        if self.plot.layout_mode() == figure_module.MODE_SIZE:
+            factor = figure_module.PER_INCH[unit] / figure_module.PER_INCH[layout.unit]
+            return tuple(getattr(layout, "margin_" + side) * factor
+                         for side in ("left", "right", "top", "bottom"))
+        per = figure_module.PER_INCH[unit] / figure_module.DESIGN_DPI
+        return tuple(math.ceil(px * per * 100.0 - 1e-9) / 100.0
+                     for px in self.plot.margins())
+
+    def page_size_dialog(self):
+        """The size pop-up, filled with the page as it is (not shown)."""
+        layout = self.doc.figure
+        unit = layout.unit
+        if self.plot.layout_mode() == figure_module.MODE_SIZE:
+            width, height = layout.width, layout.height
+        else:
+            per = figure_module.PER_INCH[unit] / figure_module.DESIGN_DPI
+            canvas_w, canvas_h = self.plot.canvas_size()
+            width, height = canvas_w * per, canvas_h * per
+        left, right, top, bottom = self._page_margins(figure_module.UNIT_CM)
+        return PageSizeDialog(width, height, unit, self,
+                              least=(left + right, top + bottom))
+
+    def ask_page_size(self):
+        dialog = self.page_size_dialog()
+        if not dialog.exec() or dialog.values() is None:
+            return None
+        return self.set_page_size(*dialog.values())
+
+    def set_page_size(self, width, height, unit):
+        """Make the figure EXACTLY `width` x `height` `unit`, keeping its
+        margins (the ones it is drawn with, when it was not exact yet). One
+        undo step; the page is fitted to the pane again."""
+        layout = self.doc.figure
+        new = layout.copy()
+        margins = self._page_margins(unit)
+        new.unit = unit
+        (new.margin_left, new.margin_right, new.margin_top,
+         new.margin_bottom) = margins
+        new.width, new.height = float(width), float(height)
+        new.mode = figure_module.MODE_SIZE
+        if not new.is_valid():
+            self.note.setText("Too small for the margins: {:g} x {:g} {}"
+                              .format(width, height, unit))
+            return None
+        changes = [(layout, name, getattr(new, name))
+                   for name in figure_module.FigureLayout.FIELDS
+                   if getattr(new, name) != getattr(layout, name)]
+        if changes:
+            self.undo.set_props(changes, "figure size")
+        self.plot.fit_page()
+        self.note.setText("Figure {:g} x {:g} {}".format(width, height, unit))
+        return new
+
     def edit_figure(self):
         """This session's figure size and margins (`core/figure.py`)."""
         dialog = FigureSettings(self, self.doc.figure, plot=self.plot,
@@ -2386,6 +2719,13 @@ class MainWindow(QMainWindow):
             paths = [p for p in paths if p not in pictures]
             if not paths:
                 return
+        styles = [p for p in paths
+                  if p.lower().endswith(branding.PRESET_EXT)]
+        for path in styles:
+            self.install_preset(path)
+        paths = [p for p in paths if p not in styles]
+        if not paths:
+            return
         sessions = [p for p in paths
                     if p.lower().endswith(branding.SESSION_EXT)]
         if sessions:
@@ -2405,6 +2745,7 @@ class MainWindow(QMainWindow):
                 continue
             if (loader.looks_readable(path)
                     or path.lower().endswith(branding.SESSION_EXT)
+                    or path.lower().endswith(branding.PRESET_EXT)
                     or path.lower().endswith(MainWindow.IMAGE_TYPES)):
                 out.append(path)
         return out

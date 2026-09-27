@@ -12,7 +12,7 @@ is not a number and the box quietly keeps its old value. Both forms are taken
 and the typed text is left alone while it is being typed.
 """
 
-from PySide6.QtCore import QLocale, Qt, Signal
+from PySide6.QtCore import QLocale, QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QColorDialog,
                                QComboBox, QDialog, QDialogButtonBox,
@@ -168,6 +168,193 @@ class RangeDialog(QDialog):
                     edit.setStyleSheet("border: 1px solid #d04040;")
         if not wrong:
             QDialog.accept(self)
+
+
+class PageSizeDialog(QDialog):
+    """The figure's size in numbers: a double-click on a page handle
+    (Christian, round 23).
+
+    Width and height, in cm or inches. With "Keep the aspect ratio" on (the
+    default) typing one fills in the other at the page's present
+    proportions, so a figure is made exactly 8.5 cm wide without its shape
+    changing; off, the two are free and the ratio follows them. Typed through
+    like `RangeDialog`: the width is selected on opening, Tab goes to the
+    height, Enter takes them. A comma is a decimal point.
+
+    `least` is the smallest width and height, in cm, the margins leave room
+    for: a smaller page is refused (marked red) rather than made.
+    """
+
+    def __init__(self, width, height, unit, parent=None, least=(0.0, 0.0)):
+        QDialog.__init__(self, parent)
+        self.setWindowTitle("Figure size")
+        self._unit = unit
+        self._ratio = float(width) / max(1e-9, float(height))
+        self._least_cm = (float(least[0]), float(least[1]))
+        row = QHBoxLayout()
+        self.width_edit = QLineEdit(_length_text(width), self)
+        self.height_edit = QLineEdit(_length_text(height), self)
+        for edit in (self.width_edit, self.height_edit):
+            edit.setAlignment(Qt.AlignRight)
+            edit.setMinimumWidth(70)
+        self.unit_box = QComboBox(self)
+        for choice in ("cm", "in"):
+            self.unit_box.addItem(choice, choice)
+        self.unit_box.setCurrentIndex(0 if unit == "cm" else 1)
+        row.addWidget(QLabel("Width", self))
+        row.addWidget(self.width_edit)
+        row.addWidget(QLabel("x  Height", self))
+        row.addWidget(self.height_edit)
+        row.addWidget(self.unit_box)
+        self.keep = QCheckBox("Keep the aspect ratio", self)
+        self.keep.setChecked(True)
+        self.keep.setToolTip("Typing one of the two fills in the other at "
+                             "the page's present proportions.")
+        self.ratio_note = QLabel(self)
+        self.ratio_note.setStyleSheet("color: #9a9a9a;")
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.Ok).setDefault(True)
+        layout = QVBoxLayout(self)
+        layout.addLayout(row)
+        layout.addWidget(self.keep)
+        layout.addWidget(self.ratio_note)
+        layout.addWidget(buttons)
+        self.width_edit.textEdited.connect(lambda _t: self._typed("width"))
+        self.height_edit.textEdited.connect(lambda _t: self._typed("height"))
+        self.unit_box.currentIndexChanged.connect(self._unit_changed)
+        self.setTabOrder(self.width_edit, self.height_edit)
+        self._show_ratio()
+        self.width_edit.setFocus(Qt.OtherFocusReason)
+        self.width_edit.selectAll()
+
+    @staticmethod
+    def _read(edit):
+        try:
+            value = float(edit.text().strip().replace(",", "."))
+        except ValueError:
+            return None
+        return value if value == value and 0 < value < 1e4 else None
+
+    def unit(self):
+        return self.unit_box.currentData()
+
+    def values(self):
+        """`(width, height, unit)`, or None while either is not a length."""
+        width, height = self._read(self.width_edit), self._read(
+            self.height_edit)
+        if width is None or height is None:
+            return None
+        return width, height, self.unit()
+
+    def _typed(self, which):
+        """One of the two was typed in: with the ratio kept, the other
+        follows; without, the ratio does."""
+        for edit in (self.width_edit, self.height_edit):
+            edit.setStyleSheet("")
+        source = self.width_edit if which == "width" else self.height_edit
+        other = self.height_edit if which == "width" else self.width_edit
+        value = self._read(source)
+        if value is None:
+            return
+        if self.keep.isChecked():
+            other.setText(_length_text(value / self._ratio if which == "width"
+                                       else value * self._ratio))
+        else:
+            width, height = (self._read(self.width_edit),
+                             self._read(self.height_edit))
+            if width and height:
+                self._ratio = width / height
+        self._show_ratio()
+
+    def _unit_changed(self, _index=0):
+        """Both numbers converted, so switching cm and in changes nothing."""
+        new = self.unit()
+        if new == self._unit:
+            return
+        factor = 2.54 if new == "cm" else 1.0 / 2.54
+        for edit in (self.width_edit, self.height_edit):
+            value = self._read(edit)
+            if value is not None:
+                edit.setText(_length_text(value * factor))
+        self._unit = new
+
+    def _show_ratio(self):
+        self.ratio_note.setText("Aspect ratio {:.4g} : 1".format(self._ratio))
+
+    def accept(self):
+        values = self.values()
+        wrong = []
+        if values is None:
+            wrong = [e for e in (self.width_edit, self.height_edit)
+                     if self._read(e) is None]
+        else:
+            per_cm = 1.0 if values[2] == "cm" else 2.54
+            if values[0] * per_cm <= self._least_cm[0]:
+                wrong.append(self.width_edit)
+            if values[1] * per_cm <= self._least_cm[1]:
+                wrong.append(self.height_edit)
+        for edit in wrong:
+            edit.setStyleSheet("border: 1px solid #d04040;")
+        if wrong:
+            wrong[0].setToolTip("Smaller than the margins leave room for.")
+            return
+        QDialog.accept(self)
+
+
+class PresetSaveDialog(QDialog):
+    """Save the figure's look as a style preset: a name, and whether the
+    size and margins go with it (`core/presets.py`)."""
+
+    def __init__(self, parent=None, name="", with_layout=True, taken=()):
+        QDialog.__init__(self, parent)
+        self.setWindowTitle("Save a style preset")
+        self._taken = set(n.lower() for n in taken)
+        self.name_edit = QLineEdit(name, self)
+        self.name_edit.setPlaceholderText("thesis, poster, ACS column...")
+        self.with_layout = QCheckBox("With the figure's size and margins",
+                                     self)
+        self.with_layout.setChecked(bool(with_layout))
+        self.with_layout.setToolTip(
+            "Then every figure given this preset has the same axes box.")
+        self.replaces = QLabel("", self)
+        self.replaces.setStyleSheet("color: #d0a040;")
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form = QFormLayout()
+        form.addRow("Name", self.name_edit)
+        form.addRow("", self.with_layout)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(self.replaces)
+        layout.addWidget(buttons)
+        self.name_edit.textChanged.connect(self._name_changed)
+        self._name_changed()
+        self.name_edit.setFocus(Qt.OtherFocusReason)
+        self.name_edit.selectAll()
+
+    def name(self):
+        return self.name_edit.text().strip()
+
+    def _name_changed(self, _text=""):
+        self.replaces.setText("Replaces the preset of that name."
+                              if self.name().lower() in self._taken else "")
+
+    def accept(self):
+        if not self.name():
+            self.name_edit.setStyleSheet("border: 1px solid #d04040;")
+            return
+        QDialog.accept(self)
+
+
+def _length_text(value):
+    """A length offered for editing: to the hundredth of a millimetre."""
+    return "{:.4g}".format(float(value)) if float(value) >= 100 else \
+        "{:.3f}".format(float(value)).rstrip("0").rstrip(".")
 
 
 def _number_text(value):
@@ -1548,12 +1735,17 @@ class LabelSettings(_LiveDialog):
     """A caption the user placed: its text, size and colour."""
 
     FIELDS = ("text", "colour", "size", "bold", "x", "y", "space",
-              "anchor", "rotation")
-    INDIVIDUAL = ("text", "x", "y", "space")
+              "anchor", "rotation", "leader")
+    INDIVIDUAL = ("text", "x", "y", "space", "leader")
     GROUP_DISABLED = ("text", "transform.space", "transform.at_x",
                       "transform.at_y")
 
     def __init__(self, parent, label, on_change=None):
+        # A label that has followed its scan shows where it IS, not where
+        # it was put (`PlotWidget.rebase`; nothing moves).
+        plot = getattr(parent, "plot", None)
+        if plot is not None:
+            plot.rebase(label)
         _LiveDialog.__init__(self, parent, label, on_change)
         self.setWindowTitle("Label")
         layout = QVBoxLayout(self)
@@ -1587,6 +1779,14 @@ class LabelSettings(_LiveDialog):
         self.auto.setChecked(label.colour in (None, "", "auto"))
         form.addRow("", self.auto)
 
+        # A NOTE is a label with an arrow to a point (round 24).
+        self.leader = QCheckBox("Leader arrow (a note)")
+        self.leader.setChecked(bool(label.leader))
+        self.leader.setToolTip("An arrow from the text to a point. Select "
+                               "the note and drag the ring at its tip; near "
+                               "a curve it snaps onto it.")
+        form.addRow("", self.leader)
+
         buttons = self._buttons()
         layout.addWidget(buttons)
 
@@ -1594,11 +1794,27 @@ class LabelSettings(_LiveDialog):
         self.text_size.changed.connect(self._apply)
         self.bold.toggled.connect(self._apply)
         self.auto.toggled.connect(self._apply)
+        self.leader.toggled.connect(self._leader_toggled)
 
     def _set_colour(self, name):
         self.obj.colour = name
         if hasattr(self, "auto"):
             self.auto.setChecked(False)
+        self._live()
+
+    def _leader_toggled(self, on):
+        """On: an arrow down and to the left of the text, to be dragged
+        where it belongs. Off: a plain label again."""
+        label = self.obj
+        plot = getattr(self.parent(), "plot", None)
+        if not on:
+            label.leader = None
+        elif not label.leader and plot is not None:
+            rect = plot.plot_rect()
+            box = plot.rotated_bounds(label, plot.artist_box(label, rect),
+                                      rect)
+            tip = QPointF(box.left() - 30.0, box.bottom() + 30.0)
+            label.leader = plot.leader_value(label, tip, rect)
         self._live()
 
     def _apply(self, *_args):
@@ -2481,10 +2697,12 @@ class MoleculeSettings(_LiveDialog):
 
         self.label_font = FontChoice(
             molecule.label_font,
-            lambda: style.figure_value(self.doc, "font_family") or "",
+            lambda: (style.inherited(self.doc, molecule, "label_font")
+                     or style.figure_value(self.doc, "font_family") or ""),
             parent=self)
         self.label_font.setToolTip("The element labels' typeface; Default "
-                                   "is the figure's.")
+                                   "is the house style's (Settings, "
+                                   "Structure labels).")
         form.addRow("Label font", self.label_font)
 
         self.by_element = QCheckBox("Colour by element")
