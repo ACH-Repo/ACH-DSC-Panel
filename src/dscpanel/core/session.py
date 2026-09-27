@@ -41,6 +41,7 @@ def view_to_state(view):
         return None
     return {"x": list(view["x"]) if view.get("x") else None,
             "y": list(view["y"]) if view.get("y") else None,
+            "y2": list(view["y2"]) if view.get("y2") else None,
             "context": list(view.get("context") or ())}
 
 
@@ -53,6 +54,8 @@ def _view_from(saved):
                 else None,
                 "y": tuple(float(v) for v in saved["y"]) if saved.get("y")
                 else None,
+                "y2": tuple(float(v) for v in saved["y2"])
+                if saved.get("y2") else None,
                 "context": tuple(saved.get("context") or ())}
     except (TypeError, ValueError, KeyError):
         return None
@@ -188,6 +191,8 @@ def to_state(doc):
                        "size": scan.marker.size,
                        "colour": scan.marker.colour,
                        "visible": scan.marker.visible},
+            "weight": {"visible": scan.weight.visible,
+                       "dashed": scan.weight.dashed, "z": scan.weight.z},
         })
     arrow = doc.arrow
     axes = {}
@@ -245,6 +250,7 @@ def to_state(doc):
         "x_axis": doc.x_axis,
         "x_unit": doc.x_unit,
         "y_unit": doc.y_unit,
+        "weight_unit": doc.weight_unit,
         "theme": doc.theme,
         "offset_markers": bool(doc.offset_markers),
         "view": view_to_state(doc.view),
@@ -342,6 +348,10 @@ def load(path, read_sample):
             scan.keep = (start, end)
         scan.label = entry.get("label")
         scan.visible = bool(entry.get("visible", True))
+        weight = entry.get("weight") or {}
+        scan.weight.visible = bool(weight.get("visible", True))
+        scan.weight.dashed = bool(weight.get("dashed", True))
+        scan.weight.z = _number_or_none(weight.get("z"))
         stored = entry.get("analyses") or []
         wanted = {item.get("key"): item for item in stored
                   if item.get("source") != "panel"}
@@ -508,6 +518,8 @@ def load(path, read_sample):
     if state.get("x_unit") in units.TEMPERATURE_UNITS:
         doc.x_unit = state["x_unit"]
     doc.y_unit = state.get("y_unit", doc.y_unit)
+    if state.get("weight_unit") in model.WEIGHT_UNITS:
+        doc.weight_unit = state["weight_unit"]
     doc.theme = state.get("theme", doc.theme)
     doc.offset_markers = bool(state.get("offset_markers", False))
     doc.view = _view_from(state.get("view"))

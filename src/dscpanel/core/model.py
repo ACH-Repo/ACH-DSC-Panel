@@ -42,6 +42,12 @@ PALETTE = ("#6ea8ff", "#ffb04e", "#7fd08a", "#e07b7b", "#c79bef",
 
 AXIS_TEMPERATURE = "Temperature"
 AXIS_TIME = "Time"
+
+#: What the second y axis shows of an SDT or TGA run's weight: the percentage
+#: of the sample mass TRIOS records ("Weight Change"), or milligrams.
+WEIGHT_PCT = "%"
+WEIGHT_MG = "mg"
+WEIGHT_UNITS = (WEIGHT_PCT, WEIGHT_MG)
 AXES = (AXIS_TEMPERATURE, AXIS_TIME)
 
 AXIS_LABEL = {
@@ -102,7 +108,8 @@ class Obj(object):
 
 #: The drawing order of each kind while nobody has chosen one: curves at
 #: the bottom, then what is drawn on them, then the figure's furniture.
-KIND_Z = {"scan": 0.0, "analysis": 10.0, "offset_marker": 20.0,
+KIND_Z = {"scan": 0.0, "weight": 5.0, "analysis": 10.0,
+          "offset_marker": 20.0,
           "arrow": 30.0, "legend": 40.0, "image": 45.0, "molecule": 46.0,
           "label": 50.0}
 
@@ -126,6 +133,7 @@ class Sample(object):
     def __init__(self, path, data, exo=units.EXO_DOWN, exo_source="assumed"):
         self.path = str(path)
         self.data = data
+        _trim_empty_ends(data)
         head = (data or {}).get("head", {}) or {}
         self.sample_name = (head.get("samplename")
                             or head.get("Filename")
@@ -199,6 +207,28 @@ class Sample(object):
         return out
 
 
+def _trim_empty_ends(data):
+    """Drop the samples at either end of a segment that have no
+    temperature: an SDT run's last dozen or so, which the instrument flags
+    as empty and the reader returns as NaN (round 25). Off the ENDS only,
+    so every other sample keeps its index - a span, a marker's sample and
+    `trace.first` all count from the segment's start. A gap in the middle
+    stays, and the curve is drawn broken there."""
+    for step in (data or {}).get("numdata", []) or []:
+        dims = step.get("dims") or []
+        nums = step.get("nums")
+        if "Temperature" not in dims or nums is None or not len(nums):
+            continue
+        with np.errstate(invalid="ignore"):
+            good = np.flatnonzero(np.isfinite(
+                np.asarray(nums[:, dims.index("Temperature")], dtype=float)))
+        if not len(good):
+            continue
+        first, last = int(good[0]), int(good[-1])
+        if first > 0 or last < len(nums) - 1:
+            step["nums"] = nums[first:last + 1]
+
+
 def _mass_g(head):
     """Sample mass in grams from the reader's header, or None.
 
@@ -250,6 +280,9 @@ class Scan(Obj):
         #: Its y-offset marker (the template's `add_yoffset_markers`), drawn
         #: while the figure's markers are switched on.
         self.marker = OffsetMarker(oid, self)
+        #: Its weight curve, against the second y axis, when the segment
+        #: recorded a weight (an SDT or TGA run).
+        self.weight = WeightCurve(oid, self)
         self._cache_key = None
         self._cache = None
 
@@ -355,6 +388,40 @@ class Scan(Obj):
         if normalised is not None:
             return normalised, units.UNIT_W_G
         return None, None
+
+    def has_weight(self):
+        """True when this segment recorded a weight: an SDT or TGA run."""
+        dims = self.step.get("dims") or []
+        return "Weight Change" in dims or "Weight" in dims
+
+    def weight_values(self, unit=WEIGHT_PCT):
+        """The weight in `unit` ("%" of the sample mass, or "mg"), or None.
+
+        The percentage is TRIOS's own "Weight Change", taken against the
+        sample mass; from the milligrams it needs that mass, and without it
+        there is none - never a percentage of some other reference."""
+        if unit == WEIGHT_MG:
+            return self._column("Weight")
+        percent = self._column("Weight Change")
+        if percent is not None:
+            return percent
+        grams = self._column("Weight")
+        mass = self.sample.mass_g
+        if grams is None or not mass:
+            return None
+        return grams / (float(mass) * 1000.0) * 100.0
+
+    def weight_curve(self, axis, unit=WEIGHT_PCT, x_unit=units.TEMP_C):
+        """`(x, w)` of the weight, the KEPT samples only (like `kept_curve`),
+        or `(None, None)`."""
+        x = self.x_values(axis)
+        weight = self.weight_values(unit)
+        if x is None or weight is None:
+            return None, None
+        if axis == AXIS_TEMPERATURE:
+            x = units.from_celsius(x, x_unit)
+        k0, k1 = self.kept_range(len(x))
+        return x[k0:k1], weight[k0:k1]
 
     def heat_flow_w(self):
         """Heat flow in WATTS, or None when that needs a mass there is not."""
@@ -777,7 +844,7 @@ class Axis(Obj):
 
     def __init__(self, oid, which):
         Obj.__init__(self, oid, "{} axis".format(which.upper()))
-        self.which = which               # "x" or "y"
+        self.which = which               # "x", "y", or "y2" (the weight)
         #: None means "say what is on this axis", which follows the unit.
         self.label = None
         self.show_grid = False
@@ -832,6 +899,9 @@ class Axis(Obj):
                 return "*t*  /  min"
             return "*T*  /  {}".format(units.TEMPERATURE_LABEL.get(
                 getattr(doc, "x_unit", units.TEMP_C), "°C"))
+        if self.which == "y2":
+            return "Weight  /  {}".format(getattr(doc, "weight_unit",
+                                                  WEIGHT_PCT))
         return "Heat Flow  /  {}".format(doc.y_unit)
 
 
@@ -919,13 +989,19 @@ class Legend(Artist):
         self.line_width = None
 
     def entries(self, doc):
-        """`[(scan, text), ...]` for the scans that are drawn.
+        """`[(scan or weight curve, text), ...]` for what is drawn.
 
         A scan's own label wins over its program name, which is what makes
         the legend say "second heating" when that is what the curve was
-        renamed to.
+        renamed to. A scan's weight curve follows it, "(weight)" (round 25).
         """
-        return [(scan, scan.display_name()) for scan in doc.visible_scans()]
+        out = []
+        for scan in doc.visible_scans():
+            out.append((scan, scan.display_name()))
+            if scan.weight.visible and scan.has_weight():
+                out.append((scan.weight,
+                            "{} (weight)".format(scan.display_name())))
+        return out
 
 
 class OffsetMarker(Obj):
@@ -960,6 +1036,20 @@ class OffsetMarker(Obj):
         #: How the offset is written, or None for the house style's (one
         #: decimal and a sign, as the template writes it).
         self.number_format = None
+
+
+class WeightCurve(Obj):
+    """A scan's WEIGHT, drawn against the second y axis: the TGA half of an
+    SDT run (Christian, round 25). One per scan, like its offset marker; a
+    scan whose segment recorded no weight has one that is never drawn.
+    Drawn in the scan's colour, dashed unless asked otherwise."""
+
+    kind = "weight"
+
+    def __init__(self, oid, scan):
+        Obj.__init__(self, oid, "Weight")
+        self.scan = scan
+        self.dashed = True
 
 
 class ImageArtist(Artist):
@@ -1122,7 +1212,16 @@ class Document(object):
         self.legend = Legend(self._next_id())
         #: The two axes, as objects with their own settings.
         self.axes = {"x": Axis(self._next_id(), "x"),
-                     "y": Axis(self._next_id(), "y")}
+                     "y": Axis(self._next_id(), "y"),
+                     "y2": Axis(self._next_id(), "y2")}
+        # The weight axis: on the side opposite the heat flow, and no line
+        # of its own on the far side - that side is the heat flow's.
+        self.axes["y2"].name = "Weight axis"
+        self.axes["y2"].side = "right"
+        self.axes["y2"].mirror = False
+        self.axes["y2"].mirror_ticks = False
+        #: What the weight axis shows: "%" of the sample mass, or "mg".
+        self.weight_unit = WEIGHT_PCT
         #: Captions the user has added. Free objects, not tied to a scan.
         self.labels = []
         #: Pictures pasted or dropped onto the figure (`ImageArtist`).
@@ -1171,7 +1270,8 @@ class Document(object):
         """Everything selectable, in draw order (later is on top)."""
         markers = ([scan.marker for scan in self.scans]
                    if self.offset_markers else [])
-        return (list(self.scans) + self.analyses() + markers
+        weights = [scan.weight for scan in self.scans if scan.has_weight()]
+        return (list(self.scans) + weights + self.analyses() + markers
                 + list(self.labels) + list(self.images)
                 + list(self.structures)
                 + list(self.axes.values()) + [self.arrow, self.legend])

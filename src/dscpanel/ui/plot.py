@@ -104,7 +104,8 @@ THEMES = {
         "_TEXT": QColor("#d6d6c2"),
         "_TEXT_DIM": QColor("#9a9a86"),
         "_INK": QColor("#e2e2cf"),
-        "_CURSOR": QColor("#ffd23b"),
+        # The reticle in the LCD green (Christian, round 25).
+        "_CURSOR": QColor("#39ff7a"),
         "_BAND": QColor(57, 255, 122, 50),
         "_BAND_EDGE": QColor("#39ff7a"),
         "_SELECT": QColor("#39ff7a"),
@@ -205,6 +206,22 @@ INTERVAL_TICK = 4.0
 BLINK_MS = 160
 BLINK_ON = (0, 1, 3, 4)
 BLINK_PERIOD = 30
+
+
+class WeightTrace(object):
+    """One scan's weight, prepared for the view: the TGA curve of an SDT
+    run, against the second y axis (round 25). Built by `rebuild` like a
+    `Trace`, and picked by what was last drawn."""
+
+    __slots__ = ("scan", "weight", "x", "y", "px", "py")
+
+    def __init__(self, scan, x, y):
+        self.scan = scan
+        self.weight = scan.weight
+        self.x = x
+        self.y = y
+        self.px = None
+        self.py = None
 
 
 class Trace(object):
@@ -337,6 +354,10 @@ class PlotWidget(QWidget):
         self.y_margin = 0.06
         self._view_x = None
         self._view_y = None
+        #: The weight axis's range, or None for fitted (round 25).
+        self._view_y2 = None
+        #: The weight curves drawn (`WeightTrace`), from the last rebuild.
+        self.weight_traces = []
         self._cursor = None
         self._mode = None
         self._drag = None           # a navigation drag (zoom band / pan)
@@ -412,8 +433,20 @@ class PlotWidget(QWidget):
                 traces.append(Trace(scan, x[k0:k1], y[k0:k1], scan.colour,
                                     None, hidden, k0))
         self.traces = traces
+        weights = []
+        if doc is not None:
+            for scan in doc.scans:
+                if not (scan.visible and scan.weight.visible
+                        and scan.has_weight()):
+                    continue
+                x, w = scan.weight_curve(
+                    doc.x_axis, getattr(doc, "weight_unit", "%"),
+                    getattr(doc, "x_unit", units.TEMP_C))
+                if x is not None:
+                    weights.append(WeightTrace(scan, x, w))
+        self.weight_traces = weights
         if not keep_view:
-            self._view_x = self._view_y = None
+            self._view_x = self._view_y = self._view_y2 = None
         self._sync_blink()
         self.invalidate()
 
@@ -609,6 +642,41 @@ class PlotWidget(QWidget):
         pad = (hi - lo) * float(self.y_margin)
         return (lo - pad, hi + pad)
 
+    def data_y2(self):
+        """The weight axis fitted: every drawn weight curve, 6 % either
+        side; 0 to 100 with none."""
+        lows, highs = [], []
+        for trace in self.weight_traces:
+            if trace.y is not None and np.isfinite(trace.y).any():
+                lows.append(float(np.nanmin(trace.y)))
+                highs.append(float(np.nanmax(trace.y)))
+        if not lows:
+            return (0.0, 100.0)
+        lo, hi = min(lows), max(highs)
+        if hi <= lo:
+            lo, hi = lo - 0.5, hi + 0.5
+        pad = (hi - lo) * float(self.y_margin)
+        return (lo - pad, hi + pad)
+
+    def view_y2(self):
+        return self._view_y2 or self.data_y2()
+
+    def set_view_y2(self, lo, hi):
+        if hi > lo:
+            self._view_y2 = (float(lo), float(hi))
+            self.invalidate()
+            self.view_changed.emit()
+
+    def y2_shown(self):
+        """True while a weight curve is drawn: then the second y axis is."""
+        return bool(getattr(self, "weight_traces", None))
+
+    def y2_to_px(self, value, rect=None, view=None):
+        return self.y_to_px(value, rect, view or self.view_y2())
+
+    def px_to_y2(self, px, rect=None, view=None):
+        return self.px_to_y(px, rect, view or self.view_y2())
+
     def view_x(self):
         return self._view_x or self.data_x()
 
@@ -641,7 +709,11 @@ class PlotWidget(QWidget):
         doc = self.doc
         context = ((doc.x_axis, doc.y_unit, getattr(doc, "x_unit", ""))
                    if doc is not None else None)
-        return {"x": self._view_x, "y": self._view_y, "context": context}
+        # The weight range is a number of % or of mg: it says which.
+        return {"x": self._view_x, "y": self._view_y,
+                "y2": getattr(self, "_view_y2", None),
+                "y2_unit": getattr(doc, "weight_unit", None),
+                "context": context}
 
     def restore_view(self, state):
         """Go back to a framing. One taken on other axes (the unit changed
@@ -652,6 +724,10 @@ class PlotWidget(QWidget):
             self._view_x = self._view_y = None
         else:
             self._view_x, self._view_y = state["x"], state["y"]
+        doc = self.doc
+        self._view_y2 = (state.get("y2")
+                         if state.get("y2_unit") == getattr(
+                             doc, "weight_unit", None) else None)
         self.invalidate()
         self.view_changed.emit()
 
@@ -681,7 +757,8 @@ class PlotWidget(QWidget):
             return False
         before, label = burst
         after = self.view_state()
-        if (before["x"], before["y"]) == (after["x"], after["y"]):
+        if ((before["x"], before["y"], before.get("y2"))
+                == (after["x"], after["y"], after.get("y2"))):
             return False
         self.view_committed.emit(before, after, label)
         return True
@@ -690,7 +767,8 @@ class PlotWidget(QWidget):
         return self._view_x is None or _close(self._view_x, self.data_x())
 
     def at_home_y(self):
-        return self._view_y is None or _close(self._view_y, self.data_y())
+        return ((self._view_y is None or _close(self._view_y, self.data_y()))
+                and self._view_y2 is None)
 
     def reset_view(self):
         """`F`: x first, then y. Staged, the way the PXRD window does it -
@@ -702,7 +780,7 @@ class PlotWidget(QWidget):
         if not self.at_home_x():
             self._view_x = None
         else:
-            self._view_y = None
+            self._view_y = self._view_y2 = None
         self.invalidate()
         self.view_changed.emit()
         self.commit_view()
@@ -710,7 +788,7 @@ class PlotWidget(QWidget):
 
     def fit(self):
         self._view_begin("fit")
-        self._view_x = self._view_y = None
+        self._view_x = self._view_y = self._view_y2 = None
         self.invalidate()
         self.view_changed.emit()
         self.commit_view()
@@ -1010,10 +1088,21 @@ class PlotWidget(QWidget):
         doc = self.doc
         sides = {"left": 8.0, "right": float(_RIGHT), "top": float(_TOP),
                  "bottom": 8.0}
-        for axis in (doc.axes["x"], doc.axes["y"]):
+        for axis in self.shown_axes():
             side = self.axis_side(axis)
             sides[side] = max(sides[side], self.axis_reach(axis))
         return sides["left"], sides["right"], sides["top"], sides["bottom"]
+
+    def shown_axes(self):
+        """The axes drawn: x and y, and the weight axis while a weight
+        curve is on the figure."""
+        doc = self.doc
+        if doc is None:
+            return []
+        out = [doc.axes["x"], doc.axes["y"]]
+        if "y2" in doc.axes and self.y2_shown():
+            out.append(doc.axes["y2"])
+        return out
 
     def overflow(self):
         """`[(side, needed, set), ...]` in drawing units, for each margin of
@@ -1027,11 +1116,17 @@ class PlotWidget(QWidget):
                 out.append((side, need, have))
         return out
 
-    @staticmethod
-    def axis_side(axis):
+    def axis_side(self, axis):
+        """Which side of the axes box an axis is drawn on. The weight axis
+        is always OPPOSITE the heat flow's (round 25)."""
         side = getattr(axis, "side", None)
         if axis.which == "x":
             return side if side in ("bottom", "top") else "bottom"
+        if axis.which == "y2":
+            doc = self.doc
+            heat = (self.axis_side(doc.axes["y"]) if doc is not None
+                    else "left")
+            return "right" if heat == "left" else "left"
         return side if side in ("left", "right") else "left"
 
     def axis_reach(self, axis):
@@ -1065,7 +1160,7 @@ class PlotWidget(QWidget):
         metrics = QFontMetrics(font)
         if axis.which == "x":
             return out + 3.0 + metrics.height()
-        return out + 8.0 + self._widest_y_number(metrics)
+        return out + 8.0 + self._widest_number(axis, metrics)
 
     def tick_step(self, axis, lo, hi):
         """The spacing of an axis's numbered ticks: the axis's own
@@ -1078,16 +1173,16 @@ class PlotWidget(QWidget):
             return float(chosen)
         return _nice_step(hi - lo, 8 if which == "x" else 6)
 
-    def _widest_y_number(self, metrics):
-        lo, hi = self.view_y()
-        step = self.tick_step(self.doc.axes["y"] if self.doc else None,
-                              lo, hi)
+    def _widest_number(self, axis, metrics):
+        """The widest number a y axis (or the weight axis) writes."""
+        which = getattr(axis, "which", "y")
+        lo, hi = self.view_y2() if which == "y2" else self.view_y()
+        step = self.tick_step(axis, lo, hi)
         widest = 0
         value = math.ceil(lo / step) * step
         while value <= hi + 1e-9:
             widest = max(widest, metrics.horizontalAdvance(
-                self.tick_text(self.doc.axes["y"] if self.doc else None,
-                               value, "y")))
+                self.tick_text(axis, value, which)))
             value += step
         return float(widest)
 
@@ -1446,9 +1541,9 @@ class PlotWidget(QWidget):
             gap = _rect_distance(QRectF(box), point)
             if gap <= 4.0:
                 hits.append((gap, 4, axis, "caption"))
-        for which in ("x", "y"):
-            axis = doc.axes.get(which)
-            if axis is None or not axis.visible:
+        for axis in self.shown_axes():
+            which = axis.which
+            if not axis.visible:
                 continue
             if self.axis_spine_rect(which).contains(point):
                 hits.append((0.0, 5, axis, "spine"))
@@ -1461,6 +1556,11 @@ class PlotWidget(QWidget):
             gap = self._gap_to(trace, point)
             if gap is not None and gap <= radius:
                 hits.append((gap, -model.z_of(trace.scan), trace.scan, None))
+        for trace in getattr(self, "weight_traces", ()):
+            gap = self._gap_to(trace, point)
+            if gap is not None and gap <= radius:
+                hits.append((gap, -model.z_of(trace.weight), trace.weight,
+                             None))
         hits.sort(key=lambda hit: (hit[0], hit[1]))
         found = []
         for _gap, _rank, obj, axis_hit in hits:
@@ -1501,7 +1601,7 @@ class PlotWidget(QWidget):
     def _gap_to(self, trace, pos):
         """How far `pos` is from a drawn curve, or None."""
         if trace.px is None or not len(trace.px):
-            if trace.missing is not None:
+            if getattr(trace, "missing", None) is not None:
                 return abs(self.y_to_px(trace.scan.offset) - pos.y())
             return None
         return float(np.min(np.hypot(trace.px - pos.x(), trace.py - pos.y())))
@@ -1681,6 +1781,8 @@ class PlotWidget(QWidget):
             return ("label_dy", "label_at")
         if isinstance(obj, model.Axis):
             return ("label_along", "label_gap")
+        if isinstance(obj, model.WeightCurve):
+            return ()                  # it is where the file puts it
         return ("offset",)
 
     def _value_of(self, obj):
@@ -2514,7 +2616,10 @@ class PlotWidget(QWidget):
         rect = rect or self.plot_rect()
         px = self.x_to_px(trace.x, rect)
         py = self.y_to_px(trace.y, rect)
-        index = int(np.argmin(np.hypot(px - pos.x(), py - pos.y())))
+        gaps = np.hypot(px - pos.x(), py - pos.y())
+        if not np.isfinite(gaps).any():
+            return None
+        index = int(np.nanargmin(gaps))
         return trace.first + index
 
     @staticmethod
@@ -3549,7 +3654,8 @@ class PlotWidget(QWidget):
                      if doc is not None else ())
         return (selection, self.canvas_size(), self.page(),
                 self.width(), self.height(), self.devicePixelRatioF(),
-                self.view_x(), self.view_y(),
+                self.view_x(), self.view_y(), self.view_y2(),
+                getattr(doc, "weight_unit", "") if doc else "",
                 doc.x_axis if doc else "", doc.y_unit if doc else "",
                 doc.exo if doc else "",
                 ((doc.offset_markers,
@@ -3855,6 +3961,9 @@ class PlotWidget(QWidget):
         def add(obj, inside, draw):
             items.append((model.z_of(obj), len(items), inside, draw))
 
+        for trace in getattr(self, "weight_traces", ()):
+            add(trace.weight, True,
+                lambda t=trace: self._paint_weight(p, rect, t))
         for trace in self.traces:
             if trace.missing is None:
                 add(trace.scan, True,
@@ -3914,8 +4023,12 @@ class PlotWidget(QWidget):
                        QPointF(x_far, rect.bottom()))
         if doc is None:
             return
-        for which in ("x", "y"):
-            axis = doc.axes[which]
+        if self.y2_shown():
+            side = self.axis_side(doc.axes["y2"])
+            at = rect.right() if side == "right" else rect.left()
+            p.drawLine(QPointF(at, rect.top()), QPointF(at, rect.bottom()))
+        for axis in self.shown_axes():
+            which = axis.which
             if not axis.visible:
                 continue
             font = QFont(p.font())
@@ -4088,24 +4201,59 @@ class PlotWidget(QWidget):
 
     def _molecule_layout(self, molecule, rect):
         """`(box, points, pad)`: a structure's box before rotation, each
-        atom's place in it, and the margin kept round the atoms for their
-        labels."""
+        atom's place in it, and `(left, top)` - where the atoms' corner sits
+        inside the box.
+
+        The box is what is DRAWN: the atoms, a margin for the bonds, and
+        every label as it is written, hydrogens on their side. It used to
+        be the atoms plus a fixed margin, which an `H2N` on the outside ran
+        past - the selection cut through it (Christian, round 25)."""
         length = max(2.0, float(molecule.bond_length))
         font = self.molecule_font(molecule)
-        pad = max(0.4 * length, 0.75 * QFontMetrics(font).height())
+        metrics = QFontMetrics(font)
         atoms = molecule.atoms or [{"x": 0.0, "y": 0.0}]
         low_x = min(a["x"] for a in atoms)
-        high_x = max(a["x"] for a in atoms)
-        low_y = min(a["y"] for a in atoms)
         high_y = max(a["y"] for a in atoms)
-        width = (high_x - low_x) * length + 2 * pad
-        height = (high_y - low_y) * length + 2 * pad
+        local = [((a["x"] - low_x) * length, (high_y - a["y"]) * length)
+                 for a in atoms]
+        # The bonds reach past the atoms by half a double bond's spacing or
+        # a wedge's wide end; round that up.
+        margin = max(0.12 * length, 2.0 * float(molecule.bond_width))
+        left = min(x for x, _y in local) - margin
+        right = max(x for x, _y in local) + margin
+        top = min(y for _x, y in local) - margin
+        bottom = max(y for _x, y in local) + margin
+        from ..core import chem
+        neighbours = dict((i, []) for i in range(len(local)))
+        for bond in molecule.bonds or ():
+            a, b = int(bond["a"]), int(bond["b"])
+            if a < len(local) and b < len(local):
+                neighbours[a].append(b)
+                neighbours[b].append(a)
+        half = metrics.height() / 2.0 + 1.0
+        for index, atom in enumerate(molecule.atoms or ()):
+            if not atom.get("show"):
+                continue
+            x, y = local[index]
+            others = neighbours[index]
+            to_left = bool(others) and (
+                sum(local[o][0] for o in others) / len(others) > x + 1e-6)
+            text = chem.label_of(atom, hydrogens_left=to_left)
+            element = markup_size(atom["el"], font)[0]
+            whole = markup_size(text, font)[0]
+            start = (x - element / 2.0 if not to_left
+                     else x + element / 2.0 - whole)
+            left = min(left, start - 2.0)
+            right = max(right, start + whole + 2.0)
+            top = min(top, y - half)
+            bottom = max(bottom, y + half)
+        width, height = right - left, bottom - top
         px, py = self.artist_point(molecule, rect)
         fx, fy = molecule.anchor_offsets()
         box = QRectF(px - fx * width, py - fy * height, width, height)
-        points = [QPointF(box.left() + pad + (a["x"] - low_x) * length,
-                          box.top() + pad + (high_y - a["y"]) * length)
-                  for a in atoms]
+        pad = (-left, -top)
+        points = [QPointF(box.left() + pad[0] + x, box.top() + pad[1] + y)
+                  for x, y in local]
         return box, points, pad
 
     def _turn_of(self, artist, rect):
@@ -4152,8 +4300,8 @@ class PlotWidget(QWidget):
 
         def place(x, y):
             """A point of the structure (bond lengths, y up) on the page."""
-            unturned = QPointF(box.left() + pad + (x - low_x) * length,
-                               box.top() + pad + (high_y - y) * length)
+            unturned = QPointF(box.left() + pad[0] + (x - low_x) * length,
+                               box.top() + pad[1] + (high_y - y) * length)
             return turn.map(unturned) if upright else unturned
 
         shown = [bool(a.get("show")) for a in molecule.atoms]
@@ -4468,8 +4616,11 @@ class PlotWidget(QWidget):
         not, and Christian wants the default to be the figure.
         """
         doc = self.doc
-        for which, view, to_px in (("x", self.view_x(), self.x_to_px),
-                                   ("y", self.view_y(), self.y_to_px)):
+        rows = [("x", self.view_x(), self.x_to_px),
+                ("y", self.view_y(), self.y_to_px)]
+        if doc is not None and self.y2_shown():
+            rows.append(("y2", self.view_y2(), self.y2_to_px))
+        for which, view, to_px in rows:
             axis = doc.axes[which] if doc else model.Axis(0, which)
             side = self.axis_side(axis)
             font = QFont(p.font())
@@ -4491,7 +4642,9 @@ class PlotWidget(QWidget):
             far = {"bottom": rect.top(), "top": rect.bottom(),
                    "left": rect.right(), "right": rect.left()}[side]
             mirrored = (getattr(axis, "mirror", False)
-                        and getattr(axis, "mirror_ticks", False))
+                        and getattr(axis, "mirror_ticks", False)
+                        # the weight axis's ticks are on that side now
+                        and not (which == "y" and self.y2_shown()))
             clear = self._tick_out(axis)
             numbers = getattr(axis, "show_numbers", True)
 
@@ -4565,7 +4718,7 @@ class PlotWidget(QWidget):
         return max(1, int(round(rect.width() * self.page()[2]
                                 * float(self.devicePixelRatioF() or 1.0))))
 
-    def _polylines(self, trace, rect):
+    def _polylines(self, trace, rect, to_py=None):
         """The curve as polylines, decimated per pixel column.
 
         Two things make this different from the PXRD version, and both come
@@ -4585,12 +4738,16 @@ class PlotWidget(QWidget):
         if x is None or not len(x):
             return [], None, None
         lo, hi = self.view_x()
-        inside = (x >= lo) & (x <= hi)
+        # A sample the instrument flagged as empty is NaN (an SDT run's last
+        # few): the curve breaks there rather than being drawn through it.
+        with np.errstate(invalid="ignore"):
+            inside = (x >= lo) & (x <= hi) & np.isfinite(y)
         if not inside.any():
             return [], None, None
         keep = inside.copy()
         keep[1:] |= inside[:-1]
         keep[:-1] |= inside[1:]
+        keep &= np.isfinite(x) & np.isfinite(y)
         idx = np.flatnonzero(keep)
         breaks = np.flatnonzero(np.diff(idx) > 1)
         runs = np.split(idx, breaks + 1)
@@ -4602,16 +4759,14 @@ class PlotWidget(QWidget):
                 continue
             xs, ys = x[run], y[run]
             px = left + (xs - lo) / max(hi - lo, 1e-12) * width
-            py = self.y_to_px(ys, rect)
-            if len(px) > columns:
+            py = (to_py or self.y_to_px)(ys, rect)
+            # A few samples per column are drawn as they are: a DSC run is
+            # thousands of points, not millions, and thinning below that
+            # only costs shape (round 25).
+            if len(px) > 4 * columns:
                 col = np.clip(((px - left) / width * columns).astype(np.int64),
                               0, columns - 1)
-                starts = np.flatnonzero(
-                    np.concatenate(([True], col[1:] != col[:-1])))
-                cx = px[starts]
-                top = np.minimum.reduceat(py, starts)
-                bottom = np.maximum.reduceat(py, starts)
-                px, py = _columns(cx, top, bottom)
+                px, py = _m4(px, py, col)
             polys.append(_polyline(px, py))
             all_px.append(px)
             all_py.append(py)
@@ -4631,6 +4786,28 @@ class PlotWidget(QWidget):
                 p.drawPolyline(poly)
             width += SELECTED_EXTRA
         p.setPen(QPen(trace_colour(trace), width))
+        for poly in polys:
+            p.drawPolyline(poly)
+
+    def _paint_weight(self, p, rect, trace):
+        """A weight curve, against the weight axis: the scan's colour,
+        dashed unless asked otherwise, as wide as the scan's line."""
+        polys, px, py = self._polylines(trace, rect, self.y2_to_px)
+        trace.px, trace.py = px, py
+        scan = trace.scan
+        width = self.style_of(scan, "line_width") * CURVE_WIDTH
+        if trace.weight.selected:
+            halo = QColor(_SELECT)
+            halo.setAlpha(90)
+            p.setPen(QPen(halo, width + 4.0))
+            for poly in polys:
+                p.drawPolyline(poly)
+        colour = (for_light(scan.colour) if THEME == THEME_LIGHT
+                  else QColor(scan.colour))
+        pen = QPen(colour, width)
+        if trace.weight.dashed:
+            pen.setDashPattern([6.0, 3.0])     # in line widths
+        p.setPen(pen)
         for poly in polys:
             p.drawPolyline(poly)
 
@@ -5128,7 +5305,10 @@ class PlotWidget(QWidget):
         xs = trace.x[lo:hi + 1]
         if not len(xs):
             return None
-        return lo + int(np.argmin(np.abs(xs - value)))
+        gaps = np.abs(xs - value)
+        if not np.isfinite(gaps).any():
+            return None
+        return lo + int(np.nanargmin(gaps))
 
     def _paint_names(self, p):
         """Which curve is which - for the one under the cursor. Nothing
@@ -5326,13 +5506,18 @@ class PlotWidget(QWidget):
             p.drawRect(box)
         step = metrics.height() * legend.spacing
         y = box.top() + 5 + metrics.height() / 2.0
-        for scan, text in legend.entries(doc):
+        for entry, text in legend.entries(doc):
+            weight = isinstance(entry, model.WeightCurve)
+            scan = entry.scan if weight else entry
             colour = (for_light(scan.colour) if THEME == THEME_LIGHT
                       else QColor(scan.colour))
             width = (float(legend.line_width) if legend.line_width
                      else max(1.2, self.style_of(scan, "line_width")
                               * CURVE_WIDTH))
-            p.setPen(QPen(colour, width))
+            pen = QPen(colour, width)
+            if weight and entry.dashed:
+                pen.setDashPattern([6.0, 3.0])
+            p.setPen(pen)
             p.drawLine(QPointF(box.left() + 8, y),
                        QPointF(box.left() + 8 + legend.sample, y))
             ink = (QColor(_SELECT) if legend.selected
@@ -5671,21 +5856,32 @@ def _analysis_marker(entry):
     return (kind, value)
 
 
-def _columns(cx, top, bottom):
-    """One point where a column is flat, two where it is not.
+def _m4(px, py, col):
+    """The samples that draw a curve exactly at one point per column: in
+    every run of samples sharing a column, the first, the highest, the
+    lowest and the last, EACH AT ITS OWN x AND IN THE ORDER MEASURED (M4).
 
-    Built with `repeat` and a cumulative index rather than a loop: a Python
-    loop over a thousand columns costs more than the points it saves.
-    """
-    spiky = (bottom - top) > 0.5
-    counts = np.where(spiky, 2, 1)
-    ends = np.cumsum(counts)
-    heads = ends - counts
-    px = np.repeat(cx, counts)
-    py = np.empty(int(ends[-1]), dtype=float)
-    py[heads] = top
-    py[ends[spiky] - 1] = bottom[spiky]
-    return px, py
+    The old reduction drew each column as a vertical bar at one x - top
+    first, then bottom - so a steep flank was a staircase, and a RISING one
+    doubled back on itself at every column: Christian's "choppy" curve,
+    which no amount of antialiasing could smooth (round 25)."""
+    n = len(px)
+    starts = np.flatnonzero(np.concatenate(([True], col[1:] != col[:-1])))
+    ends = np.append(starts[1:], n) - 1
+    group = np.repeat(np.arange(len(starts)), np.diff(np.append(starts, n)))
+    keep = np.zeros(n, dtype=bool)
+    keep[starts] = True
+    keep[ends] = True
+    # The first index of each group's extreme: sort by (group, value) and
+    # take each group's first (least) and last (greatest) entry.
+    order = np.lexsort((py, group))
+    grouped = group[order]
+    first = np.flatnonzero(np.concatenate(([True],
+                                           grouped[1:] != grouped[:-1])))
+    last = np.append(first[1:], n) - 1
+    keep[order[first]] = True
+    keep[order[last]] = True
+    return px[keep], py[keep]
 
 
 def _polyline(px, py):

@@ -699,6 +699,20 @@ class MainWindow(QMainWindow):
               "Y axis: {}".format(unit),
               (lambda u: lambda c: c.set_unit(u))(unit), category="View",
               enabled=(lambda u: lambda c: c.doc.y_unit != u)(unit))
+        # SDT and TGA runs (round 25): the weight on the second y axis.
+        for unit, words in ((model.WEIGHT_PCT, "% of the sample mass"),
+                            (model.WEIGHT_MG, "mg")):
+            r("view.weight_" + ("percent" if unit == model.WEIGHT_PCT
+                                else "mg"),
+              "Weight axis: {}".format(words),
+              (lambda u: lambda c: c.set_weight_unit(u))(unit),
+              category="View", aliases=("tga", "sdt", "mass", "weight"),
+              enabled=(lambda u: lambda c: (c.doc.weight_unit != u
+                                            and c.has_weight()))(unit))
+        r("view.weights", "Show or hide the weight curves",
+          lambda c: c.toggle_weights(), category="View",
+          aliases=("tga", "sdt", "mass loss", "weight", "thermogravimetry"),
+          enabled=lambda c: c.has_weight())
         for theme in (plot_module.THEME_DARK, plot_module.THEME_LIGHT,
                       plot_module.THEME_BOOMBOX):
             r("view.theme_" + theme.replace("-", "_"),
@@ -1441,6 +1455,8 @@ class MainWindow(QMainWindow):
             return None
         self.doc.view_x_hint = self.plot.view_x()
         self.doc.view_y_hint = self.plot.view_y()
+        self.doc.view_y2_hint = (self.plot.view_y2()
+                                 if self.plot.y2_shown() else None)
         self.doc.marker_hint = self.marker_hint()
         written, kind = export.write_driver(self.doc, path)
         self.note.setText(
@@ -1642,6 +1658,9 @@ class MainWindow(QMainWindow):
             obj = chosen[0] if chosen else None
         if isinstance(obj, model.Sample):
             return self.edit_sample(obj)
+        if isinstance(obj, model.WeightCurve):
+            # A weight curve is its scan's: the scan's settings hold it.
+            obj = obj.scan
         group = self.settings_group(obj)
         if isinstance(obj, model.Scan):
             dialog = ScanSettings(self, obj, self.doc.y_unit,
@@ -1950,18 +1969,24 @@ class MainWindow(QMainWindow):
         else:
             unit = "min"
         y_lo, y_hi = self.plot.view_y()
+        y2 = None
+        if self.plot.y2_shown():
+            w_lo, w_hi = self.plot.view_y2()
+            y2 = (self.doc.weight_unit, w_lo, w_hi)
         return RangeDialog("Range", unit, lo, hi, self,
-                           y=(self.doc.y_unit, y_lo, y_hi))
+                           y=(self.doc.y_unit, y_lo, y_hi), y2=y2)
 
     def ask_x_range(self):
         dialog = self.x_range_dialog()
         if not dialog.exec():
             return None
-        return self.set_x_range(*dialog.values(), y=dialog.y_values())
+        return self.set_x_range(*dialog.values(), y=dialog.y_values(),
+                                y2=dialog.y2_values())
 
-    def set_x_range(self, lo, hi, y=None):
+    def set_x_range(self, lo, hi, y=None, y2=None):
         """Frame x from `lo` to `hi` (axis units), and y to the pair `y`
-        when it differs from what is shown - as ONE undo step."""
+        and the weight axis to `y2` when they differ from what is shown -
+        as ONE undo step."""
         if not hi > lo:
             return None
         self.plot.commit_view()
@@ -1969,6 +1994,9 @@ class MainWindow(QMainWindow):
         self.plot.set_view_x(lo, hi)
         if y and y[1] > y[0] and not _same_pair(y, self.plot.view_y()):
             self.plot.set_view_y(*y)
+        if (y2 and y2[1] > y2[0]
+                and not _same_pair(y2, self.plot.view_y2())):
+            self.plot.set_view_y2(*y2)
         self.plot.commit_view()
         self.note.setText("x from {:g} to {:g}".format(lo, hi))
         return (lo, hi)
@@ -2663,6 +2691,30 @@ class MainWindow(QMainWindow):
         for scan in self.doc.scans:
             scan._cache_key = None
         self.refresh(keep_view=False)
+
+    # ------------------------------------------------------- SDT and TGA
+    def has_weight(self):
+        """True when a scan on the figure recorded a weight."""
+        return any(s.has_weight() for s in self.doc.scans)
+
+    def set_weight_unit(self, unit):
+        """The weight axis in % of the sample mass or in mg. Like the heat
+        flow's unit, not an undo step; the weight range is fitted again."""
+        if unit not in model.WEIGHT_UNITS or unit == self.doc.weight_unit:
+            return
+        self.doc.weight_unit = unit
+        self.plot._view_y2 = None
+        self.refresh()
+
+    def toggle_weights(self):
+        """Every weight curve on or off together, one undo step: on when
+        any is off."""
+        curves = [s.weight for s in self.doc.scans if s.has_weight()]
+        if not curves:
+            return
+        shown = not all(c.visible for c in curves)
+        self.undo.set_props([(c, "visible", shown) for c in curves],
+                            "weight curves")
 
     def set_unit(self, unit):
         changes = self.doc.set_unit(unit)

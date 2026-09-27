@@ -99,6 +99,13 @@ def curves_csv(doc, path):
         name = scan.display_name().replace(",", " ")
         headers.append("{} {}".format(name, x_label))
         headers.append("{} HeatFlow/{}".format(name, doc.y_unit))
+        if scan.weight.visible and scan.has_weight():
+            # The weight shares the scan's samples, so its own column.
+            _wx, weight = scan.weight_curve(doc.x_axis, doc.weight_unit,
+                                            doc.x_unit)
+            if weight is not None:
+                columns.append(weight)
+                headers.append("{} Weight/{}".format(name, doc.weight_unit))
     rows = max(len(c) for c in columns)
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("# {} export\n".format(branding.APP_NAME))
@@ -226,6 +233,7 @@ def driver_source(doc):
     view_y = getattr(doc, "view_y_hint", None)
     if view_y:
         lines.append("    ax.set_ylim({:.6g}, {:.6g})".format(*view_y))
+    lines.extend(_weight_lines(doc, index, x_dim))
     lines.extend(_offset_marker_lines(doc, index))
     lines.extend(_arrow_lines(doc))
     lines.append("    style(ax)")
@@ -247,6 +255,47 @@ def driver_source(doc):
                  "if settings['silent'] else plt.show()")
     lines.append("")
     return "\n".join(lines) + "\n"
+
+
+def _weight_lines(doc, index, x_dim):
+    """The weight curves of SDT/TGA runs on a second y axis, `ax2`, as the
+    panel draws them (round 25): the template's own `add_line` with the
+    reader's "Weight Change" (%) or "Weight" (mg), dashed, truncated like
+    their scan, at the panel's range and on its side."""
+    scans = [s for s in doc.visible_scans()
+             if s.weight.visible and s.has_weight()]
+    if not scans:
+        return []
+    dim = ("'Weight Change'" if doc.weight_unit == model.WEIGHT_PCT
+           else "'Weight'")
+    axis = doc.axes["y2"]
+    out = ["    # The weight on a second axis. An SDT .tri reads right only",
+           "    # with a reader from 2026-09-28 or later (flagged arrays).",
+           "    ax2 = ax.twinx()"]
+    for scan in scans:
+        i = index[os.path.normcase(scan.sample.path)]
+        out.append("    add_line(ax2, datas, ({}, {}), color='{}', ls={!r}, "
+                   "x={}, y={}, label={!r})".format(
+                       i, scan.seg, scan.colour,
+                       "--" if scan.weight.dashed else "-", x_dim, dim,
+                       "{} (weight)".format(scan.display_name())))
+        if scan.is_truncated():
+            out.append("    x_truncate(ax2, datas, ({}, {}), x0={:.6g}, "
+                       "x1={:.6g})".format(i, scan.seg, scan.keep[0],
+                                           scan.keep[1]))
+    view = getattr(doc, "view_y2_hint", None)
+    if view:
+        out.append("    ax2.set_ylim({:.6g}, {:.6g})".format(*view))
+    out.append("    ax2.set_ylabel({!r}, fontsize={:g})".format(
+        mathtext(axis.caption(doc)), float(style.value(doc, axis,
+                                                       "label_size"))))
+    out.append("    ax2.tick_params(labelsize={:g})".format(
+        float(style.value(doc, axis, "tick_size"))))
+    side = "right" if doc.axes["y"].side != "right" else "left"
+    if side == "left":
+        out.append("    ax2.yaxis.set_ticks_position('left')")
+        out.append("    ax2.yaxis.set_label_position('left')")
+    return out
 
 
 def _arrow_lines(doc):
@@ -369,8 +418,16 @@ def _legend_lines(doc):
         return []
     x, y, transform = _placed(doc, legend)
     size = float(style.value(doc, legend, "size"))
-    out = ["    leg = ax.legend(loc={!r}, bbox_to_anchor=({:.4f}, {:.4f}),"
-           .format(_LOC.get(legend.anchor, "center"), x, y),
+    out = []
+    handles = ""
+    if any(isinstance(entry, model.WeightCurve)
+           for entry, _text in legend.entries(doc)):
+        # The weight lines are on ax2: one legend for both axes.
+        out.append("    handles = (ax.get_legend_handles_labels()[0]"
+                   " + ax2.get_legend_handles_labels()[0])")
+        handles = "handles=handles, "
+    out += ["    leg = ax.legend({}loc={!r}, bbox_to_anchor=({:.4f}, {:.4f}),"
+            .format(handles, _LOC.get(legend.anchor, "center"), x, y),
            "                    bbox_transform={}, frameon={}, fontsize={:g},"
            .format(transform, bool(legend.show_frame), size),
            "                    handlelength={:.3g}, labelspacing={:.3g})"

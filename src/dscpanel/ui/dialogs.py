@@ -69,7 +69,8 @@ class RangeDialog(QDialog):
     test can fill it without a modal loop.
     """
 
-    def __init__(self, title, unit, low, high, parent=None, y=None):
+    def __init__(self, title, unit, low, high, parent=None, y=None,
+                 y2=None):
         QDialog.__init__(self, parent)
         self.setWindowTitle(title)
         row = QHBoxLayout()
@@ -105,6 +106,24 @@ class RangeDialog(QDialog):
             y_row.addWidget(self.y_high_edit)
             if y_unit:
                 y_row.addWidget(QLabel(y_unit, self))
+        # The weight axis of an SDT run, last (round 25).
+        self.y2_low_edit = self.y2_high_edit = None
+        y2_row = None
+        if y2 is not None:
+            y2_unit, y2_low, y2_high = y2
+            y2_row = QHBoxLayout()
+            self.y2_low_edit = QLineEdit(_number_text(y2_low), self)
+            self.y2_high_edit = QLineEdit(_number_text(y2_high), self)
+            y2_row.addWidget(QLabel("weight", self))
+            for edit in (self.y2_low_edit, self.y2_high_edit):
+                edit.setAlignment(Qt.AlignRight)
+                edit.setMinimumWidth(80)
+                edit.textEdited.connect(self._clear_mark)
+            y2_row.addWidget(self.y2_low_edit)
+            y2_row.addWidget(QLabel("to", self))
+            y2_row.addWidget(self.y2_high_edit)
+            if y2_unit:
+                y2_row.addWidget(QLabel(y2_unit, self))
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
         buttons.accepted.connect(self.accept)
@@ -115,11 +134,17 @@ class RangeDialog(QDialog):
         layout.addLayout(row)
         if y_row is not None:
             layout.addLayout(y_row)
+        if y2_row is not None:
+            layout.addLayout(y2_row)
         layout.addWidget(buttons)
         self.setTabOrder(self.low_edit, self.high_edit)
         if y_row is not None:
             self.setTabOrder(self.high_edit, self.y_low_edit)
             self.setTabOrder(self.y_low_edit, self.y_high_edit)
+        if y2_row is not None:
+            self.setTabOrder(self.y_high_edit or self.high_edit,
+                             self.y2_low_edit)
+            self.setTabOrder(self.y2_low_edit, self.y2_high_edit)
         self.low_edit.setFocus(Qt.OtherFocusReason)
         self.low_edit.selectAll()
 
@@ -141,6 +166,12 @@ class RangeDialog(QDialog):
             return None
         return self._pair(self.y_low_edit, self.y_high_edit)
 
+    def y2_values(self):
+        """The weight pair like `values`, or None."""
+        if self.y2_low_edit is None:
+            return None
+        return self._pair(self.y2_low_edit, self.y2_high_edit)
+
     def _pair(self, first, second):
         low, high = self._read(first), self._read(second)
         if low is None or high is None or low == high:
@@ -149,7 +180,8 @@ class RangeDialog(QDialog):
 
     def _edits(self):
         return [e for e in (self.low_edit, self.high_edit, self.y_low_edit,
-                            self.y_high_edit) if e is not None]
+                            self.y_high_edit, self.y2_low_edit,
+                            self.y2_high_edit) if e is not None]
 
     def _clear_mark(self, _text=""):
         for edit in self._edits():
@@ -160,6 +192,9 @@ class RangeDialog(QDialog):
         if self.y_low_edit is not None:
             pairs.append(((self.y_low_edit, self.y_high_edit),
                           self.y_values()))
+        if self.y2_low_edit is not None:
+            pairs.append(((self.y2_low_edit, self.y2_high_edit),
+                          self.y2_values()))
         wrong = False
         for edits, value in pairs:
             if value is None:
@@ -1350,7 +1385,8 @@ class AxisSettings(_LiveDialog):
     def __init__(self, parent, axis, doc, on_change=None):
         _LiveDialog.__init__(self, parent, axis, on_change)
         self.doc = doc
-        self.setWindowTitle("{} axis".format(axis.which.upper()))
+        self.setWindowTitle("Weight axis" if axis.which == "y2"
+                            else "{} axis".format(axis.which.upper()))
         layout = QVBoxLayout(self)
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -1363,6 +1399,11 @@ class AxisSettings(_LiveDialog):
         self.side.setCurrentIndex(max(0, self.side.findData(axis.side)))
         self.side.setToolTip("Which side of the plot the axis is on.")
         form.addRow("Side", self.side)
+        if axis.which == "y2":
+            # Always opposite the heat flow's axis: that one decides.
+            self.side.setEnabled(False)
+            self.side.setToolTip("Opposite the heat flow's axis; move that "
+                                 "one to move this.")
 
         self.inward = QCheckBox("Ticks point inward")
         self.inward.setChecked(bool(axis.ticks_inward))

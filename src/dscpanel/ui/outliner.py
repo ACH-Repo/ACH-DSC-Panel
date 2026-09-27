@@ -288,6 +288,20 @@ class Outliner(QTreeWidget):
             self._add_label_row(item, label)
         if self.doc is not None and self.doc.offset_markers:
             self._add_marker_row(item, scan.marker)
+        if scan.has_weight():
+            self._add_weight_row(item, scan.weight)
+        return item
+
+    def _add_weight_row(self, parent, weight):
+        """An SDT or TGA run's weight curve, against the second y axis."""
+        item = QTreeWidgetItem(parent)
+        item.setText(0, "Weight")
+        item.setData(0, Qt.UserRole, ("weight", id(weight)))
+        item.setCheckState(0, Qt.Checked if weight.visible else Qt.Unchecked)
+        item.setText(1, "{} axis".format(
+            getattr(self.doc, "weight_unit", "%")))
+        item.setForeground(1, QBrush(_DIM))
+        item.setSelected(weight.selected)
         return item
 
     def _add_marker_row(self, parent, marker):
@@ -538,6 +552,10 @@ class Outliner(QTreeWidget):
             for scan in doc.scans:
                 if id(scan.marker) == ident:
                     return scan.marker
+        if kind == "weight":
+            for scan in doc.scans:
+                if id(scan.weight) == ident:
+                    return scan.weight
         if kind == "scan":
             for scan in doc.scans:
                 if id(scan) == ident:
