@@ -590,10 +590,215 @@ class PlotWidget(QWidget):
             return room_w, room_w / ratio
         return width, height
 
+    #: What was last scrolled on Windows with Alt held, which Qt reports as
+    #: horizontal whichever way the fingers went: the window reads the real
+    #: direction from the system's message (`MainWindow.nativeEvent`).
+    native_wheel = "vertical"
+
     def page(self):
         """`(dx, dy, k)`: where the figure's corner sits in the pane, and how
-        many pane pixels one drawing unit takes. A figure of exact size is
-        scaled to fit the pane; the drawing inside it is not re-laid-out."""
+        many pane pixels one drawing unit takes: the fitted page, then the
+        page's own zoom and pan (Alt, Alt+Shift) on top."""
+        dx, dy, k = self._page_fit()
+        zoom = getattr(self, "_page_zoom", 1.0)
+        pan_x, pan_y = getattr(self, "_page_pan", (0.0, 0.0))
+        if zoom == 1.0 and not pan_x and not pan_y:
+            return dx, dy, k
+        canvas_w, canvas_h = self.canvas_size()
+        centre_x, centre_y = dx + canvas_w * k / 2.0, dy + canvas_h * k / 2.0
+        k2 = k * zoom
+        return (centre_x - canvas_w * k2 / 2.0 + pan_x,
+                centre_y - canvas_h * k2 / 2.0 + pan_y, k2)
+
+    def page_zoomed(self):
+        """True while the page is zoomed or moved away from its fit."""
+        return (getattr(self, "_page_zoom", 1.0) != 1.0
+                or getattr(self, "_page_pan", (0.0, 0.0)) != (0.0, 0.0))
+
+    def zoom_page(self, factor, at=None):
+        """Zoom the PAGE - the whole figure on the pane, like a document
+        in Word - about the pane point `at`, keeping what is under it where
+        it is. The data and the figure's proportions do not change; this is
+        looking closer, not a new framing (Christian, round 20)."""
+        if factor <= 0:
+            return
+        dx, dy, k = self.page()
+        at = at or QPointF(self.width() / 2.0, self.height() / 2.0)
+        fig_x, fig_y = (at.x() - dx) / k, (at.y() - dy) / k
+        zoom = min(40.0, max(0.1, getattr(self, "_page_zoom", 1.0) * factor))
+        self._page_zoom = zoom
+        self._page_pan = (0.0, 0.0)
+        new_dx, new_dy, new_k = self.page()
+        self._page_pan = (at.x() - fig_x * new_k - new_dx,
+                          at.y() - fig_y * new_k - new_dy)
+        self.invalidate()
+
+    def pan_page(self, dx, dy):
+        """Move the page on the pane by (dx, dy) pane pixels."""
+        pan_x, pan_y = getattr(self, "_page_pan", (0.0, 0.0))
+        self._page_pan = (pan_x + dx, pan_y + dy)
+        self.invalidate()
+
+    # ------------------------------------------------- the page's handles
+    #: Pane pixels of a page handle's square.
+    PAGE_HANDLE = 8.0
+
+    def page_on_pane(self):
+        """The page, in pane pixels."""
+        canvas_w, canvas_h = self.canvas_size()
+        return QRectF(self.to_widget(QPointF(0.0, 0.0)),
+                      self.to_widget(QPointF(canvas_w, canvas_h)))
+
+    def page_handles(self, page=None):
+        """`[((hx, hy), square), ...]`: the eight handles at the page's (or
+        `page`'s) corners and edge middles, in pane pixels."""
+        page = page or self.page_on_pane()
+        size = self.PAGE_HANDLE
+        out = []
+        for hx in (0.0, 0.5, 1.0):
+            for hy in (0.0, 0.5, 1.0):
+                if (hx, hy) == (0.5, 0.5):
+                    continue
+                x = page.left() + hx * page.width()
+                y = page.top() + hy * page.height()
+                out.append(((hx, hy), QRectF(x - size / 2.0, y - size / 2.0,
+                                             size, size)))
+        return out
+
+    def page_handle_at(self, pane_pos):
+        """Which handle the pane point is on, when they are shown."""
+        if not getattr(self, "_page_handles_shown", False):
+            return None
+        for handle, square in self.page_handles():
+            if square.adjusted(-3.0, -3.0, 3.0, 3.0).contains(pane_pos):
+                return handle
+        return None
+
+    def in_page_margin(self, pos):
+        """True for a figure point on the page but outside the axes box,
+        and on nothing - not a caption, the numbers or the spine: where a
+        click shows the page's handles (Christian, round 21)."""
+        canvas_w, canvas_h = self.canvas_size()
+        rect = self.plot_rect()
+        inside_page = (0.0 <= pos.x() <= canvas_w
+                       and 0.0 <= pos.y() <= canvas_h)
+        return (inside_page and not rect.contains(pos)
+                and not self.objects_at(pos))
+
+    def _start_page_drag(self, handle, pane_pos):
+        self._page_drag = {"handle": handle, "start": QPointF(pane_pos),
+                           "page": self.page_on_pane(),
+                           "k": self.page()[2]}
+        self._page_drag["proposal"] = QRectF(self._page_drag["page"])
+        self.update()
+
+    def _drag_page(self, pane_pos):
+        """Where the page would be if let go here: the dragged edges move,
+        the opposite ones stay."""
+        drag = self._page_drag
+        hx, hy = drag["handle"]
+        page = drag["page"]
+        dx = pane_pos.x() - drag["start"].x()
+        dy = pane_pos.y() - drag["start"].y()
+        left, right = page.left(), page.right()
+        top, bottom = page.top(), page.bottom()
+        least = 40.0
+        if hx == 0.0:
+            left = min(left + dx, right - least)
+        elif hx == 1.0:
+            right = max(right + dx, left + least)
+        if hy == 0.0:
+            top = min(top + dy, bottom - least)
+        elif hy == 1.0:
+            bottom = max(bottom + dy, top + least)
+        drag["proposal"] = QRectF(left, top, right - left, bottom - top)
+        self.hovered.emit(self._page_readout())
+        self.update()
+
+    @staticmethod
+    def _page_size_of(drag):
+        """A drag's proposed page, in figure units."""
+        proposal = drag["proposal"]
+        return proposal.width() / drag["k"], proposal.height() / drag["k"]
+
+    def _page_readout(self):
+        width, height = self._page_size_of(self._page_drag)
+        doc = self.doc
+        if self.layout_mode() == figure_module.MODE_SIZE:
+            unit = doc.figure.unit
+            per = figure_module.PER_INCH[unit] / figure_module.DESIGN_DPI
+            return "PAGE {:.2f} x {:.2f} {}".format(width * per,
+                                                    height * per, unit)
+        return "PAGE aspect {:.3g} : 1".format(width / max(1e-6, height))
+
+    def _finish_page_drag(self, cancel=False):
+        """Let go of a page handle: the figure takes the new size (an exact
+        figure) or the new aspect ratio (any other), as ONE undo step, and
+        the page is fitted to the window again, as Alt+F does."""
+        drag, self._page_drag = self._page_drag, None
+        if drag is None:
+            return
+        if cancel or drag["proposal"] == drag["page"] or self.doc is None:
+            self.update()
+            return
+        width, height = self._page_size_of(drag)
+        layout = self.doc.figure
+        if self.layout_mode() == figure_module.MODE_SIZE:
+            per = (figure_module.PER_INCH[layout.unit]
+                   / figure_module.DESIGN_DPI)
+            least_w = layout.margin_left + layout.margin_right + 0.2
+            least_h = layout.margin_top + layout.margin_bottom + 0.2
+            changes = [(layout, "width", round(max(least_w, width * per), 3)),
+                       (layout, "height",
+                        round(max(least_h, height * per), 3))]
+        else:
+            changes = [(layout, "mode", figure_module.MODE_ASPECT),
+                       (layout, "aspect_w",
+                        round(width / max(1e-6, height), 4)),
+                       (layout, "aspect_h", 1.0)]
+        self.transform_done.emit(changes, "figure size")
+        self.fit_page()
+
+    def _paint_page_handles(self, p):
+        """The page's handles, and while one is dragged the page it would
+        make, dashed."""
+        drag = getattr(self, "_page_drag", None)
+        if not getattr(self, "_page_handles_shown", False) and drag is None:
+            return
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing, False)
+        if drag is not None:
+            p.setPen(QPen(_SELECT, 1.0, Qt.DashLine))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(drag["proposal"])
+        p.setPen(QPen(_SELECT, 1.0))
+        p.setBrush(QColor(255, 255, 255))
+        # While dragged, the handles ride on the page it would make.
+        for _handle, square in self.page_handles(
+                drag["proposal"] if drag is not None else None):
+            p.drawRect(square)
+        p.restore()
+
+    #: The pointer over each handle.
+    HANDLE_CURSORS = {(0.0, 0.0): Qt.SizeFDiagCursor,
+                      (1.0, 1.0): Qt.SizeFDiagCursor,
+                      (1.0, 0.0): Qt.SizeBDiagCursor,
+                      (0.0, 1.0): Qt.SizeBDiagCursor,
+                      (0.0, 0.5): Qt.SizeHorCursor,
+                      (1.0, 0.5): Qt.SizeHorCursor,
+                      (0.5, 0.0): Qt.SizeVerCursor,
+                      (0.5, 1.0): Qt.SizeVerCursor}
+
+    def fit_page(self):
+        """Alt+F: the page back to fit the pane."""
+        self._page_zoom = 1.0
+        self._page_pan = (0.0, 0.0)
+        self.invalidate()
+
+    def _page_fit(self):
+        """The page as it fits the pane, before its own zoom and pan. A
+        figure of exact size is scaled to fit; the drawing inside it is not
+        re-laid-out."""
         mode = self.layout_mode()
         if mode == figure_module.MODE_WINDOW:
             return 0.0, 0.0, 1.0
@@ -836,6 +1041,10 @@ class PlotWidget(QWidget):
         mods = ev.modifiers()
         pixels = ev.pixelDelta()
         angles = ev.angleDelta()
+        if mods & Qt.AltModifier:
+            self._wheel_page(ev, mods, pixels, angles)
+            ev.accept()
+            return
         if not pixels.isNull():
             dx, dy = float(pixels.x()), float(pixels.y())
         else:
@@ -868,6 +1077,34 @@ class PlotWidget(QWidget):
             self._view_touched("zoom")
             self.scale_y(WHEEL_STEP ** ((dy or dx) / PANE_STEP_PIXELS))
         ev.accept()
+
+    def _wheel_page(self, ev, mods, pixels, angles):
+        """Alt: the PAGE, never the data. A swipe zooms it, like a
+        document; with Shift the swipe moves it around. The data axes and
+        the figure's proportions are left alone (Christian, round 20).
+
+        Windows reports every Alt+wheel as horizontal (it is how Alt gives
+        sideways scrolling to a mouse), so the amount is whichever component
+        arrived and the DIRECTION is the one the system message said
+        (`native_wheel`).
+        """
+        if not pixels.isNull():
+            amount_x, amount_y = float(pixels.x()), float(pixels.y())
+        else:
+            amount_x = angles.x() / PANE_WHEEL_UNITS * PANE_STEP_PIXELS
+            amount_y = angles.y() / PANE_WHEEL_UNITS * PANE_STEP_PIXELS
+        amount = amount_y or amount_x
+        if mods & Qt.ShiftModifier:
+            if amount_x and amount_y:
+                self.pan_page(amount_x, amount_y)
+            elif PlotWidget.native_wheel == "horizontal":
+                self.pan_page(amount, 0.0)
+            else:
+                self.pan_page(0.0, amount)
+            return
+        if amount:
+            self.zoom_page(WHEEL_STEP ** (amount / PANE_STEP_PIXELS),
+                           ev.position())
 
     def event(self, ev):
         """Catch a native pinch, where the platform sends one - and, while
@@ -1465,6 +1702,7 @@ class PlotWidget(QWidget):
     #: What the undo history calls moving one of these.
     MOVE_NAMES = ((model.HeatFlowArrow, "arrow"), (model.Legend, "legend"),
                   (model.TextLabel, "label"), (model.ImageArtist, "image"),
+                  (model.MoleculeArtist, "structure"),
                   (model.Analysis, "analysis label"),
                   (model.OffsetMarker, "offset marker"),
                   (model.Axis, "axis caption"))
@@ -1506,7 +1744,9 @@ class PlotWidget(QWidget):
                                            "size")),
                     (model.Legend, ("size", "sample")),
                     (model.TextLabel, ("size",)),
-                    (model.ImageArtist, ("width",)))
+                    (model.ImageArtist, ("width",)),
+                    (model.MoleculeArtist, ("bond_length", "bond_width",
+                                            "label_size")))
 
     #: The point a scale or a rotation is ABOUT, as `(fx, fy)` of the
     #: artist's box - 0 left/top, 1 right/bottom, as `Artist.anchor` - and
@@ -1589,6 +1829,8 @@ class PlotWidget(QWidget):
             box = self._label_box(obj, rect, QFont(self.figure_font()))
         elif isinstance(obj, model.ImageArtist):
             box = self._image_box(obj, rect)
+        elif isinstance(obj, model.MoleculeArtist):
+            box = self._molecule_layout(obj, rect)[0]
         if box is None or box.isEmpty():
             x, y = self.artist_point(obj, rect)
             box = QRectF(x - 10.0, y - 10.0, 20.0, 20.0)
@@ -2346,8 +2588,13 @@ class PlotWidget(QWidget):
             self.cycle_mode(self.PAN_CYCLE)
         elif key == Qt.Key_Escape:
             self._box = None
+            if getattr(self, "_page_drag", None) is not None:
+                self._finish_page_drag(cancel=True)
+            self._page_handles_shown = False
             self.set_mode(None)
-        elif key in (Qt.Key_F, Qt.Key_Home):
+        elif key in (Qt.Key_F, Qt.Key_Home) and not (
+                ev.modifiers() & (Qt.ControlModifier | Qt.AltModifier
+                                  | Qt.MetaModifier)):
             self.reset_view()
         elif key == Qt.Key_G:
             if not self.start_grab():
@@ -2422,6 +2669,11 @@ class PlotWidget(QWidget):
             return
         if ev.button() != Qt.LeftButton:
             QWidget.mousePressEvent(self, ev)
+            return
+        handle = self.page_handle_at(ev.position())
+        if handle is not None:
+            self._start_page_drag(handle, ev.position())
+            ev.accept()
             return
         if self._measure is not None:
             held = self.cursor_at(pos)
@@ -2548,10 +2800,16 @@ class PlotWidget(QWidget):
         pos = self.to_figure(ev.position())
         self._cursor = pos
         self._sync_pointer()
+        if getattr(self, "_page_drag", None) is not None:
+            self._drag_page(ev.position())
+            return
         if self._scale is not None:
             self._update_transform(pos, ev.modifiers())
             self.update()
             return
+        handle = self.page_handle_at(ev.position())
+        if handle is not None:
+            self.setCursor(self.HANDLE_CURSORS.get(handle, Qt.ArrowCursor))
         if self._cursor_drag is not None:
             self.drag_cursor(pos)
             return
@@ -2607,6 +2865,10 @@ class PlotWidget(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, ev):
+        if getattr(self, "_page_drag", None) is not None:
+            self._finish_page_drag()
+            ev.accept()
+            return
         if self._cursor_drag is not None:
             self.end_cursor_drag()
             ev.accept()
@@ -2621,6 +2883,7 @@ class PlotWidget(QWidget):
             # if it turns out to be the first half of a double-click, the
             # double-click puts the selection back and acts on all of it.
             press, self._press = self._press, None
+            self._page_handles_shown = False
             if press.get("cycle"):
                 self._click_restore = None
                 self.cycle_at(press["start"])
@@ -2642,6 +2905,11 @@ class PlotWidget(QWidget):
                 self.cycle_at(box["start"])
             else:
                 self.select_at(box["start"], add=box["add"])
+            # A click on the page's margin shows its handles; any other
+            # click puts them away.
+            self._page_handles_shown = (not box["moved"]
+                                        and self.in_page_margin(box["start"]))
+            self.update()
             ev.accept()
             return
         if self._move is not None and not self._move["keyboard"]:
@@ -2940,6 +3208,7 @@ class PlotWidget(QWidget):
         self._paint_hidden(painter)
         self._paint_measure(painter)
         painter.restore()
+        self._paint_page_handles(painter)
         self._paint_flash(painter)
 
     # ------------------------------------------------------------- the flash
@@ -3043,7 +3312,7 @@ class PlotWidget(QWidget):
 
     def _surround(self):
         return (_BG if self.layout_mode() == figure_module.MODE_WINDOW
-                else _SURROUND)
+                and not self.page_zoomed() else _SURROUND)
 
     def _render(self):
         """The figure, on its page, into the cache.
@@ -3123,6 +3392,12 @@ class PlotWidget(QWidget):
             canvas_w, canvas_h = self.canvas_size()
             p.drawText(QRectF(0.0, 0.0, canvas_w, canvas_h), Qt.AlignCenter,
                        "Nothing to plot.\nDrop a TRIOS .tri file here.")
+            # What was put on the figure is drawn anyway: a structure or a
+            # label pasted into an empty tab vanished without a word.
+            p.setRenderHint(QPainter.Antialiasing, True)
+            for _z, _order, _inside, draw in self._paint_items(p, rect):
+                draw()
+            p.setRenderHint(QPainter.Antialiasing, False)
             self._paint_frame(p, rect)
             return
         p.setRenderHint(QPainter.Antialiasing, True)
@@ -3183,6 +3458,9 @@ class PlotWidget(QWidget):
             for image in getattr(doc, "images", ()):
                 add(image, False, lambda im=image: self._paint_image(
                     p, rect, im))
+            for structure in getattr(doc, "structures", ()):
+                add(structure, False, lambda m=structure: self._paint_molecule(
+                    p, rect, m))
         items.sort(key=lambda item: (item[0], item[1]))
         return items
 
@@ -3387,14 +3665,171 @@ class PlotWidget(QWidget):
         self._image_boxes.append(
             (image, self.rotated_bounds(image, box, rect).toRect()))
 
+    def _molecule_layout(self, molecule, rect):
+        """`(box, points, pad)`: a structure's box before rotation, each
+        atom's place in it, and the margin kept round the atoms for their
+        labels."""
+        length = max(2.0, float(molecule.bond_length))
+        font = QFont(self.figure_font())
+        font.setPointSizeF(max(3.0, float(molecule.label_size)))
+        pad = max(0.4 * length, 0.75 * QFontMetrics(font).height())
+        atoms = molecule.atoms or [{"x": 0.0, "y": 0.0}]
+        low_x = min(a["x"] for a in atoms)
+        high_x = max(a["x"] for a in atoms)
+        low_y = min(a["y"] for a in atoms)
+        high_y = max(a["y"] for a in atoms)
+        width = (high_x - low_x) * length + 2 * pad
+        height = (high_y - low_y) * length + 2 * pad
+        px, py = self.artist_point(molecule, rect)
+        fx, fy = molecule.anchor_offsets()
+        box = QRectF(px - fx * width, py - fy * height, width, height)
+        points = [QPointF(box.left() + pad + (a["x"] - low_x) * length,
+                          box.top() + pad + (high_y - a["y"]) * length)
+                  for a in atoms]
+        return box, points, pad
+
+    def _turn_of(self, artist, rect):
+        """The QTransform that turns an artist about its anchor."""
+        turn = QTransform()
+        angle = float(getattr(artist, "rotation", 0.0) or 0.0)
+        if angle:
+            ax, ay = self.artist_point(artist, rect)
+            turn.translate(ax, ay)
+            turn.rotate(-angle)
+            turn.translate(-ax, -ay)
+        return turn
+
+    def _paint_molecule(self, p, rect, molecule):
+        """A skeletal structure, as lines and text - vector in every export.
+
+        The bonds are cut short at a labelled atom; a double bond in a ring
+        has its second line inside the ring, one elsewhere is a centred
+        pair; a triple bond is three lines. Rotated, the ATOMS turn and, by
+        default, the labels stay upright (Christian, round 20).
+        """
+        from ..core import chem
+        if not molecule.visible or not molecule.atoms:
+            return
+        box, points, pad = self._molecule_layout(molecule, rect)
+        turn = self._turn_of(molecule, rect)
+        length = max(2.0, float(molecule.bond_length))
+        if molecule.colour in (None, "", "auto"):
+            ink = QColor(_INK)
+        else:
+            ink = (for_light(molecule.colour) if THEME == THEME_LIGHT
+                   else QColor(molecule.colour))
+        font = QFont(p.font())
+        if molecule.label_font:
+            font.setFamilies([molecule.label_font] + list(FALLBACK_FAMILIES))
+        font.setPointSizeF(max(3.0, float(molecule.label_size)))
+        metrics = QFontMetrics(font)
+        upright = bool(molecule.upright_labels)
+        p.save()
+        if upright:
+            # Turn the POINTS, not the painter: labels are drawn level.
+            points = [turn.map(q) for q in points]
+        else:
+            p.setTransform(turn, True)
+        low_x = min(a["x"] for a in molecule.atoms)
+        high_y = max(a["y"] for a in molecule.atoms)
+
+        def place(x, y):
+            """A point of the structure (bond lengths, y up) on the page."""
+            unturned = QPointF(box.left() + pad + (x - low_x) * length,
+                               box.top() + pad + (high_y - y) * length)
+            return turn.map(unturned) if upright else unturned
+
+        shown = [bool(a.get("show")) for a in molecule.atoms]
+        clear = 0.55 * metrics.height()
+        pen = QPen(ink, max(0.1, float(molecule.bond_width)))
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        gap = 0.18 * length
+        for bond in molecule.bonds:
+            a, b = int(bond["a"]), int(bond["b"])
+            if a >= len(points) or b >= len(points):
+                continue
+            start, end = QPointF(points[a]), QPointF(points[b])
+            span = math.hypot(end.x() - start.x(), end.y() - start.y())
+            if span < 1e-6:
+                continue
+            ux, uy = (end.x() - start.x()) / span, (end.y() - start.y()) / span
+            if shown[a]:
+                start = QPointF(start.x() + ux * clear, start.y() + uy * clear)
+            if shown[b]:
+                end = QPointF(end.x() - ux * clear, end.y() - uy * clear)
+            nx, ny = -uy, ux
+            order = int(bond.get("order", 1))
+            if order == 2 and bond.get("ring"):
+                centre = place(*bond["ring"])
+                side = ((end.x() - start.x()) * (centre.y() - start.y())
+                        - (end.y() - start.y()) * (centre.x() - start.x()))
+                sign = 1.0 if side > 0 else -1.0
+                trim = 0.12 * span
+                p.drawLine(start, end)
+                p.drawLine(QPointF(start.x() + ux * trim + nx * gap * sign,
+                                   start.y() + uy * trim + ny * gap * sign),
+                           QPointF(end.x() - ux * trim + nx * gap * sign,
+                                   end.y() - uy * trim + ny * gap * sign))
+            elif order == 2:
+                for sign in (-0.5, 0.5):
+                    p.drawLine(QPointF(start.x() + nx * gap * sign,
+                                       start.y() + ny * gap * sign),
+                               QPointF(end.x() + nx * gap * sign,
+                                       end.y() + ny * gap * sign))
+            elif order == 3:
+                for sign in (-1.0, 0.0, 1.0):
+                    p.drawLine(QPointF(start.x() + nx * gap * sign,
+                                       start.y() + ny * gap * sign),
+                               QPointF(end.x() + nx * gap * sign,
+                                       end.y() + ny * gap * sign))
+            else:
+                p.drawLine(start, end)
+        # The labels: the element centred on its atom, its hydrogens on the
+        # side away from the bonds.
+        neighbours = dict((i, []) for i in range(len(points)))
+        for bond in molecule.bonds:
+            a, b = int(bond["a"]), int(bond["b"])
+            if a < len(points) and b < len(points):
+                neighbours[a].append(b)
+                neighbours[b].append(a)
+        for index, atom in enumerate(molecule.atoms):
+            if not shown[index]:
+                continue
+            here = points[index]
+            others = neighbours[index]
+            left = bool(others) and (
+                sum(points[o].x() for o in others) / len(others) > here.x()
+                + 1e-6)
+            text = chem.label_of(atom, hydrogens_left=left)
+            element = markup_size(atom["el"], font)[0]
+            whole = markup_size(text, font)[0]
+            start = (here.x() - element / 2.0 if not left
+                     else here.x() + element / 2.0 - whole)
+            label_box = QRectF(start, here.y() - metrics.height() / 2.0,
+                               whole, metrics.height())
+            draw_markup(p, label_box, text, font,
+                        element_colour(atom["el"], ink)
+                        if molecule.colour_by_element else ink)
+        p.restore()
+        if molecule.selected:
+            p.save()
+            p.setPen(QPen(_SELECT, 1.0, Qt.DashLine))
+            p.setBrush(Qt.NoBrush)
+            p.drawPolygon(turn.map(QPolygonF(box)))
+            p.restore()
+        self._image_boxes.append(
+            (molecule, self.rotated_bounds(molecule, box, rect).toRect()))
+
     def _label_box(self, label, rect, base):
         """A label's box before rotation, and the font it is drawn in."""
         font = QFont(base)
         font.setPointSizeF(self.style_of(label, "size"))
         font.setBold(bool(label.bold))
         metrics = QFontMetrics(font)
-        width = markup_size(label.text, font)[0] + 6
-        height = metrics.height() + 2
+        lines = str(label.text).split("\n")
+        width = max(markup_size(line, font)[0] for line in lines) + 6
+        height = metrics.height() * len(lines) + 2
         px, py = self.artist_point(label, rect)
         fx, fy = label.anchor_offsets()
         return QRectF(px - fx * width, py - fy * height, width, height)
@@ -3447,8 +3882,8 @@ class PlotWidget(QWidget):
                 # The same markup as every other text on the figure -
                 # `*T*`, `_{g}`, and LaTeX between dollars. Drawn as plain
                 # text, "(Hbc)$_{1.00}$" stayed literal (round 18).
-                draw_markup(p, box, label.text, font,
-                            self.label_colour(label))
+                draw_lines(p, box, label.text, font,
+                           self.label_colour(label), _flush_of(label))
                 p.restore()
             self._text_boxes.append(
                 (label, self.rotated_bounds(label, box, rect).toRect()))
@@ -4405,19 +4840,27 @@ class PlotWidget(QWidget):
         if not (rect.left() <= x <= rect.right()
                 and rect.top() <= y <= rect.bottom()):
             return
+        # The ring IS the pick distance: what it encloses is what a press
+        # there acts on (Christian, round 20). Its ticks, its cross and its
+        # line shrink with it below the built-in size, or a small ring
+        # would be all tick and no ring.
         k = self.page()[2]
-        radius = self.RETICLE_RADIUS / k
-        tick = self.RETICLE_TICK / k
+        radius = self.pick_radius()
+        shrink = min(1.0, float(style.preference("pick_radius"))
+                     / self.RETICLE_RADIUS)
+        tick = self.RETICLE_TICK * shrink / k
+        inset = 3.0 * shrink / k
         p.setRenderHint(QPainter.Antialiasing, True)
-        p.setPen(QPen(_CURSOR, 1.2))
+        p.setPen(QPen(_CURSOR, max(0.6, 1.2 * shrink) / k))
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(QPointF(x, y), radius, radius)
         for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
-            p.drawLine(QPointF(x + dx * (radius - 3), y + dy * (radius - 3)),
+            p.drawLine(QPointF(x + dx * (radius - inset),
+                               y + dy * (radius - inset)),
                        QPointF(x + dx * (radius + tick),
                                y + dy * (radius + tick)))
-        p.drawLine(QPointF(x - 3, y), QPointF(x + 3, y))
-        p.drawLine(QPointF(x, y - 3), QPointF(x, y + 3))
+        p.drawLine(QPointF(x - inset, y), QPointF(x + inset, y))
+        p.drawLine(QPointF(x, y - inset), QPointF(x, y + inset))
         p.setRenderHint(QPainter.Antialiasing, False)
 
     def _paint_select_box(self, p):
@@ -4948,3 +5391,47 @@ def _clip_segment(a, b, rect):
             return None
     return (QPointF(x0 + low * dx, y0 + low * dy),
             QPointF(x0 + high * dx, y0 + high * dy))
+
+
+def _flush_of(artist):
+    """How an artist's lines line up: by the side of its anchor."""
+    anchor = str(getattr(artist, "anchor", "center"))
+    return ("left" if "left" in anchor else
+            "right" if "right" in anchor else "center")
+
+
+def draw_lines(p, box, text, font, colour, flush="center"):
+    """Text over several lines (a newline breaks one), each in the markup,
+    lined up left, centre or right in `box`."""
+    height = QFontMetrics(font).height()
+    for row, line in enumerate(str(text).split("\n")):
+        width = markup_size(line, font)[0]
+        if flush == "left":
+            left = box.left() + 3.0
+        elif flush == "right":
+            left = box.right() - 3.0 - width
+        else:
+            left = box.center().x() - width / 2.0
+        draw_markup(p, QRectF(left, box.top() + 1.0 + row * height, width,
+                              height), line, font, colour)
+
+
+#: "Colour by element" for structure labels: the usual hues, dark enough to
+#: read on white paper; lightened on the dark theme. Anything not listed
+#: (carbon, hydrogen) keeps the structure's ink.
+ELEMENT_COLOURS = {"N": "#2848d8", "O": "#d82020", "S": "#b89400",
+                   "P": "#e07000", "F": "#2f9e2f", "Cl": "#1f9a1f",
+                   "Br": "#a52a2a", "I": "#8a1e9e", "B": "#c06050",
+                   "Si": "#8c7a50", "Se": "#b07800", "Li": "#8a3fd0",
+                   "Na": "#8a3fd0", "K": "#8a3fd0", "Mg": "#2e8b2e",
+                   "Ca": "#2e8b2e", "Fe": "#c05020", "Cu": "#b06a30",
+                   "Zn": "#6070a0"}
+
+
+def element_colour(symbol, ink):
+    """An element label's colour when structures colour by element."""
+    name = ELEMENT_COLOURS.get(str(symbol))
+    if name is None:
+        return QColor(ink)
+    colour = QColor(name)
+    return colour.lighter(150) if THEME == THEME_DARK else colour

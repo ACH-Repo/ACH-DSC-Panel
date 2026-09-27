@@ -30,7 +30,8 @@ This file is GENERATED. After adding an operator, run:
 
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
-| Paste a picture | `Ctrl+V` | always |  |
+| Paste (a picture, a SMILES, text) | `Ctrl+V` | always |  |
+| Paste as a text label | `Ctrl+Shift+V` | always |  |
 | Undo | `Ctrl+Z` | there is something to undo | also walks back zoom, pan and fit, one gesture at a time |
 | Redo | `Ctrl+Y` | there is something to redo |  |
 | Figure size and margins... |  | always | exact cm/in and margins, saved with the session |
@@ -67,6 +68,8 @@ This file is GENERATED. After adding an operator, run:
 
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
+| Text bigger | `Ctrl+Up` | always |  |
+| Text smaller | `Ctrl+Down` | always |  |
 | Bring to front | `Ctrl+Shift+PgUp` | always |  |
 | Bring forward | `Ctrl+PgUp` | always |  |
 | Send backward | `Ctrl+PgDown` | always |  |
@@ -92,6 +95,7 @@ This file is GENERATED. After adding an operator, run:
 
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
+| Fit the page to the window | `Alt+F` | always |  |
 | Fit the view | `F or Home` | a scan is open |  |
 | Set the x range... | `M` | always |  |
 | X axis: temperature |  | the x axis is not temperature |  |
@@ -125,6 +129,7 @@ This file is GENERATED. After adding an operator, run:
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
 | Search operators... | `F3` | always | also the Search button on the menu bar |
+| Open the log folder |  | always |  |
 | About DSC-Panel |  | always | Help menu: version, reader, Qt |
 | Settings... | `Ctrl+,` | always | sizes, label alignment, pick distance |
 

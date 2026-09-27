@@ -103,7 +103,8 @@ class Obj(object):
 #: The drawing order of each kind while nobody has chosen one: curves at
 #: the bottom, then what is drawn on them, then the figure's furniture.
 KIND_Z = {"scan": 0.0, "analysis": 10.0, "offset_marker": 20.0,
-          "arrow": 30.0, "legend": 40.0, "image": 45.0, "label": 50.0}
+          "arrow": 30.0, "legend": 40.0, "image": 45.0, "molecule": 46.0,
+          "label": 50.0}
 
 
 def z_of(obj):
@@ -961,6 +962,40 @@ class ImageArtist(Artist):
         self._pixels = None
 
 
+class MoleculeArtist(Artist):
+    """A skeletal structure, from a pasted SMILES (Christian, round 20).
+
+    Drawn by the plot as lines and text - vector in every export - from the
+    layout `core/chem.py` made, which is STORED here, so the figure opens
+    without RDKit. Its sizes are the ACS 1996 document style's: bonds 0.2
+    inch long and 0.6 pt wide, labels at 10 pt, double bonds 18 % apart.
+    Rotated, its labels stay upright unless `upright_labels` is off.
+    """
+
+    kind = "molecule"
+    can_scale = True
+    can_rotate = True
+
+    def __init__(self, oid, smiles, drawing, x=0.5, y=0.5):
+        Artist.__init__(self, oid, "Structure", x, y)
+        self.smiles = str(smiles)
+        #: `core.chem.layout`: atoms and bonds, in bond lengths, y up.
+        self.atoms = list((drawing or {}).get("atoms", []))
+        self.bonds = list((drawing or {}).get("bonds", []))
+        #: Bond length and bond width in figure units (96 per inch), label
+        #: size in points.
+        self.bond_length = 19.2
+        self.bond_width = 0.8
+        self.label_size = 10.0
+        #: Keep the element labels upright when the structure is rotated.
+        self.upright_labels = True
+        #: The element labels' font family, or None for the figure's.
+        self.label_font = None
+        #: Colour each element label by its element (N blue, O red...);
+        #: the bonds keep the structure's colour.
+        self.colour_by_element = False
+
+
 #: The heat-flow arrow's own proportions by default: the DSC_Plotter
 #: template's `add_exo_arrow`, in POINTS (tail 4.5 wide, head 13 wide and
 #: 9 long, the tail 0.9 of the head long), so the panel and the published
@@ -1069,6 +1104,8 @@ class Document(object):
         self.labels = []
         #: Pictures pasted or dropped onto the figure (`ImageArtist`).
         self.images = []
+        #: Skeletal structures pasted as SMILES (`MoleculeArtist`).
+        self.structures = []
         self.x_axis = AXIS_TEMPERATURE
         #: Which temperature scale the x axis is DRAWN in. The data stays in
         #: Celsius, which is all TRIOS stores; this is a display conversion
@@ -1113,6 +1150,7 @@ class Document(object):
                    if self.offset_markers else [])
         return (list(self.scans) + self.analyses() + markers
                 + list(self.labels) + list(self.images)
+                + list(self.structures)
                 + list(self.axes.values()) + [self.arrow, self.legend])
 
     def add_label(self, text="Label", x=0.5, y=0.5, scan=None):

@@ -45,6 +45,8 @@ going; this file is about how it is done here.
 | `core/style.py` | the house style: object -> figure -> user default -> built-in |
 | `core/figure.py` | the figure's size: window, aspect ratio, or exact size and margins |
 | `core/labels.py` | what an analysis label says: templates, units, the rules |
+| `core/chem.py` | a SMILES as atoms and bonds to draw (RDKit, optional) |
+| `core/log.py` | the log file, the excepthook, the crash file |
 | `core/numbers.py` | how a number is written: the `%.3g` formats |
 | `core/export.py` | CSV, the driver bridge, and the export warnings |
 | `core/ops.py` | the operator registry (copied from MoloM, keep in step) |
@@ -75,6 +77,10 @@ going; this file is about how it is done here.
 * **A modal `exec()` in a test hangs rather than fails.** Menus and dialogs
   are built separately from being shown; tests build them. (Walked into it
   again writing the outliner regression test: `Outliner._menu` SHOWS a menu.)
+* **With the log installed, a slot error is logged and SURVIVED** (round
+  21): PySide6 hands it to `sys.excepthook`, which `core/log.py` sets in
+  the real program only. Tests do not install it, so there the old rule
+  below still holds - and a test must not rely on either.
 * **An exception inside a Qt slot is not a traceback, it is an abort.**
   PySide6 terminates the process. So a crash with no output is usually an
   ordinary Python error in a slot: the outliner's row keys come in two
@@ -298,6 +304,16 @@ going; this file is about how it is done here.
 * **Drawing order is the stack order** (`PlotWidget._paint_items`, sorted
   by `model.z_of`); a new drawn kind adds itself there and to
   `model.KIND_Z`, or it is never drawn.
+* **Windows reports every Alt+wheel as HORIZONTAL** (Qt's platform plugin:
+  Alt is a mouse's sideways scroll). The page pan reads the real direction
+  from `MainWindow.nativeEvent` (WM_MOUSEWHEEL vs WM_MOUSEHWHEEL). The
+  hook runs for every message: it must never raise.
+* **A menu mnemonic is a shortcut too**: "&Help" took Alt+H and "Show
+  everything" never fired. `test_the_menu_bar_is_file_edit_search_help`
+  checks the mnemonics against the operators' keys.
+* **A structure is drawn from its STORED layout** (`MoleculeArtist.atoms`,
+  `.bonds`); RDKit only makes a new one. Upright labels mean the POINTS
+  are turned, not the painter (`_paint_molecule`).
 * **Qt's double-click interval is the system's** (500 ms on Windows); the
   plot's click rhythm re-reads the timing (`_note_press`), and a Qt
   double-click slower than 350 ms is a layer step.

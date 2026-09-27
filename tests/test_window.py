@@ -1699,10 +1699,16 @@ def test_a_framing_from_another_unit_comes_back_as_the_fit(window):
 # ------------------------------------------ round 9: the window around it
 def test_the_menu_bar_is_file_edit_search_help(window):
     titles = [a.text() for a in window.menuBar().actions()]
-    assert titles == ["&File", "&Edit", "&Search", "&Help"]
+    assert titles == ["Fi&le", "&Edit", "&Search", "Hel&p"]
+    # a menu's Alt+letter must not take an operator's key: two claims on
+    # one key fire neither (Alt+F fits the page; "&Help" took Alt+H)
+    keys = {op.key.upper() for op in window.ops.all() if op.key}
+    for title in titles:
+        letter = title[title.index("&") + 1]
+        assert "ALT+" + letter.upper() not in keys, title
     from dscpanel import branding
-    about = [a.text() for a in window.menus["&Help"].actions()]
-    assert about == ["About " + branding.APP_NAME]
+    about = [a.text() for a in window.menus["Help"].actions()]
+    assert about == ["Open the log folder", "About " + branding.APP_NAME]
     searched = []
     window.operator_search = lambda: searched.append(True)
     window._search_action.trigger()
@@ -3660,3 +3666,286 @@ def test_ctrl_v_pastes_a_picture(window, qapp):
     before = len(window.doc.images)
     window.run_op("edit.paste")
     assert len(window.doc.images) == before + 1
+
+
+# ------------------------------------------------------------ round 20
+def test_ctrl_up_and_down_change_the_text_size(window):
+    label = window.add_label("note", at=QPointF(300, 200))
+    legend = window.doc.legend
+    window.doc.select_only([label, legend])
+    before = (window.plot.style_of(label, "size"),
+              window.plot.style_of(legend, "size"))
+    window.run_op("text.bigger")
+    assert label.size == before[0] + 1 and legend.size == before[1] + 1
+    window.run_op("text.smaller")
+    window.run_op("text.smaller")
+    assert label.size == before[0] - 1
+    window.undo.undo()
+    assert label.size == before[0]
+    keys = {op.id: op.key for op in window.ops.all()}
+    assert (keys["text.bigger"], keys["text.smaller"]) == ("Ctrl+Up",
+                                                          "Ctrl+Down")
+
+
+def test_alt_zooms_and_moves_the_page_not_the_data(window):
+    plot = window.plot
+    plot.grab()
+    view = (plot.view_x(), plot.view_y())
+    point = QPointF(300.0, 200.0)
+    under = plot.to_figure(point)
+    plot.wheelEvent(_wheel(angles=(0, 240), mods=Qt.AltModifier,
+                           at=(point.x(), point.y())))
+    assert plot.page()[2] > 1.0 and plot.page_zoomed()
+    assert (plot.view_x(), plot.view_y()) == view      # the data untouched
+    after = plot.to_figure(point)
+    assert (after.x(), after.y()) == pytest.approx((under.x(), under.y()),
+                                                   abs=0.01)
+    # Alt+Shift moves it - up and down as the system said it went
+    from dscpanel.ui.plot import PlotWidget
+    PlotWidget.native_wheel = "vertical"
+    dx, dy, _k = plot.page()
+    plot.wheelEvent(_wheel(angles=(120, 0),
+                           mods=Qt.AltModifier | Qt.ShiftModifier))
+    assert plot.page()[0] == pytest.approx(dx)
+    assert plot.page()[1] != pytest.approx(dy)
+    PlotWidget.native_wheel = "horizontal"
+    dx, dy, _k = plot.page()
+    plot.wheelEvent(_wheel(angles=(120, 0),
+                           mods=Qt.AltModifier | Qt.ShiftModifier))
+    assert plot.page()[0] != pytest.approx(dx)
+    PlotWidget.native_wheel = "vertical"
+    window.run_op("view.fit_page")                      # Alt+F
+    assert not plot.page_zoomed() and plot.page() == plot._page_fit()
+
+
+def test_the_real_wheel_direction_is_read_from_windows(window):
+    import sys
+    if sys.platform != "win32":
+        pytest.skip("a Windows message")
+    import ctypes.wintypes
+    from PySide6.QtCore import QByteArray
+    from dscpanel.ui.plot import PlotWidget
+    message = ctypes.wintypes.MSG()
+    message.message = 0x020E                            # WM_MOUSEHWHEEL
+    window.nativeEvent(QByteArray(b"windows_generic_MSG"),
+                       ctypes.addressof(message))
+    assert PlotWidget.native_wheel == "horizontal"
+    message.message = 0x020A                            # WM_MOUSEWHEEL
+    window.nativeEvent(QByteArray(b"windows_generic_MSG"),
+                       ctypes.addressof(message))
+    assert PlotWidget.native_wheel == "vertical"
+
+
+def test_ctrl_f_is_not_f(window):
+    plot = window.plot
+    plot.grab()
+    plot.set_view_x(60.0, 90.0)
+    plot.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key_F,
+                                 Qt.ControlModifier, "f"))
+    assert plot.view_x() == (60.0, 90.0)
+    plot.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key_F,
+                                 Qt.NoModifier, "f"))
+    assert plot.view_x() != (60.0, 90.0)
+
+
+def test_a_scan_window_shows_its_layer(window):
+    scan = window.doc.scans[0]
+    window.edit_object(scan)
+    dialog = window._dialogs[-1]
+    assert dialog.layer.value() == model.z_of(scan)
+    dialog.layer.setValue(60.0)
+    assert scan.z == 60.0
+    dialog.accept()
+    window.undo.undo()
+    assert scan.z is None
+
+
+def test_a_smiles_pastes_as_a_structure(window, qapp, tmp_path, sample):
+    from dscpanel.core import chem, session
+    if not chem.available():
+        pytest.skip("RDKit")
+    qapp.clipboard().setText("Oc1ccccc1C(=O)O")
+    made = window.paste()
+    assert isinstance(made, model.MoleculeArtist)
+    assert made in window.doc.structures
+    assert sum(1 for a in made.atoms if a["show"]) == 3     # three O
+    assert sorted(b["order"] for b in made.bonds).count(2) == 4
+    plot = window.plot
+    plot.grab()
+    assert any(o is made for o, _b in plot._image_boxes)
+    # vector: an SVG export has no picture in it
+    path = window.export_image(str(tmp_path / "s.svg"), light=True)
+    assert "<image" not in open(path, encoding="utf-8").read()
+    # S scales it; the session keeps its drawing, RDKit or not
+    window.doc.select_only([made])
+    plot.start_scale()
+    plot._scale["typed"] = "2"
+    plot._update_transform()
+    plot._finish_transform()
+    assert made.bond_length == pytest.approx(38.4)
+    target = tmp_path / "structure.dscpanel"
+    session.save(window.doc, str(target))
+    loaded, _p = session.load(
+        str(target), lambda _p: model.Sample(sample.path, sample.data))
+    assert loaded.structures[0].atoms == made.atoms
+    assert loaded.structures[0].smiles == "Oc1ccccc1C(=O)O"
+
+
+def test_a_structure_turns_and_its_labels_stay_upright(window):
+    from dscpanel.core import chem
+    if not chem.available():
+        pytest.skip("RDKit")
+    made = window.add_molecule("CCO", at=QPointF(300, 200))
+    made.rotation = 90.0
+    window.plot.grab()                          # draws without trouble
+    made.upright_labels = False
+    window.plot.grab()
+    assert made.can_rotate and made.can_scale
+
+
+def test_text_pastes_as_a_label_over_lines(window, qapp):
+    qapp.clipboard().setText("first heating\n10 K/min")
+    made = window.paste()
+    assert isinstance(made, model.TextLabel)
+    assert made.text == "first heating\n10 K/min"
+    plot = window.plot
+    box = plot._label_box(made, plot.plot_rect(), plot.figure_font())
+    from PySide6.QtGui import QFontMetrics
+    font = plot.figure_font()
+    font.setPointSizeF(plot.style_of(made, "size"))
+    assert box.height() >= 2 * QFontMetrics(font).height()
+    # a word that happens to be a SMILES is text with Ctrl+Shift+V
+    qapp.clipboard().setText("CO")
+    assert isinstance(window.paste(as_text=True), model.TextLabel)
+
+
+def test_the_label_window_takes_several_lines(window):
+    from PySide6.QtWidgets import QPlainTextEdit
+    from dscpanel.ui.dialogs import LabelSettings
+    label = window.add_label("one", at=QPointF(300, 200))
+    dialog = LabelSettings(window, label)
+    assert isinstance(dialog.text, QPlainTextEdit)
+    dialog.text.setPlainText("one\ntwo")
+    assert label.text == "one\ntwo"
+
+
+# ------------------------------------------------------------ round 21
+def test_an_error_is_logged_and_the_program_carries_on(tmp_path, qapp):
+    """PySide6 ends the process on an exception inside a slot unless an
+    excepthook takes it; the log's hook takes it, writes it down and says
+    so, and the program carries on."""
+    import sys
+    from PySide6.QtCore import QTimer
+    from dscpanel.core import log
+    saved = sys.excepthook
+    heard = []
+    try:
+        target = log.install(str(tmp_path / "panel.log"))
+        log.on_error = heard.append
+
+        def boom():
+            raise ValueError("in a slot")
+        QTimer.singleShot(0, boom)
+        for _ in range(5):
+            qapp.processEvents()
+        text = open(target, encoding="utf-8").read()
+        assert "ValueError: in a slot" in text and "Traceback" in text
+        assert heard == ["ValueError: in a slot"]
+    finally:
+        sys.excepthook = saved
+        log.on_error = None
+        for handler in list(log.LOGGER.handlers):
+            log.LOGGER.removeHandler(handler)
+            handler.close()
+        import faulthandler
+        faulthandler.disable()
+
+
+def test_structure_labels_by_element_and_in_their_own_font(window, tmp_path,
+                                                           sample):
+    from dscpanel.core import chem, session
+    from dscpanel.ui.dialogs import MoleculeSettings
+    from dscpanel.ui.plot import element_colour
+    if not chem.available():
+        pytest.skip("RDKit")
+    made = window.add_molecule("OCCN", at=QPointF(300, 200))
+    dialog = MoleculeSettings(window, made)
+    dialog.by_element.setChecked(True)
+    dialog.label_font.set_value("Times New Roman")
+    assert made.colour_by_element and made.label_font == "Times New Roman"
+    window.plot.grab()                             # draws with both
+    from PySide6.QtGui import QColor
+    assert element_colour("O", QColor("#000000")).name() != "#000000"
+    assert element_colour("C", QColor("#123456")).name() == "#123456"
+    path = tmp_path / "el.dscpanel"
+    session.save(window.doc, str(path))
+    loaded, _p = session.load(
+        str(path), lambda _p: model.Sample(sample.path, sample.data))
+    back = loaded.structures[0]
+    assert back.colour_by_element and back.label_font == "Times New Roman"
+
+
+def _page_click(plot, pane):
+    plot.mousePressEvent(QMouseEvent(QMouseEvent.Type.MouseButtonPress,
+                                     pane, pane, Qt.LeftButton,
+                                     Qt.LeftButton, Qt.NoModifier))
+    plot.mouseReleaseEvent(QMouseEvent(QMouseEvent.Type.MouseButtonRelease,
+                                       pane, pane, Qt.LeftButton,
+                                       Qt.NoButton, Qt.NoModifier))
+
+
+def test_the_page_handles_resize_an_exact_figure(window):
+    from dscpanel.core import figure
+    plot = window.plot
+    layout = window.doc.figure
+    layout.mode, layout.unit = figure.MODE_SIZE, figure.UNIT_CM
+    layout.width, layout.height = 8.0, 6.0
+    window.refresh()
+    plot.grab()
+    # a click on the page's margin - not the axes, not a caption - shows them
+    rect = plot.plot_rect()
+    margin = plot.to_widget(QPointF(rect.right() + 4.0, rect.top() + 4.0))
+    assert plot.in_page_margin(plot.to_figure(margin))
+    _page_click(plot, margin)
+    assert plot._page_handles_shown and len(plot.page_handles()) == 8
+    # the right edge's handle, dragged out by a quarter of the page
+    square = dict(plot.page_handles())[(1.0, 0.5)]
+    start = square.center()
+    width = plot.page_on_pane().width()
+    end = QPointF(start.x() + width / 4.0, start.y())
+    plot.mousePressEvent(QMouseEvent(QMouseEvent.Type.MouseButtonPress,
+                                     start, start, Qt.LeftButton,
+                                     Qt.LeftButton, Qt.NoModifier))
+    plot.mouseMoveEvent(QMouseEvent(QMouseEvent.Type.MouseMove, end, end,
+                                    Qt.NoButton, Qt.LeftButton,
+                                    Qt.NoModifier))
+    plot.mouseReleaseEvent(QMouseEvent(QMouseEvent.Type.MouseButtonRelease,
+                                       end, end, Qt.LeftButton, Qt.NoButton,
+                                       Qt.NoModifier))
+    assert layout.width == pytest.approx(10.0, abs=0.05)
+    assert layout.height == pytest.approx(6.0)
+    assert not plot.page_zoomed()                  # fitted again, as Alt+F
+    window.undo.undo()                             # one step
+    assert layout.width == pytest.approx(8.0)
+    # a click in the axes puts the handles away
+    inside = plot.to_widget(rect.center())
+    _page_click(plot, inside)
+    assert not plot._page_handles_shown
+
+
+def test_the_page_handles_set_the_aspect_of_a_free_figure(window):
+    from dscpanel.core import figure
+    plot = window.plot
+    plot.grab()
+    assert plot.layout_mode() == figure.MODE_WINDOW
+    plot._page_handles_shown = True
+    square = dict(plot.page_handles())[(0.5, 1.0)]  # the bottom edge
+    start = square.center()
+    end = QPointF(start.x(), start.y() - 100.0)
+    plot._start_page_drag((0.5, 1.0), start)
+    plot._drag_page(end)
+    plot._finish_page_drag()
+    layout = window.doc.figure
+    assert layout.mode == figure.MODE_ASPECT
+    page = plot.page_on_pane()
+    assert layout.aspect_w > 1.0

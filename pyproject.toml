@@ -29,6 +29,9 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest"]
+# Skeletal structures from a pasted SMILES (core/chem.py). A session with a
+# structure in it opens without RDKit; only making a new one needs it.
+structures = ["rdkit"]
 
 [project.urls]
 Repository = "https://github.com/ACH-Repo/ACH-DSC-Panel"

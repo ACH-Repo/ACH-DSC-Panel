@@ -115,8 +115,12 @@ def main(argv=None):
     # Imported HERE rather than at the top, so `--version`, `register` and
     # `alias` do not pay for Qt - which is most of the start-up time.
     from PySide6.QtWidgets import QApplication
-    from .core import style
+    from .core import log, style
     from .ui.window import MainWindow
+
+    # The log first: an error from here on goes into it, and one inside a Qt
+    # slot no longer ends the program (`core/log.py`).
+    log.install()
 
     # The user's house style (Edit > Settings). Loaded HERE and not by the
     # window, so a window made by a test or a tool never reads the defaults
@@ -127,6 +131,7 @@ def main(argv=None):
     app.setOrganizationName(branding.SETTINGS_ORG)
     app.setApplicationDisplayName(branding.APP_NAME)
     window = MainWindow()
+    log.on_error = window.show_error
     # Where it was last time; maximized the first time (rounds 18, 19).
     if window.restore_layout():
         window.show()

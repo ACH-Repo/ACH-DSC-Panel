@@ -236,6 +236,11 @@ def driver_source(doc):
     if getattr(doc, "images", None):
         lines.append("    # {} picture(s) on the panel's figure are not "
                      "written here.".format(len(doc.images)))
+    if getattr(doc, "structures", None):
+        lines.append("    # {} structure(s) on the panel's figure are not "
+                     "written here: {}".format(
+                         len(doc.structures),
+                         ", ".join(m.smiles for m in doc.structures)))
     lines.append("    out = HERE / 'dsc.{}'.format(settings['extension'])")
     lines.append("    plt.savefig(out, dpi=settings['dpi'], "
                  "transparent=settings['transparent']) "

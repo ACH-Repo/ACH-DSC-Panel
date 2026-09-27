@@ -632,22 +632,76 @@ Rounds 12-18 were committed first (`4ab47d0`, Christian's request).
   Moved, scaled (S), rotated (R), layered, aligned, deleted like any
   artist; stored in the session as PNG. Not in the driver.
 
+### Round 20 (2026-09-27): the page, structures, text
+
+Round 19 committed first (`f411f26`, Christian's request).
+
+* **The page zooms like a document**: Alt + swipe zooms the whole figure
+  on the pane about the pointer, Alt+Shift + swipe moves it, Alt+F fits it
+  again - orthogonal to the swipes that frame the DATA, and neither the
+  data nor the figure's proportions change. Windows reports every Alt+wheel
+  as horizontal, so the window reads the real direction from the system
+  message (`MainWindow.nativeEvent`, `PlotWidget.native_wheel`). The File
+  menu's mnemonic is Alt+L now, and Help's Alt+P - "&Help" had been
+  taking Alt+H from "Show everything" all along; a test checks mnemonics
+  against the operators' keys.
+* **F fits the data only without a modifier** (Ctrl+F did the same).
+* **Ctrl+Up / Ctrl+Down**: the selected texts one point bigger or smaller.
+* **Layer** in every object's settings: its place in the stack as a
+  number (`_LiveDialog._layer_row`).
+* **Structures from a SMILES** (`core/chem.py`, `MoleculeArtist`): Ctrl+V
+  on a SMILES draws a skeletal formula - vector, from RDKit's 2D layout
+  (CoordGen), drawn by the plot: labels for heteroatoms with their
+  hydrogens on the free side, charges, ring double bonds inside the ring,
+  triple bonds, the pieces of a salt side by side. ACS 1996 sizes (bonds
+  19.2 px long and 0.8 wide, labels 10 pt); double-click for bond length
+  and width, label size, colour, a new SMILES. Rotated, the labels stay
+  upright unless switched off. The layout is stored, so a session opens
+  without RDKit (an optional extra). Not in the driver.
+* **Text pastes as a label**, and labels run over several lines (a
+  multi-line box in their settings; lines follow the anchor's side).
+  Ctrl+Shift+V pastes text as a label even when it reads as a SMILES.
+* **The reticle is the pick distance**: its ring is the radius a press
+  acts within, and its ticks and line shrink below the built-in size.
+* An empty figure draws what was put on it (a structure pasted into an
+  empty tab was invisible).
+
+### Round 21 (2026-09-27): a log, element labels, the page's handles
+
+* **A log** (`core/log.py`): `dsc-panel.log` beside the preferences,
+  rotating; every unhandled error with its traceback, hard crashes into a
+  `.crash` file (`faulthandler`), files read and sessions opened. Its
+  excepthook also keeps the program ALIVE after an error in a Qt slot,
+  which PySide6 otherwise ends the process for; the window says an error
+  was logged. Help > Open the log folder. No interactive console: nothing
+  here needs one, and a console in a figure program invites poking at
+  state the undo stack does not know about.
+* **Structures**: a label font of their own (the figure's by default) and
+  "Colour by element" for the labels (the bonds keep the structure's
+  colour).
+* **The page's handles**: a click on the page's margin (on the page,
+  outside the axes box, on nothing) shows eight handles; dragging one
+  shows the page it would make, dashed, with its size. Let go: an exact
+  figure takes the new size (margins kept), any other figure the new
+  aspect ratio - one undo step - and the page is fitted again, as Alt+F.
+  Esc or a click elsewhere puts them away.
+
 ## Next
 
-1. **Controls on a mouse** (the wheel is read as a swipe; no middle-button
-   pan; press vs drag only tested in code).
-2. **Tangent constructions** for onset/endset and the Tg construction, if
-   the interval marks are not enough (Christian likes them as they are).
-3. **Style presets** as files dropped into the program and chosen from a
-   menu (Christian: TOML). Python 3.10 has no `tomllib` (3.11+): `tomli`,
-   a small dependency, or JSON.
-4. **Pictures and free labels in the outliner.**
-5. **Analysis labels sideways for other kinds** if ever needed (only
-   integrations slide, on purpose).
+1. **Controls on a mouse** - Christian tests on his desktop next: the
+   plain wheel (read as a swipe: scales y about 0), Ctrl+wheel (zoom both),
+   Shift+wheel (pan), Alt+wheel (page zoom) and Alt+Shift+wheel (page pan,
+   which relies on the Windows message for its direction), press vs drag
+   near curves and artists, the click rhythm, the outliner sweep, the page
+   handles. There is no middle-button pan.
+2. **Tangent constructions** for onset/endset and Tg, if wanted.
+3. **Style presets** as dropped files chosen from a menu (TOML needs
+   `tomli` on Python 3.10, or JSON).
+4. **Pictures, structures and free labels in the outliner.**
+5. **Structures**: stereo wedges; the driver writes them only as a comment.
 6. **A note with its own leader arrow** as an artist.
 7. **Closing a file** (`Document.close_sample` exists, no operator).
-8. **SDT / TGA** - parked (Christian: maybe later; blank-run subtraction
-   dropped, the instrument's calibration already does it).
+8. **SDT / TGA** - parked.
 
 ## Settled on 2026-09-23, with the files Christian supplied
 

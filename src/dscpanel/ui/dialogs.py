@@ -18,8 +18,8 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QColorDialog,
                                QComboBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFontComboBox, QFormLayout,
                                QHBoxLayout, QLabel, QLayout, QLineEdit,
-                               QListWidget, QListWidgetItem, QPushButton,
-                               QSpinBox, QVBoxLayout, QWidget)
+                               QListWidget, QListWidgetItem, QPlainTextEdit,
+                               QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
 import html
 import os
@@ -652,9 +652,14 @@ class _LiveDialog(QDialog):
     #: Widgets (attribute names on the dialog, dotted for a nested one)
     #: greyed out while a group is edited.
     GROUP_DISABLED = ()
+    #: True for an object with a place in the figure's stack: its window
+    #: gets a Layer field (`_layer_row`), and its z is in FIELDS.
+    LAYERED = False
 
     def __init__(self, parent, obj, on_change=None):
         QDialog.__init__(self, parent)
+        if self.LAYERED and "z" not in type(self).FIELDS:
+            self.FIELDS = tuple(type(self).FIELDS) + ("z",)
         self.obj = obj
         self.on_change = on_change
         self.doc = _document_of(parent)
@@ -758,8 +763,32 @@ class _LiveDialog(QDialog):
             self.on_change()
         QDialog.reject(self)
 
+    def _layer_row(self, form):
+        """Layer: where the object is drawn in the stack, as a number -
+        the same order Ctrl+PgUp and Ctrl+PgDown move it in (round 20)."""
+        self.layer = NumberBox()
+        self.layer.setDecimals(1)
+        self.layer.setRange(-10000.0, 10000.0)
+        self.layer.setSingleStep(1.0)
+        self.layer.setValue(float(units_module.z_of(self.obj)))
+        self.layer.setToolTip("Higher is drawn on top. Ctrl+PgUp / PgDn "
+                              "move it one place.")
+        form.addRow("Layer", self.layer)
+        self.layer.valueChanged.connect(self._set_layer)
+
+    def _set_layer(self, value):
+        self.obj.z = float(value)
+        self._live()
+
     def _buttons(self):
-        """OK and Revert. OK closes; Revert undoes this dialog and closes."""
+        """OK and Revert. OK closes; Revert undoes this dialog and closes.
+
+        Also where a window for an object in the stack gets its Layer row,
+        at the end of its form: every such window builds its buttons last."""
+        if self.LAYERED and not hasattr(self, "layer"):
+            forms = self.findChildren(QFormLayout)
+            if forms:
+                self._layer_row(forms[0])
         buttons = QDialogButtonBox(QDialogButtonBox.Ok
                                    | QDialogButtonBox.Cancel)
         revert = buttons.button(QDialogButtonBox.Cancel)
@@ -1532,9 +1561,12 @@ class LabelSettings(_LiveDialog):
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         layout.addLayout(form)
 
-        self.text = QLineEdit(label.text)
+        # Several lines: Enter breaks one, Tab goes on to the next field.
+        self.text = QPlainTextEdit(label.text)
+        self.text.setTabChangesFocus(True)
+        self.text.setFixedHeight(3 * self.fontMetrics().lineSpacing() + 14)
         self.text.setToolTip("*T* italic, _{g} subscript, \\Delta Greek, "
-                             "LaTeX between $...$.")
+                             "LaTeX between $...$. Enter starts a new line.")
         form.addRow("Text", self.text)
 
         self.text_size = _style_number(self, label, "size")
@@ -1571,7 +1603,7 @@ class LabelSettings(_LiveDialog):
 
     def _apply(self, *_args):
         label = self.obj
-        label.text = self.text.text() or "Label"
+        label.text = self.text.toPlainText() or "Label"
         label.size = self.text_size.value()
         label.bold = bool(self.bold.isChecked())
         if self.auto.isChecked():
@@ -2393,3 +2425,141 @@ class ImageSettings(_LiveDialog):
         self.obj.visible = bool(self.shown.isChecked())
         self.obj.width = float(self.picture_width.value())
         self._live()
+
+
+class MoleculeSettings(_LiveDialog):
+    """A skeletal structure: its SMILES, its bonds and labels, its colour,
+    and where it sits. The sizes start at the ACS 1996 document style's."""
+
+    FIELDS = ("visible", "colour", "bond_length", "bond_width", "label_size",
+              "upright_labels", "x", "y", "space", "anchor", "rotation",
+              "smiles", "atoms", "bonds", "label_font", "colour_by_element")
+    INDIVIDUAL = ("x", "y", "space", "smiles", "atoms", "bonds")
+    GROUP_DISABLED = ("smiles_edit", "transform.space", "transform.at_x",
+                      "transform.at_y")
+
+    def __init__(self, parent, molecule, on_change=None):
+        _LiveDialog.__init__(self, parent, molecule, on_change)
+        self.setWindowTitle("Structure")
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        layout.addLayout(form)
+
+        self.shown = QCheckBox("Show")
+        self.shown.setChecked(bool(molecule.visible))
+        self.shown.setToolTip("Draw the structure.")
+        form.addRow("", self.shown)
+
+        self.smiles_edit = QLineEdit(molecule.smiles, self)
+        self.smiles_edit.setToolTip("Type another SMILES and press Enter to "
+                                    "redraw it (needs RDKit).")
+        form.addRow("SMILES", self.smiles_edit)
+
+        def size(low, high, step, suffix):
+            box = NumberBox()
+            box.setDecimals(2)
+            box.setRange(low, high)
+            box.setSingleStep(step)
+            box.setSuffix(suffix)
+            return box
+
+        self.bond_length = size(2.0, 400.0, 1.0, " px")
+        self.bond_length.setValue(float(molecule.bond_length))
+        self.bond_length.setToolTip("Bond length; ACS style is 19.2 px "
+                                    "(0.2 inch).")
+        form.addRow("Bond length", self.bond_length)
+        self.bond_width = size(0.1, 20.0, 0.1, " px")
+        self.bond_width.setValue(float(molecule.bond_width))
+        self.bond_width.setToolTip("Line width of the bonds; ACS style is "
+                                   "0.8 px (0.6 pt).")
+        form.addRow("Bond width", self.bond_width)
+        self.label_size = size(3.0, 72.0, 0.5, " pt")
+        self.label_size.setValue(float(molecule.label_size))
+        self.label_size.setToolTip("Size of the element labels.")
+        form.addRow("Label size", self.label_size)
+
+        self.label_font = FontChoice(
+            molecule.label_font,
+            lambda: style.figure_value(self.doc, "font_family") or "",
+            parent=self)
+        self.label_font.setToolTip("The element labels' typeface; Default "
+                                   "is the figure's.")
+        form.addRow("Label font", self.label_font)
+
+        self.by_element = QCheckBox("Colour by element")
+        self.by_element.setChecked(bool(molecule.colour_by_element))
+        self.by_element.setToolTip("N blue, O red, S yellow...; the bonds "
+                                   "keep the colour below.")
+        form.addRow("", self.by_element)
+
+        self.upright = QCheckBox("Labels stay upright when rotated")
+        self.upright.setChecked(bool(molecule.upright_labels))
+        self.upright.setToolTip("Off: the labels turn with the structure.")
+        form.addRow("", self.upright)
+
+        form.addRow("Colour", _colour_button(
+            self, lambda: (molecule.colour if molecule.colour != "auto"
+                           else "#cccccc"), self._set_colour))
+        self.auto = QCheckBox("Follow the theme")
+        self.auto.setChecked(molecule.colour in (None, "", "auto"))
+        self.auto.setToolTip("Light on dark, dark on light.")
+        form.addRow("", self.auto)
+
+        self.transform = ArtistTransform(molecule,
+                                         getattr(parent, "plot", None),
+                                         on_change=self._live, parent=self)
+        form.addRow("Place", self.transform)
+
+        buttons = self._buttons()
+        layout.addWidget(buttons)
+        self.shown.toggled.connect(self._apply)
+        for box in (self.bond_length, self.bond_width, self.label_size):
+            box.valueChanged.connect(self._apply)
+        self.upright.toggled.connect(self._apply)
+        self.by_element.toggled.connect(self._apply)
+        self.label_font.changed.connect(self._apply)
+        self.auto.toggled.connect(self._apply)
+        self.smiles_edit.editingFinished.connect(self._new_smiles)
+
+    def _new_smiles(self):
+        from ..core import chem
+        text = self.smiles_edit.text().strip()
+        if text == self.obj.smiles:
+            return
+        drawing = chem.layout(text)
+        if drawing is None:
+            self.smiles_edit.setStyleSheet("border: 1px solid #d04040;")
+            return
+        self.smiles_edit.setStyleSheet("")
+        self.obj.smiles = text
+        self.obj.atoms = drawing["atoms"]
+        self.obj.bonds = drawing["bonds"]
+        self._live()
+
+    def _set_colour(self, name):
+        self.obj.colour = name
+        if hasattr(self, "auto"):
+            self.auto.setChecked(False)
+        self._live()
+
+    def _apply(self, *_args):
+        molecule = self.obj
+        molecule.visible = bool(self.shown.isChecked())
+        molecule.bond_length = float(self.bond_length.value())
+        molecule.bond_width = float(self.bond_width.value())
+        molecule.label_size = float(self.label_size.value())
+        molecule.upright_labels = bool(self.upright.isChecked())
+        molecule.colour_by_element = bool(self.by_element.isChecked())
+        molecule.label_font = self.label_font.value() or None
+        if self.auto.isChecked():
+            molecule.colour = "auto"
+        self._live()
+
+
+# The windows of objects with a place in the figure's stack show it: a
+# Layer field (`_LiveDialog._layer_row`, round 20).
+for _kind in (ScanSettings, AnalysisSettings, LabelSettings, LegendSettings,
+              ArrowSettings, OffsetMarkerSettings, ImageSettings,
+              MoleculeSettings):
+    _kind.LAYERED = True

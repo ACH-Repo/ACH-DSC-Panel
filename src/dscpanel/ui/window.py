@@ -16,6 +16,7 @@ import contextlib
 import json
 import os
 import re
+import sys
 
 from PySide6.QtCore import QByteArray, QPoint, QRectF, Qt
 from PySide6.QtGui import (QAction, QColor, QCursor, QImage, QKeySequence,
@@ -28,11 +29,12 @@ from PySide6.QtWidgets import (QApplication, QColorDialog, QDialog,
 from .. import branding
 from ..core import (arrange, export, loader, measure, model, ops, session,
                     style, undo, units)
+from ..core.log import LOGGER
 from ..core import figure as figure_module
 from .dialogs import (AnalysisSettings, ArrowSettings, AxisSettings,
                       CaptionSettings, FigureSettings, LabelSettings,
                       ExportDialog, ImageSettings, LegendSettings,
-                      NumberSettings,
+                      MoleculeSettings, NumberSettings,
                       OffsetMarkerSettings, RangeDialog, SampleSettings,
                       ScanSettings, install_basic_colours)
 from . import appearance
@@ -278,6 +280,28 @@ class MainWindow(QMainWindow):
         self._sync_title()
         return True
 
+    def nativeEvent(self, event_type, message):
+        """Note which way a wheel or swipe really went, on Windows.
+
+        Qt reports every Alt+wheel as horizontal there (Alt is how a mouse
+        scrolls sideways), which would make Alt+Shift+swipe - moving the
+        page - unable to go up or down. The system's own message says:
+        WM_MOUSEWHEEL is vertical, WM_MOUSEHWHEEL horizontal. Never raises:
+        this runs for every message the window gets.
+        """
+        try:
+            if sys.platform == "win32" and bytes(event_type) \
+                    == b"windows_generic_MSG":
+                import ctypes.wintypes
+                msg = ctypes.wintypes.MSG.from_address(int(message))
+                if msg.message == 0x020A:
+                    PlotWidget.native_wheel = "vertical"
+                elif msg.message == 0x020E:
+                    PlotWidget.native_wheel = "horizontal"
+        except Exception:
+            pass
+        return False, 0
+
     # ------------------------------------------------ the window's layout
     def save_layout(self):
         """Where the window was and where its outliner was docked, kept
@@ -493,9 +517,29 @@ class MainWindow(QMainWindow):
           lambda c: c.close_step(), category="File", key="Ctrl+W",
           shortcut="Ctrl+W", aliases=("quit", "exit"))
 
-        r("edit.paste", "Paste a picture", lambda c: c.paste(),
-          category="Edit", key="Ctrl+V", shortcut="Ctrl+V",
-          aliases=("image", "picture", "structure", "clipboard", "insert"))
+        r("edit.paste", "Paste (a picture, a SMILES, text)",
+          lambda c: c.paste(), category="Edit", key="Ctrl+V",
+          shortcut="Ctrl+V",
+          aliases=("image", "picture", "structure", "smiles", "molecule",
+                   "clipboard", "insert", "text", "label"))
+        r("edit.paste_text", "Paste as a text label",
+          lambda c: c.paste(as_text=True), category="Edit",
+          key="Ctrl+Shift+V", shortcut="Ctrl+Shift+V",
+          aliases=("plain", "text", "label"))
+        r("text.bigger", "Text bigger", lambda c: c.text_size_step(1.0),
+          category="Object", key="Ctrl+Up", shortcut="Ctrl+Up",
+          enabled=lambda c: any(getattr(o, "kind", "") in c.TEXT_SIZES
+                                for o in c.doc.selected()),
+          aliases=("font size", "larger", "size up"))
+        r("text.smaller", "Text smaller", lambda c: c.text_size_step(-1.0),
+          category="Object", key="Ctrl+Down", shortcut="Ctrl+Down",
+          enabled=lambda c: any(getattr(o, "kind", "") in c.TEXT_SIZES
+                                for o in c.doc.selected()),
+          aliases=("font size", "size down"))
+        r("view.fit_page", "Fit the page to the window",
+          lambda c: c.plot.fit_page(), category="View", key="Alt+F",
+          shortcut="Alt+F",
+          aliases=("page", "zoom", "document", "whole figure"))
         r("edit.undo", "Undo", lambda c: c.undo_step(), category="Edit",
           key="Ctrl+Z", shortcut="Ctrl+Z", aliases=("zoom back", "back"),
           enabled=lambda c: (c.undo.can_undo()
@@ -597,7 +641,9 @@ class MainWindow(QMainWindow):
                                  or [o for o in c.doc.selected()
                                      if isinstance(o, (model.Analysis,
                                                        model.TextLabel,
-                                                       model.ImageArtist))]))
+                                                       model.ImageArtist,
+                                                       model.MoleculeArtist))
+                                  ]))
         r("object.remove_file", "Remove every scan of this file",
           lambda c: c.remove_selected_files(), category="Object",
           enabled=scans_selected, aliases=("close file", "unload"))
@@ -723,6 +769,8 @@ class MainWindow(QMainWindow):
         r("app.operator_search", "Search operators...",
           lambda c: c.operator_search(), category="App", key="F3",
           shortcut="F3", aliases=("command palette", "find command", "menu"))
+        r("app.log", "Open the log folder", lambda c: c.open_log_folder(),
+          category="App", aliases=("errors", "debug", "crash", "log"))
         r("app.about", "About {}".format(branding.APP_NAME),
           lambda c: c.show_about(), category="App",
           aliases=("version", "help", "licence", "license", "credits"))
@@ -759,17 +807,18 @@ class MainWindow(QMainWindow):
     #: menus held is one F3 away, filtered by the selection, which a menu
     #: cannot do.
     MENUS = (
-        ("&File", ("file.new", "file.open", "file.session_open", None,
+        ("Fi&le", ("file.new", "file.open", "file.session_open", None,
                    "file.session_save", "file.session_save_as", None,
                    "file.export_image", "file.export_csv",
                    "file.export_driver", None, "file.close")),
-        ("&Edit", ("edit.undo", "edit.redo", "edit.paste", None,
+        ("&Edit", ("edit.undo", "edit.redo", "edit.paste",
+                   "edit.paste_text", None,
                    "select.all",
                    "select.none", "select.invert", "select.same_sample",
                    None, "figure.layout", "app.settings",
                    ("Theme", ("view.theme_blender_default",
                               "view.theme_light")))),
-        ("&Help", ("app.about",)),
+        ("Hel&p", ("app.log", "app.about")),
     )
 
     def _build_menus(self):
@@ -780,7 +829,7 @@ class MainWindow(QMainWindow):
         #: gone on the Python side).
         self.menus = {}
         for title, ids in self.MENUS:
-            if title == "&Help":
+            if title.replace("&", "") == "Help":
                 # SEARCH is a button on the bar itself rather than an entry
                 # inside Help: it is how everything else is reached now.
                 search = bar.addAction("&Search")
@@ -790,6 +839,7 @@ class MainWindow(QMainWindow):
                 self._search_action = search
             menu = bar.addMenu(title)
             self.menus[title] = menu
+            self.menus[title.replace("&", "")] = menu
             menu.aboutToShow.connect(self._sync_menu_state)
             self._fill_menu(menu, ids)
 
@@ -975,6 +1025,25 @@ class MainWindow(QMainWindow):
         action.triggered.connect(lambda _c=False: self.run_op(op_id))
 
     # ------------------------------------------------------------- documents
+    def open_log_folder(self):
+        """Help > Open the log folder: where the log and any crash file
+        are (`core/log.py`)."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        from ..core import log
+        folder = os.path.dirname(log.path())
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+        self.note.setText(folder)
+        return folder
+
+    def show_error(self, text):
+        """An error was logged: say so where it is seen."""
+        self.note.setText("Error: {} - details in the log (Help > Open the "
+                          "log folder)".format(text))
+        self.plot.flash("Something went wrong - see the log")
+
     def new_figure_op(self):
         self.new_figure()
         self.note.setText("A new figure")
@@ -1003,6 +1072,7 @@ class MainWindow(QMainWindow):
             for scan in list(existing.scans):
                 self.doc.remove_scan(scan)
         self.doc.add_sample(sample, model.default_segments(sample))
+        LOGGER.info("read %s", sample.path)
         self.undo.clear()
         self.note.setText(loader.summary(sample))
         self.statusBar().setToolTip(sample.note or "")
@@ -1092,6 +1162,8 @@ class MainWindow(QMainWindow):
         self.outliner.set_document(doc)
         self.note.setText("; ".join(problems) if problems
                           else "Opened {}".format(os.path.basename(path)))
+        LOGGER.info("opened session %s%s", path,
+                    " ({})".format("; ".join(problems)) if problems else "")
         self.refresh(keep_view=False)
         if doc.view:
             # The framing it was saved with: a y range narrowed to show a
@@ -1437,7 +1509,8 @@ class MainWindow(QMainWindow):
                 + ([s.marker for s in doc.scans] if doc.offset_markers
                    else [])
                 + [doc.arrow, doc.legend] + list(doc.labels)
-                + list(getattr(doc, "images", [])))
+                + list(getattr(doc, "images", []))
+                + list(getattr(doc, "structures", [])))
         order = dict((id(o), i) for i, o in enumerate(objs))
         return sorted(objs, key=lambda o: (model.z_of(o), order[id(o)]))
 
@@ -1538,6 +1611,8 @@ class MainWindow(QMainWindow):
                                           on_change=self._live_change)
         elif isinstance(obj, model.ImageArtist):
             dialog = ImageSettings(self, obj, on_change=self._live_change)
+        elif isinstance(obj, model.MoleculeArtist):
+            dialog = MoleculeSettings(self, obj, on_change=self._live_change)
         else:
             return None
         if group:
@@ -1992,7 +2067,8 @@ class MainWindow(QMainWindow):
         analyses = [o for o in self.doc.selected()
                     if isinstance(o, model.Analysis)]
         labels = [o for o in self.doc.selected()
-                  if isinstance(o, (model.TextLabel, model.ImageArtist))]
+                  if isinstance(o, (model.TextLabel, model.ImageArtist,
+                                    model.MoleculeArtist))]
         if analyses or labels:
             self.remove_analyses(analyses, labels)
             return
@@ -2032,8 +2108,11 @@ class MainWindow(QMainWindow):
 
     def _shelf(self, obj):
         """The document's list an added object lives in."""
-        return (self.doc.images if isinstance(obj, model.ImageArtist)
-                else self.doc.labels)
+        if isinstance(obj, model.ImageArtist):
+            return self.doc.images
+        if isinstance(obj, model.MoleculeArtist):
+            return self.doc.structures
+        return self.doc.labels
 
     # ------------------------------------------------------------- images
     IMAGE_TYPES = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff",
@@ -2079,21 +2158,95 @@ class MainWindow(QMainWindow):
         self.note.setText("An image: S scales it, R rotates it")
         return image
 
-    def paste(self):
-        """Ctrl+V: a picture from the clipboard, or an image file copied
-        in the file browser, onto the figure."""
+    def paste(self, as_text=False):
+        """Ctrl+V: what the clipboard holds, as what it is - a picture (or
+        an image file copied in the file browser) as a picture, a SMILES as
+        a skeletal structure, any other text as a label (round 20).
+        Ctrl+Shift+V (`as_text`) takes text as a label even when it reads
+        as a SMILES: "CO" may well mean carbon monoxide's letters."""
         from PySide6.QtGui import QImage as _Image
+        from ..core import chem
         clipboard = QApplication.clipboard()
         mime = clipboard.mimeData()
-        if mime is not None and mime.hasImage():
+        if not as_text and mime is not None and mime.hasImage():
             return self.add_image(clipboard.image())
-        if mime is not None and mime.hasUrls():
+        if not as_text and mime is not None and mime.hasUrls():
             for url in mime.urls():
                 path = url.toLocalFile()
                 if path.lower().endswith(self.IMAGE_TYPES):
                     return self.add_image(_Image(path))
-        self.note.setText("Nothing to paste: copy a picture first")
-        return None
+        text = clipboard.text() if mime is not None else ""
+        text = (text or "").replace("\r\n", "\n").strip("\n")
+        if not text.strip():
+            self.note.setText("Nothing to paste")
+            return None
+        if not as_text and chem.looks_like_smiles(text):
+            made = self.add_molecule(text.strip())
+            if made is not None:
+                return made
+        self.ensure_figure()
+        return self.add_label(text)
+
+    def add_molecule(self, smiles, at=None):
+        """A skeletal structure from a SMILES, undoably, where the pointer
+        is (or `at`). None when it cannot be laid out (no RDKit, or not a
+        molecule)."""
+        from ..core import chem
+        drawing = chem.layout(smiles)
+        if drawing is None:
+            self.note.setText("Not a structure RDKit can draw" if
+                              chem.available() else
+                              "Drawing a SMILES needs RDKit (pip install "
+                              "rdkit)")
+            return None
+        self.ensure_figure()
+        rect = self.plot.plot_rect()
+        where = at or self.plot._cursor
+        x = y = 0.5
+        if where is not None:
+            x = (where.x() - rect.left()) / max(1.0, rect.width())
+            y = (where.y() - rect.top()) / max(1.0, rect.height())
+        structure = model.MoleculeArtist(self.doc._next_id(), smiles, drawing,
+                                         min(0.98, max(0.02, x)),
+                                         min(0.98, max(0.02, y)))
+        doc = self.doc
+
+        def put():
+            if structure not in doc.structures:
+                doc.structures.append(structure)
+
+        def take():
+            if structure in doc.structures:
+                doc.structures.remove(structure)
+
+        self.undo.push(undo.CallCommand(put, take, "add structure"))
+        doc.select_only([structure])
+        self.plot.keep_inside(structure)
+        self.refresh()
+        self.note.setText("A structure: double-click for its settings")
+        return structure
+
+    #: Which size of each kind Ctrl+Up / Ctrl+Down changes.
+    TEXT_SIZES = {"label": "size", "legend": "size", "arrow": "size",
+                  "offset_marker": "size", "analysis": "label_size",
+                  "axis": "label_size", "molecule": "label_size"}
+
+    def text_size_step(self, step):
+        """Ctrl+Up / Ctrl+Down: every selected text one point bigger or
+        smaller, from the size it is drawn at. One undo step."""
+        changes = []
+        for obj in self.doc.selected():
+            attr = self.TEXT_SIZES.get(getattr(obj, "kind", ""))
+            if attr is None:
+                continue
+            now = float(self.plot.style_of(obj, attr) or 10.0)
+            changes.append((obj, attr, max(4.0, round(now + step, 1))))
+        if not changes:
+            self.note.setText("Select a text first: a label, an analysis, "
+                              "the legend...")
+            return 0
+        self.undo.set_props(changes, "text size")
+        return len(changes)
 
     def remove_selected_files(self):
         samples = []

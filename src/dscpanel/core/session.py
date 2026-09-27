@@ -223,6 +223,18 @@ def to_state(doc):
         "version": VERSION,
         "axes": axes,
         "labels": labels,
+        "structures": [{"smiles": m.smiles, "atoms": m.atoms,
+                        "bonds": m.bonds, "x": m.x, "y": m.y,
+                        "space": m.space, "anchor": m.anchor,
+                        "rotation": m.rotation, "z": m.z,
+                        "visible": m.visible, "colour": m.colour,
+                        "bond_length": m.bond_length,
+                        "bond_width": m.bond_width,
+                        "label_size": m.label_size,
+                        "upright_labels": m.upright_labels,
+                        "label_font": m.label_font,
+                        "colour_by_element": m.colour_by_element}
+                       for m in doc.structures],
         "images": [{"png": im.png, "x": im.x, "y": im.y,
                     "space": im.space, "anchor": im.anchor,
                     "rotation": im.rotation, "width": im.width,
@@ -434,6 +446,27 @@ def load(path, read_sample):
         label.anchor = saved.get("anchor", label.anchor)
         label.rotation = float(_number_or_none(saved.get("rotation")) or 0.0)
         label.z = _number_or_none(saved.get("z"))
+    for saved in state.get("structures") or []:
+        if not saved.get("atoms"):
+            continue
+        structure = model.MoleculeArtist(
+            doc._next_id(), saved.get("smiles", ""),
+            {"atoms": saved["atoms"], "bonds": saved.get("bonds", [])},
+            float(saved.get("x", 0.5)), float(saved.get("y", 0.5)))
+        for name in ("space", "anchor", "colour"):
+            if saved.get(name) is not None:
+                setattr(structure, name, saved[name])
+        for name in ("rotation", "bond_length", "bond_width", "label_size"):
+            value = _number_or_none(saved.get(name))
+            if value is not None:
+                setattr(structure, name, value)
+        structure.z = _number_or_none(saved.get("z"))
+        structure.visible = bool(saved.get("visible", True))
+        structure.upright_labels = bool(saved.get("upright_labels", True))
+        structure.label_font = saved.get("label_font") or None
+        structure.colour_by_element = bool(saved.get("colour_by_element",
+                                                     False))
+        doc.structures.append(structure)
     for saved in state.get("images") or []:
         if not saved.get("png"):
             continue
