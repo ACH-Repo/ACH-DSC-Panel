@@ -118,11 +118,12 @@ def own_preferences(tmp_path):
     """
     from dscpanel.core import style
     saved = style.preferences()
+    saved_figure = style._figure_default
     style.PATH_OVERRIDE = str(tmp_path / "preferences.json")
-    style.restore_preferences({})
+    style.restore_preferences({}, figure_state=None)
     yield style.PATH_OVERRIDE
     style.PATH_OVERRIDE = None
-    style.restore_preferences(saved)
+    style.restore_preferences(saved, figure_state=saved_figure)
 
 
 @pytest.fixture

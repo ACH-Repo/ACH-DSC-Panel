@@ -12,7 +12,7 @@ always current.
 
 | Repo | State |
 | :-- | :-- |
-| `ACH-DSC-Panel` | Initial commit `f261ce5` on `master` (2026-09-25, at Christian's request; not pushed - his other repos use `main`). Rounds 10 and 11 after it are uncommitted. 172 tests pass. |
+| `ACH-DSC-Panel` | Initial commit `f261ce5` on `master` (2026-09-25, at Christian's request; not pushed - his other repos use `main`). Rounds 10-11 committed as `35b6db4` (not pushed); rounds 12-18 after it are uncommitted. 259 tests pass. |
 | `ACH-DSC-Plotter` | Committed `d743702` on `main` (2026-09-25; not pushed): the Tg decode, the `.txt` mass fix and round 9's step-name length byte (`_step_name`), with TRI-FORMAT.md and the re-vendored template. 33 tests, including the three CN-119 export comparisons (its folder is in the gitignored `tests/local_testdata.txt`). |
 | `ACH-MoloM` | Untouched by this chat. Its tree already had 10 modified files from earlier work. |
 
@@ -121,6 +121,10 @@ Isothermal segments exist in runs but he has never used them deliberately.
 
 Full list in `CLAUDE.md`. The ones that cost the most:
 
+- **A patch script's write can FAIL mid-file on this machine** (round 16:
+  `OSError: [Errno 22]` writing `dialogs.py`, another process holding it).
+  Scripts write to `<file>.tmp` and `os.replace` it over the original, and
+  keep a copy of the original under a name the script does not overwrite.
 - **A patch script opened `plot.py` for writing and then crashed**, truncating
   it to zero bytes. Recovered from
   `C:\Users\chris\.claude\file-history\<session>\<hash>@vN` (Edit-tool
@@ -144,7 +148,7 @@ Full list in `CLAUDE.md`. The ones that cost the most:
   Write longer patches to a `.py` file in the scratchpad and run that.
 - **`QWidget.grab` exists**; the transform method is `start_grab`.
 
-## 7. What the program does now (0.1.0, 172 tests)
+## 7. What the program does now (0.1.0, 259 tests)
 
 Reading and data: vendored reader; `.tri` and `.txt`; per-file exo detection;
 background loading; sessions (`.dscpanel`); CSV and PNG/SVG export (light
@@ -168,8 +172,9 @@ what it starts near** (PLAN.md, rounds 8 and 9):
   axes; `Esc` returns to select;
 - a scan moves with `G` or a typed number ONLY; `G` with X/Y locks (X only
   for artists); `R` resets offsets; `Ctrl+A` select all;
-- two-finger swipe scales y; `Shift`+swipe pans omnidirectionally; `Ctrl`
-  (pinch) zooms both; nothing is drawn outside the axes. Zoom, pan and fit
+- two-finger swipe scales y ABOUT y = 0 (zero never moves); `Shift`+swipe
+  pans omnidirectionally; `Ctrl` (pinch) zooms both about the cursor; `M`
+  types the x range (two boxes, Tab, Enter); nothing is drawn outside the axes. Zoom, pan and fit
   are UNDO STEPS, one per gesture;
 - window: follows the plot's theme (dark Fusion palette by default); menu
   bar File / Edit / Search (button, = F3) / Help (About); saving and
@@ -180,6 +185,11 @@ what it starts near** (PLAN.md, rounds 8 and 9):
   (not dragging) an analysis made here shows its cursors AND its settings and
   keeps its model. Analyses made here are SAVED in the session (model +
   cursors, recomputed on load);
+- figure size (`core/figure.py`, Edit > Figure size and margins): window,
+  aspect ratio, or exact cm/in with margins that fix the axes box; drawn in
+  96 units per inch and scaled onto the pane; PNG/SVG exports exact; the
+  driver export builds the same figure in matplotlib (and now runs at all).
+  Axes on either side, numbers and caption hideable;
 - truncation by POINTS (`Scan.keep`, the template's `x_truncate`): hidden
   ends dashed on hover, out of fit/picking/analyses/exports. Intervals
   dragged along a curve are sample spans (`Analysis.span`);
@@ -189,6 +199,9 @@ what it starts near** (PLAN.md, rounds 8 and 9):
   object -> figure (`doc.style`, in the session) -> the user's default
   (`preferences.json` in `branding.app_dir()`) -> built-in. Styled
   attributes are None until chosen; read them through `style.value`;
+- analysis labels are TEMPLATES (`core/labels.py`): `{}` is the measured
+  value, a unit after it converts; number formats are house style
+  (`core/numbers.py`); font family in Settings;
 - analyses: leader-arrow labels dragged vertically only, auto side away from
   the peak, shaded integrals, interval marks (dashes at the bounds, and for
   onset/endset/Tg lines to the point, in the axis colour; hideable), default
@@ -198,7 +211,8 @@ what it starts near** (PLAN.md, rounds 8 and 9):
 - figure: template style (no grid, ticks in, minor ticks, italic `*T*`),
   margins sized by font, spine vs caption double-click, Celsius/K/F x axis,
   two themes (`blender-default`, `light`; exports always light), legend
-  (the outliner's tick), captions (`Ctrl+T`, or right-click a curve), undo
+  (the outliner's tick), y-offset markers (the template's
+  `add_yoffset_markers`, F3; one movable object per scan), captions (`Ctrl+T`, or right-click a curve), undo
   over everything including removals. `Z` cycles box, horizontal, vertical.
 
 ## 8. Offered or parked, not done
@@ -210,8 +224,6 @@ what it starts near** (PLAN.md, rounds 8 and 9):
   the object list right, and on a PLOT the left edge belongs to the y axis.
 - **An initial commit** of ACH-DSC-Panel, and committing the ACH-DSC-Plotter
   reader changes. His call, per message.
-- **Heat-flow arrow style parameters** (shaft width, head width, head length
-  separately; explicitly parked). A non-uniform `can_scale` artist.
 - **Picking an object buried in an overlapping stack** - open, see PLAN.md
   open questions. Click-cycling was dropped (it collides with double-click).
 - **Analysis labels may need horizontal freedom** when they clash.

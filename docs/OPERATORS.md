@@ -31,6 +31,7 @@ This file is GENERATED. After adding an operator, run:
 | :-- | :-- | :-- | :-- |
 | Undo | `Ctrl+Z` | there is something to undo | also walks back zoom, pan and fit, one gesture at a time |
 | Redo | `Ctrl+Y` | there is something to redo |  |
+| Figure size and margins... |  | always | exact cm/in and margins, saved with the session |
 
 ## Select
 
@@ -40,16 +41,19 @@ This file is GENERATED. After adding an operator, run:
 | Select nothing | `Alt+A` | something is selected |  |
 | Invert the selection | `Ctrl+I` | a scan is open |  |
 | Select every scan of this sample |  | a scan is selected |  |
+| Select every offset marker |  | always |  |
 
 ## Transform
 
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
 | Move the selection | `G, then a number, Enter (Esc cancels)` | something is selected | then a number, Enter; Shift is precision, Ctrl snaps |
+| Scale the selection | `S, then move or type a factor, Enter (Esc cancels)` | the arrow, the legend or a label is selected |  |
 | Stack the selected scans evenly |  | two or more scans selected |  |
 | Distribute the offsets evenly |  | three or more scans selected |  |
 | Align the selection to the active scan |  | two or more scans selected | closed-form fit to the first selected scan |
-| Reset the offsets to zero | `R` | some scan has an offset |  |
+| Reset the offsets of the selected scans | `R, with scans selected` | a selected scan has an offset, or a label or the legend is selected (then R rotates) |  |
+| Rotate the selection | `R, with a label or the legend selected` | a label or the legend is selected |  |
 
 ## Object
 
@@ -64,6 +68,7 @@ This file is GENERATED. After adding an operator, run:
 | Show every analysis of the selected scans |  | always |  |
 | Hide every analysis of the selected scans |  | always |  |
 | Set the molar mass... | `Shift+M` | a scan is selected | there is no default M, so this is how W/mol happens |
+| Show or hide the y-offset markers |  | always |  |
 | Show or hide the legend |  | always | or its tick in the outliner |
 | Align analysis labels left | `Ctrl+L` | an analysis, or a scan with one shown, is selected | the selected labels, else all on the selected scans |
 | Align analysis labels right | `Ctrl+R` | an analysis, or a scan with one shown, is selected |  |
@@ -76,6 +81,7 @@ This file is GENERATED. After adding an operator, run:
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
 | Fit the view | `F or Home` | a scan is open |  |
+| Set the x range... | `M` | always |  |
 | X axis: temperature |  | the x axis is not temperature |  |
 | X axis: time |  | the x axis is not time |  |
 | Y axis: mW |  | the y axis is not mW |  |
@@ -87,8 +93,12 @@ This file is GENERATED. After adding an operator, run:
 | X axis in Celsius |  | always |  |
 | X axis in Kelvin |  | always |  |
 | X axis in Fahrenheit |  | always |  |
-| X axis settings... |  | always |  |
-| Y axis settings... |  | always |  |
+| X axis: ticks and frame... |  | always |  |
+| X axis numbers... |  | always |  |
+| X axis caption... |  | always |  |
+| Y axis: ticks and frame... |  | always |  |
+| Y axis numbers... |  | always |  |
+| Y axis caption... |  | always |  |
 
 ## Arrow
 

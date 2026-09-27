@@ -197,3 +197,56 @@ def test_an_export_carries_its_mass_and_draws_in_every_unit():
     sample.molar_mass = 150.2
     scan._cache_key = None
     assert scan.curve(doc.x_axis, units.UNIT_W_MOL, doc.exo)[1] is not None
+
+
+# ------------------------------------- the driver, run for real (round 12)
+def test_the_exported_driver_runs_and_builds_the_same_figure(qapp, tmp_path):
+    """Export the DSC_Plotter.py driver for a figure of exact size, RUN it
+    with matplotlib, and measure its SVG: 8 x 6 cm, the axes box at the
+    panel's margins. The old driver called functions the template never had
+    and stopped at its second line - and no test ran it, which is how."""
+    import re
+    import subprocess
+    import sys
+    pytest.importorskip("achdsc")
+    pytest.importorskip("matplotlib")
+    from dscpanel.core import figure
+    from dscpanel.ui.window import MainWindow
+    path = _path(OJ12)
+    win = MainWindow()
+    win.resize(900, 560)
+    win._sample_loaded(loader.read_sample(path))
+    layout = win.doc.figure
+    layout.mode, layout.unit = figure.MODE_SIZE, figure.UNIT_CM
+    layout.width, layout.height = 8.0, 6.0
+    layout.margin_left, layout.margin_right = 1.8, 0.4
+    layout.margin_top, layout.margin_bottom = 0.4, 1.5
+    win.doc.offset_markers = True      # the template's own call, run
+    win.refresh()
+    win.plot.grab()
+    driver = win.export_driver(str(tmp_path / "DSC_Plotter.py"))
+    with open(driver, encoding="utf-8") as fh:
+        text = fh.read()
+    if "def quickplot" not in text:
+        pytest.skip("achdsc could not render a whole template here")
+    text = text.replace("'silent':       False", "'silent':       True", 1)
+    with open(driver, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    run = subprocess.run([sys.executable, driver], cwd=str(tmp_path),
+                         env=dict(os.environ, MPLBACKEND="Agg"),
+                         capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, run.stderr[-2000:]
+    with open(str(tmp_path / "dsc.svg"), encoding="utf-8") as fh:
+        svg = fh.read()
+    pt = lambda cm: cm / 2.54 * 72.0
+    size = dict(re.findall(r'(width|height)="([\d.]+)pt"',
+                           re.search(r"<svg\b[^>]*>", svg).group(0)))
+    assert float(size["width"]) == pytest.approx(pt(8.0), abs=1e-3)
+    assert float(size["height"]) == pytest.approx(pt(6.0), abs=1e-3)
+    box = re.search(r'<g id="patch_2">\s*<path d="M ([\d.]+) ([\d.]+)\s*'
+                    r'L ([\d.]+) ([\d.]+)\s*L ([\d.]+) ([\d.]+)', svg)
+    x0, y0, x1, _y1, _x2, y2 = map(float, box.groups())
+    assert min(x0, x1) == pytest.approx(pt(1.8), abs=1e-3)
+    assert max(x0, x1) == pytest.approx(pt(8.0 - 0.4), abs=1e-3)
+    assert min(y0, y2) == pytest.approx(pt(0.4), abs=1e-3)
+    assert max(y0, y2) == pytest.approx(pt(6.0 - 1.5), abs=1e-3)

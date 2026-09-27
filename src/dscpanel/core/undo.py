@@ -94,6 +94,23 @@ class CallCommand(Command):
         self._do()
 
 
+class GroupCommand(Command):
+    """Several commands as ONE step - a sweep across the outliner's boxes,
+    which shows some scans and puts others on the plot."""
+
+    def __init__(self, label="change"):
+        self.label = label
+        self.commands = []
+
+    def undo(self):
+        for command in reversed(self.commands):
+            command.undo()
+
+    def redo(self):
+        for command in self.commands:
+            command.redo()
+
+
 class UndoStack(object):
     """The usual two lists, plus merging and a change signal.
 
@@ -107,6 +124,7 @@ class UndoStack(object):
         self._undone = []
         self._limit = int(limit)
         self._open = False          # a gesture is live, so merging is allowed
+        self._group = None          # commands being gathered into one step
         self.on_change = on_change
 
     # ------------------------------------------------------------- gestures
@@ -118,6 +136,24 @@ class UndoStack(object):
         """End a gesture. The next push starts a new undo step."""
         self._open = False
 
+    def begin_group(self, label="change"):
+        """Gather every command pushed from now on into ONE step."""
+        if self._group is None:
+            self._group = GroupCommand(label)
+
+    def end_group(self):
+        """Close the gathering; what it gathered is one step (if any)."""
+        group, self._group = self._group, None
+        if group is None or not group.commands:
+            return None
+        if len(group.commands) == 1:
+            group = group.commands[0]
+        self._done.append(group)
+        del self._done[:max(0, len(self._done) - self._limit)]
+        self._undone = []
+        self._changed()
+        return group
+
     # --------------------------------------------------------------- stack
     def push(self, command):
         """Add a command that has ALREADY been applied.
@@ -126,6 +162,12 @@ class UndoStack(object):
         command that is built and then separately applied is one somebody
         forgets to apply.
         """
+        if self._group is not None:
+            # Already applied; kept for the one step `end_group` makes.
+            self._group.commands.append(command)
+            self._undone = []
+            self._changed()
+            return command
         if self._open and self._done and self._done[-1].merge(command):
             self._undone = []
             self._changed()

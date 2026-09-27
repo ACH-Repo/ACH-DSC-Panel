@@ -19,8 +19,11 @@ the reader or a window and is testable with a stub.
 import json
 import os
 
+from . import figure as figure_module
+from . import labels
 from . import measure
 from . import model
+from . import numbers
 from . import style
 from . import units
 
@@ -29,7 +32,50 @@ FORMAT = "dscpanel-session"
 #: figure carries its own `style`, and analyses have a `flush`.
 #: 3: an axis's `label_gap` is measured from its NUMBERS (it was from the
 #: axis line for x and from the window's edge for y), None until chosen.
-VERSION = 3
+VERSION = 5
+
+
+def view_to_state(view):
+    """The framing as plain data (lists), or None."""
+    if not view:
+        return None
+    return {"x": list(view["x"]) if view.get("x") else None,
+            "y": list(view["y"]) if view.get("y") else None,
+            "context": list(view.get("context") or ())}
+
+
+def _view_from(saved):
+    """The framing back as the plot keeps it (tuples), or None."""
+    if not isinstance(saved, dict):
+        return None
+    try:
+        return {"x": tuple(float(v) for v in saved["x"]) if saved.get("x")
+                else None,
+                "y": tuple(float(v) for v in saved["y"]) if saved.get("y")
+                else None,
+                "context": tuple(saved.get("context") or ())}
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def _marker_at(value):
+    """A stored marker place: None, ("i", sample) or ("T", celsius)."""
+    try:
+        kind, number = value
+        if kind == "i":
+            return ("i", int(number))
+        if kind == "T":
+            return ("T", float(number))
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _number_or_none(value):
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _chosen(value, key, version):
@@ -72,6 +118,7 @@ def _analysis_state(analysis):
              "label_dy": analysis.label_dy, "shade": analysis.shade,
              "label_size": analysis.label_size, "flush": analysis.flush,
              "show_interval": analysis.show_interval,
+             "number_format": analysis.number_format,
              "attribution": analysis.attribution,
              "source": analysis.source}
     if analysis.source == "panel":
@@ -94,6 +141,17 @@ def _restore_analysis(analysis, saved, version):
     analysis.flush = flush if flush in style.FLUSHES else None
     analysis.show_interval = bool(saved.get("show_interval", True))
     analysis.attribution = saved.get("attribution", analysis.attribution)
+    # With its unit, if it names one (`%.0f degF`): a unit-less read
+    # dropped such a format on every reopen.
+    analysis.number_format = labels.normalise_format(
+        saved.get("number_format"))
+    if version < 5 and measure.is_legacy_label(analysis.label):
+        # Before round 15 a panel analysis was GIVEN a label with its
+        # number written in ("*T*_{onset} = 61.1 degC"), and a version-4
+        # file can still hold one whose number went stale. Nobody typed
+        # that shape, so it goes back to the default template, whose number
+        # follows the measurement; any other label stays the user's.
+        analysis.label = None
 
 
 def to_state(doc):
@@ -119,6 +177,13 @@ def to_state(doc):
             "visible": scan.visible,
             "analyses": [_analysis_state(a) for a in scan.analysis_objects],
             "molar_mass_override": scan.molar_mass_override,
+            "marker": {"at": (list(scan.marker.at) if scan.marker.at
+                              else None),
+                       "dy": scan.marker.dy,
+                       "number_format": scan.marker.number_format,
+                       "size": scan.marker.size,
+                       "colour": scan.marker.colour,
+                       "visible": scan.marker.visible},
         })
     arrow = doc.arrow
     axes = {}
@@ -129,13 +194,23 @@ def to_state(doc):
                        "label_size": axis.label_size,
                        "tick_size": axis.tick_size,
                        "label_along": axis.label_along,
+                       "number_format": axis.number_format,
+                       "mirror": axis.mirror,
+                       "mirror_ticks": axis.mirror_ticks,
+                       "major_step": axis.major_step,
+                       "minor_count": axis.minor_count,
+                       "tick_length": axis.tick_length,
+                       "minor_length": axis.minor_length,
+                       "side": axis.side,
+                       "show_numbers": axis.show_numbers,
+                       "visible": axis.visible,
                        "label_gap": axis.label_gap}
     labels = []
     for lb in doc.labels:
         labels.append({"text": lb.text, "x": lb.x, "y": lb.y,
                        "colour": lb.colour, "size": lb.size, "bold": lb.bold,
                        "visible": lb.visible, "space": lb.space,
-                       "anchor": lb.anchor,
+                       "anchor": lb.anchor, "rotation": lb.rotation,
                        "scan": (None if lb.scan is None
                                 else [lb.scan.sample.path, lb.scan.seg])})
     return {
@@ -147,16 +222,26 @@ def to_state(doc):
         "x_unit": doc.x_unit,
         "y_unit": doc.y_unit,
         "theme": doc.theme,
+        "offset_markers": bool(doc.offset_markers),
+        "view": view_to_state(doc.view),
         "style": doc.style.chosen(),
+        "figure": doc.figure.to_state(),
         "legend": {"visible": doc.legend.visible, "size": doc.legend.size,
                    "show_frame": doc.legend.show_frame,
                    "sample": doc.legend.sample,
                    "spacing": doc.legend.spacing,
                    "colour": doc.legend.colour, "x": doc.legend.x,
+                   "rotation": doc.legend.rotation,
+                   "line_width": doc.legend.line_width,
                    "y": doc.legend.y, "space": doc.legend.space,
                    "anchor": doc.legend.anchor},
         "arrow": {"word": arrow.word, "direction": arrow.direction,
-                  "x": arrow.x, "y": arrow.y, "length": arrow.length,
+                  "x": arrow.x, "y": arrow.y,
+                  "head_length": arrow.head_length,
+                  "head_width": arrow.head_width,
+                  "tail_width": arrow.tail_width,
+                  "tail_length": arrow.tail_length,
+                  "lock": arrow.lock, "size": arrow.size,
                   "colour": arrow.colour, "visible": arrow.visible,
                   "space": arrow.space, "anchor": arrow.anchor},
         "samples": samples,
@@ -191,6 +276,10 @@ def load(path, read_sample):
     for key, raw in (state.get("style") or {}).items():
         if key in style.BY_KEY and style.BY_KEY[key].figure:
             setattr(doc.style, key, style.BY_KEY[key].clean(raw))
+    # A session keeps its OWN figure size; one saved before there was such
+    # a thing follows the window, as it did then - not today's default.
+    doc.figure = figure_module.FigureLayout().load_state(
+        state.get("figure") or {"mode": figure_module.MODE_WINDOW})
     for entry in state.get("samples", []):
         try:
             sample = read_sample(entry["path"])
@@ -251,6 +340,15 @@ def load(path, read_sample):
                 continue
             _restore_analysis(made, saved, version)
         scan.molar_mass_override = entry.get("molar_mass_override")
+        marker = entry.get("marker") or {}
+        scan.marker.at = _marker_at(marker.get("at"))
+        scan.marker.number_format = labels.normalise_format(
+            marker.get("number_format"))
+        scan.marker.dy = _number_or_none(marker.get("dy"))
+        scan.marker.size = _chosen(marker.get("size"), "offset_marker_size",
+                                   version)
+        scan.marker.colour = marker.get("colour", "auto")
+        scan.marker.visible = bool(marker.get("visible", True))
         sample.scans.append(scan)
         doc.scans.append(scan)
     arrow = state.get("arrow") or {}
@@ -258,7 +356,16 @@ def load(path, read_sample):
     doc.arrow.direction = arrow.get("direction", doc.arrow.direction)
     doc.arrow.x = float(arrow.get("x", doc.arrow.x))
     doc.arrow.y = float(arrow.get("y", doc.arrow.y))
-    doc.arrow.length = float(arrow.get("length", doc.arrow.length))
+    # Its dimensions in points since round 14. An older session's `length`
+    # (a fraction of the plot height) has no honest conversion, so the
+    # template's proportions are what it opens with.
+    for name in ("head_length", "head_width", "tail_width", "tail_length"):
+        value = _number_or_none(arrow.get(name))
+        if value is not None and value > 0:
+            setattr(doc.arrow, name, value)
+    if arrow.get("lock") in model.ARROW_LOCKS:
+        doc.arrow.lock = arrow["lock"]
+    doc.arrow.size = _chosen(arrow.get("size"), "arrow_size", version)
     doc.arrow.colour = arrow.get("colour", doc.arrow.colour)
     doc.arrow.visible = bool(arrow.get("visible", True))
     doc.arrow.space = arrow.get("space", doc.arrow.space)
@@ -270,12 +377,28 @@ def load(path, read_sample):
         for name, value in saved.items():
             if hasattr(axis, name):
                 setattr(axis, name, value)
+        axis.number_format = numbers.normalise(saved.get("number_format"))
+        step = _number_or_none(saved.get("major_step"))
+        axis.major_step = step if step and step > 0 else None
+        try:
+            axis.minor_count = max(1, int(saved.get("minor_count", 5)))
+        except (TypeError, ValueError):
+            axis.minor_count = 5
+        for name, default in (("tick_length", 7.0), ("minor_length", 3.0)):
+            value = _number_or_none(saved.get(name))
+            setattr(axis, name, value if value is not None and value >= 0
+                    else default)
+        axis.mirror = bool(saved.get("mirror", True))
+        axis.mirror_ticks = bool(saved.get("mirror_ticks", True))
         axis.label_size = _chosen(saved.get("label_size"), "caption_size",
                                   version)
         # Before version 3 the gap was measured from somewhere else, so an
         # old number would put the caption in the wrong place: dropped.
         axis.label_gap = (style.BY_KEY["caption_gap"].clean(
             saved.get("label_gap")) if version >= 3 else None)
+        if saved.get("side") not in (("bottom", "top") if which == "x"
+                                     else ("left", "right")):
+            axis.side = "bottom" if which == "x" else "left"
         axis.tick_size = _chosen(saved.get("tick_size"), "tick_size", version)
     for saved in state.get("labels") or []:
         owner = None
@@ -296,9 +419,16 @@ def load(path, read_sample):
         label.visible = bool(saved.get("visible", True))
         label.space = saved.get("space", label.space)
         label.anchor = saved.get("anchor", label.anchor)
+        label.rotation = float(_number_or_none(saved.get("rotation")) or 0.0)
     for name, value in (state.get("legend") or {}).items():
         if hasattr(doc.legend, name):
             setattr(doc.legend, name, value)
+    doc.legend.rotation = float(
+        _number_or_none((state.get("legend") or {}).get("rotation")) or 0.0)
+    if version < 5:
+        # The frame was on by default until round 17, so an older file's
+        # True was the default and not a choice; it follows the new one.
+        doc.legend.show_frame = False
     doc.legend.size = _chosen((state.get("legend") or {}).get("size"),
                               "legend_size", version)
     doc.x_axis = state.get("x_axis", doc.x_axis)
@@ -306,5 +436,7 @@ def load(path, read_sample):
         doc.x_unit = state["x_unit"]
     doc.y_unit = state.get("y_unit", doc.y_unit)
     doc.theme = state.get("theme", doc.theme)
+    doc.offset_markers = bool(state.get("offset_markers", False))
+    doc.view = _view_from(state.get("view"))
     doc.path = str(path)
     return doc, problems

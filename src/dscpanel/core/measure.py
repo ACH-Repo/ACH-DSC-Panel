@@ -23,11 +23,8 @@ class Measurement(object):
     `title` is what the list shows - the short word somebody is looking for,
     "Onset" and "Integration" rather than the TRIOS model string - and `name`
     is the model as the file writes it, which is what everything downstream
-    keys on. `label` is the caption the finished analysis is given, with the
-    markup `ui/plot.py` draws: `*` italic, `_{}` subscript, and a backslash
-    name for a Greek letter. It is filled in with PERCENT formatting, not
-    `str.format`, because the subscript braces in `*T*_{g}` are exactly what
-    `format` would try to substitute - and did.
+    keys on. What the finished analysis's label says is `core/labels.py`'s
+    business: a template per kind, with the measured value filled in.
     """
 
     def __init__(self, name, run, needs=2, note="", title="", label=""):
@@ -168,23 +165,17 @@ def peak_height(scan, x0, x1, span=None):
 #: is what a Tg run is analysed with, then the integral, then the rest.
 MODELS = (
     Measurement("Onset point", onset, title="Onset",
-                label="*T*_{onset} = %.1f %s",
                 note="tangent from the flat part to the transition"),
     Measurement("Peak Integration (enthalpy)", integrate, title="Integration",
-                label=r"\Delta*H* = %.3f %s",
                 note="area against a linear baseline"),
     Measurement("Glass transition", glass_transition,
                 title="Glass transition",
-                label="*T*_{g} = %.1f %s",
                 note="onset, midpoint and end of the step"),
     Measurement("Endset point", endset, title="Endset",
-                label="*T*_{endset} = %.1f %s",
                 note="the tangent construction, from the other side"),
     Measurement("Peak height", peak_height, title="Peak height",
-                label="*q*_{peak} = %.3f %s",
                 note="height above the baseline between the cursors"),
     Measurement("Signal change", signal_change, title="Signal change",
-                label=r"\Delta*q* = %.3f %s",
                 note="how much the signal moved between the cursors"),
 )
 
@@ -213,7 +204,9 @@ def run(name, scan, x0, x1, span=None):
                               source="panel", attribution="measured here")
     analysis.span = clean_span(span)
     analysis.visible = True
-    analysis.label = default_label(entry, analysis)
+    # No label of its own: the default template of its kind, whose `{}` is
+    # always the current measurement (`core/labels.py`).
+    analysis.label = None
     scan.analysis_objects.append(analysis)
     return analysis
 
@@ -245,32 +238,27 @@ def compute(name, scan, x0, x1, span=None):
 
 
 def relabelled(analysis, fields):
-    """The label an analysis should carry once its fields become `fields`.
+    """The label an analysis carries once its fields become `fields`: the
+    same one. A label is a template (`core/labels.py`) and its `{}` is the
+    measurement, so a re-measured analysis cannot keep an old number."""
+    return analysis.label
 
-    A label that is still the default one quotes the OLD number, so it is
-    rewritten with the new one. One somebody typed is theirs and is kept.
-    Re-measuring used to keep the label as it was, so the figure went on
-    showing the number from before the cursors moved.
+
+def legacy_label(analysis):
+    """The label a panel analysis was GIVEN before round 15, number and all
+    ("*T*_{onset} = 61.1 degC"), or None.
+
+    Only for reading old sessions: a label equal to this was never the
+    user's words, so it is dropped for the default template, whose number
+    follows the measurement. One the user changed is kept as theirs.
     """
     entry = by_name(analysis.model_name)
-    if entry is None or analysis.label != default_label(entry, analysis):
-        return analysis.label
-    fresh = model.Analysis(0, analysis.scan, analysis.model_name, fields)
-    return default_label(entry, fresh)
-
-
-def default_label(entry, analysis):
-    """The caption a fresh analysis carries, with its number filled in.
-
-    Written the moment it is made rather than left to the automatic summary,
-    because it is meant to be EDITED: the figure wants "T_g = 78.9 degC", and
-    the fastest way to get whatever wording is wanted is to start from that
-    and change it.
-    """
-    value = analysis.value()
-    if value is None or not entry.label:
+    if entry is None:
         return None
-    unit = "°C"
+    value = analysis.value()
+    if value is None:
+        return None
+    unit = "\u00b0C"
     if "Integration" in entry.name:
         value = model.number(analysis.fields.get("Enthalpy (normalized)"))
         unit = "J/g"
@@ -284,4 +272,59 @@ def default_label(entry, analysis):
                 break
     if value is None:
         return None
-    return entry.label % (value, unit)
+    return _LEGACY.get(entry.name, "") % (value, unit) if _LEGACY.get(
+        entry.name) else None
+
+
+#: The pre-round-15 captions, for `legacy_label` alone.
+_LEGACY = {
+    "Onset point": "*T*_{onset} = %.1f %s",
+    "Peak Integration (enthalpy)": "\\Delta*H* = %.3f %s",
+    "Glass transition": "*T*_{g} = %.1f %s",
+    "Endset point": "*T*_{endset} = %.1f %s",
+    "Peak height": "*q*_{peak} = %.3f %s",
+    "Signal change": "\\Delta*q* = %.3f %s",
+}
+
+
+def walk_to(values, start, target, lo=0, hi=None, slack=0.5):
+    """The index reached walking ALONG `values` from `start` towards the
+    value `target`, either way, inside `[lo, hi)`: the one that gets closest
+    before the curve turns away for good.
+
+    How a typed cursor temperature becomes a SAMPLE on a curve that doubles
+    back: the walk stays on the branch the cursor is on, where looking the
+    temperature up would take whichever branch comes first. A temperature
+    jitters sample to sample, so going back by less than `slack` degrees
+    is walked through.
+    """
+    hi = len(values) if hi is None else int(hi)
+    lo = int(lo)
+    start = int(min(max(int(start), lo), hi - 1))
+    best = start
+    for step in (1, -1):
+        j = start
+        while lo <= j + step < hi:
+            j += step
+            gap = abs(float(values[j]) - target)
+            if gap < abs(float(values[best]) - target):
+                best = j
+            elif gap > abs(float(values[best]) - target) + slack:
+                break
+    return best
+
+
+def is_legacy_label(label):
+    """True for a caption in the exact shape the panel GENERATED before
+    round 15 - its default words, a number, the old unit - whatever the
+    number. Such a label was never typed, and its number may be stale."""
+    import re
+    if not label:
+        return False
+    for template in _LEGACY.values():
+        prefix = template.split("%")[0]
+        pattern = (re.escape(prefix)
+                   + r"-?\d+(?:\.\d+)? (?:°C|J/g|W/g)$")
+        if re.match(pattern, str(label)):
+            return True
+    return False

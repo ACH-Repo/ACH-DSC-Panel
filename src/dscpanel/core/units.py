@@ -22,6 +22,8 @@ a per-mole axis quietly - see `missing` below, and `ui/plot.py` for what the
 window does about it.
 """
 
+import re
+
 #: The base every conversion starts from: heat flow in WATTS, as stored in the
 #: file. The reader also offers "Heat Flow (Normalized)" in W/g, which is the
 #: same number divided by the mass it also stores; going through watts keeps
@@ -188,3 +190,27 @@ def to_celsius(values, unit):
     if unit == TEMP_F:
         return (values - F_OFFSET) / F_SCALE
     return values
+
+
+#: A typed temperature: a number, and optionally its unit - C, F or K, with
+#: or without a degree sign or "deg", in any case. "98" is in `unit`.
+_TYPED_TEMPERATURE = re.compile(
+    r"^\s*([-+]?(?:\d+(?:[.,]\d*)?|[.,]\d+))\s*"
+    r"((?:\u00b0|deg)?\s*[cfk])?\s*$", re.I)
+
+
+def parse_temperature(text, unit=TEMP_C):
+    """A typed temperature in degrees CELSIUS, or None if it is not one.
+
+    `98` is 98 of `unit` (the axis's); `98 F`, `98degf`, `371 K`, `98 \u00b0c`
+    say their own unit and are converted. A comma is a decimal point.
+    """
+    match = _TYPED_TEMPERATURE.match(str(text or ""))
+    if not match:
+        return None
+    value = float(match.group(1).replace(",", "."))
+    token = (match.group(2) or "").lower()
+    for noise in ("\u00b0", "deg", " "):
+        token = token.replace(noise, "")
+    typed = {"c": TEMP_C, "f": TEMP_F, "k": TEMP_K}.get(token, unit)
+    return float(to_celsius(value, typed))

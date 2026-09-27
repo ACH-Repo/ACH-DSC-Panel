@@ -25,11 +25,13 @@ Three kinds exist so far:
 once: what the x axis is, and what unit the y axis is in.
 """
 
+import math
 import os
 import re
 
 import numpy as np
 
+from . import figure as figure_module
 from . import style
 from . import units
 
@@ -147,10 +149,13 @@ class Sample(object):
           run, where it is not obviously wrong until somebody quotes it.
         * **A `.txt` export has no `segment` at all.** Its analyses are keyed
           by the step NAME, and three segments of a run routinely share one.
-          So the key is matched against this segment's program string, and an
-          ambiguous name is attributed to the first segment that carries it -
-          the same "order-based guess" the reader itself falls back to, and
-          it is marked so the readout can say it is a guess.
+          So such an analysis is OFFERED under every segment whose program
+          carries that name, marked "by step name", and the user attributes
+          it by showing it on the scan it belongs to (Christian, round 17:
+          an analysis is off until ticked, and it is ticked on a scan the
+          user picked, so the choice is the attribution). It used to go to
+          the first segment with the name, where the second heating's onset
+          could not be found from the second heating.
         """
         out = []
         blocks = (self.data or {}).get("analyses", {}) or {}
@@ -159,11 +164,6 @@ class Sample(object):
             return out
         prog = str(numdata[seg].get("prog", ""))
         stem = prog.rsplit(" #", 1)[0]
-        first_with_stem = None
-        for index, step in enumerate(numdata):
-            if str(step.get("prog", "")).rsplit(" #", 1)[0] == stem:
-                first_with_stem = index
-                break
         for key, models in blocks.items():
             for model_name, entries in models.items():
                 for entry in entries:
@@ -173,7 +173,7 @@ class Sample(object):
                             continue
                         item = dict(entry)
                     else:
-                        if key not in (prog, stem) or first_with_stem != seg:
+                        if key not in (prog, stem):
                             continue
                         item = dict(entry)
                         item["attribution"] = "by step name"
@@ -230,6 +230,9 @@ class Scan(Obj):
         self._analyses = None
         #: Grams per mole for THIS scan, overriding the sample's.
         self.molar_mass_override = None
+        #: Its y-offset marker (the template's `add_yoffset_markers`), drawn
+        #: while the figure's markers are switched on.
+        self.marker = OffsetMarker(oid, self)
         self._cache_key = None
         self._cache = None
 
@@ -513,7 +516,9 @@ class Analysis(Obj):
         self.visible = False
         #: "auto" follows the scan's colour.
         self.colour = "auto"
-        #: Text override for the marker, or None for the computed one.
+        #: The label's TEMPLATE, or None for the default one of its kind:
+        #: the user's words, with `{}` where the measured value goes
+        #: (`core/labels.py`). It never holds the number itself.
         self.label = None
         #: The two SAMPLE INDICES (in the segment's own arrays) an analysis
         #: made by dragging along the curve was measured between, or None -
@@ -544,6 +549,10 @@ class Analysis(Obj):
         #: `flush`: "left", "center", "right", or None for the house style,
         #: whose own default follows the analysis kind.
         self.flush = None
+        #: How its number is written (`core/numbers.py`), or None for the
+        #: house style's - whole degrees for a temperature, three
+        #: significant figures for anything else.
+        self.number_format = None
 
     @property
     def decoded(self):
@@ -570,8 +579,11 @@ class Analysis(Obj):
         an analysis inherited from a source that names the step and not the
         segment - a `.txt` export - is a guess.
         """
+        # One offered "by step name" is attributed by the user SHOWING it on
+        # a scan: it is off until ticked, and ticked on the scan they picked.
         return (self.source == "panel"
-                or self.attribution in ("cached curve", "moved by hand"))
+                or self.attribution in ("cached curve", "moved by hand")
+                or (self.attribution == "by step name" and self.visible))
 
     def value(self):
         """The temperature this analysis is drawn at, or None."""
@@ -582,27 +594,17 @@ class Analysis(Obj):
                 return found
         return None
 
-    def summary(self):
-        """A short label: what it is and what it says."""
-        if self.label:
-            return str(self.label)
-        kind = self.model_name
-        if "Glass" in kind:
-            value = number(self.fields.get("Midpoint"))
-            return "Tg {:.1f}".format(value) if value is not None else "Tg"
-        if "Integration" in kind:
-            enthalpy = number(self.fields.get("Enthalpy (normalized)"))
-            if enthalpy is not None:
-                return "{:.1f} J/g".format(enthalpy)
-        if "Onset" in kind or "Endset" in kind:
-            value = number(self.fields.get("Onset x")
-                           or self.fields.get("Endset x"))
-            word = "Endset" if "Endset" in kind else "Onset"
-            if value is not None:
-                return "{} {:.1f}".format(word, value)
-        value = self.value()
-        return ("{} {:.1f}".format(kind, value) if value is not None
-                else kind)
+    @property
+    def quantity(self):
+        """What its number is: "temperature", "enthalpy" or "heat flow"."""
+        from . import labels
+        return labels.quantity_of(self.model_name)
+
+    def summary(self, doc=None):
+        """The label as drawn: its template with the value filled in, in
+        the units of `doc`'s axes (Celsius and W/g without one)."""
+        from . import labels
+        return labels.render(self, doc).text
 
     def cursors(self):
         """The two cursor temperatures this analysis was made from, in degC.
@@ -701,6 +703,9 @@ class Artist(Obj):
         self.space = SPACE_RELATIVE
         self.anchor = "center"
         self.colour = "auto"
+        #: Degrees, counter-clockwise, about the anchor point; only for a
+        #: kind that `can_rotate` (R).
+        self.rotation = 0.0
 
     def position(self):
         return (float(self.x), float(self.y))
@@ -751,6 +756,13 @@ class Axis(Obj):
         self.show_grid = False
         self.minor_ticks = True
         self.ticks_inward = True
+        #: Which side of the axes box this axis is drawn on - its line, its
+        #: ticks, its numbers and its caption: "bottom" or "top" for x,
+        #: "left" or "right" for y.
+        self.side = "bottom" if which == "x" else "left"
+        #: The numbers can be hidden - a stack of offset scans often shows
+        #: no y numbers at all. The caption is hidden with `visible`.
+        self.show_numbers = True
         #: Both None until chosen: the house style decides (`core/style.py`).
         self.label_size = None
         self.tick_size = None
@@ -761,6 +773,22 @@ class Axis(Obj):
         #: Pixels between the axis's NUMBERS and its caption, or None for the
         #: house style's `caption_gap`. Dragging the caption sets it.
         self.label_gap = None
+        #: How its numbers are written (`core/numbers.py`), or None for
+        #: "as few digits as the tick spacing needs".
+        self.number_format = None
+        #: A line on the OPPOSITE side of the axes box, closing the frame,
+        #: and ticks on it (no numbers): Origin's look, and the default
+        #: (Christian, round 18).
+        self.mirror = True
+        self.mirror_ticks = True
+        #: The numbered ticks' spacing in the axis's unit, or None for a
+        #: round number that fits (matplotlib's MultipleLocator vs auto).
+        self.major_step = None
+        #: Minor intervals per major one (AutoMinorLocator(n)); 1 is none.
+        self.minor_count = 5
+        #: Tick lengths, in figure units (96 per inch).
+        self.tick_length = 7.0
+        self.minor_length = 3.0
 
     def caption(self, doc):
         """What the caption says: the user's text, or the axis's own.
@@ -793,6 +821,7 @@ class TextLabel(Artist):
 
     kind = "label"
     can_scale = True
+    can_rotate = True
 
     def __init__(self, oid, text="Label", x=0.5, y=0.5, scan=None):
         Artist.__init__(self, oid, "Label", x, y)
@@ -822,6 +851,7 @@ class Legend(Artist):
 
     kind = "legend"
     can_scale = True
+    can_rotate = True
 
     def __init__(self, oid):
         Artist.__init__(self, oid, "Legend", 0.02, 0.98)
@@ -830,12 +860,15 @@ class Legend(Artist):
         self.visible = False
         #: None follows the house style (`core/style.py`).
         self.size = None
-        #: A box behind it, so it stays readable over a curve.
-        self.show_frame = True
+        #: A box behind it. Off by default, as the template's
+        #: `frameon=False` (Christian, round 17).
+        self.show_frame = False
         #: Length of the colour sample in front of each name, in pixels.
         self.sample = 22.0
         #: Space between rows, as a multiple of the line height.
         self.spacing = 1.25
+        #: The colour samples' line width, or None for each scan's own.
+        self.line_width = None
 
     def entries(self, doc):
         """`[(scan, text), ...]` for the scans that are drawn.
@@ -845,6 +878,53 @@ class Legend(Artist):
         renamed to.
         """
         return [(scan, scan.display_name()) for scan in doc.visible_scans()]
+
+
+class OffsetMarker(Obj):
+    """The template's `add_yoffset_markers` for one scan, as an object.
+
+    `+0.5` under the curve with a small arrow up to it: the scan's offset,
+    in the axis's unit. Selected, moved (alone or with the rest of the
+    selection) and given its own size like any label; drawn while the
+    figure's markers are on (`Document.offset_markers`).
+    """
+
+    kind = "offset_marker"
+
+    def __init__(self, oid, scan):
+        Obj.__init__(self, oid, "Offset marker")
+        self.scan = scan
+        #: Where it points on the curve. None: the left end of the part of
+        #: the curve that is SHOWN - kept and inside the view - which is
+        #: tight against the y axis wherever the curve reaches it.
+        #: `("i", n)`: sample n of the segment, which is how a point on a
+        #: curve that doubles back is named (a drag stores this).
+        #: `("T", celsius)`: the shown sample nearest that temperature (a
+        #: typed one; what lines several markers up in one column).
+        self.at = None
+        #: How far below the curve the text starts, in figure units, or None
+        #: for the template's 3 % of the plot height.
+        self.dy = None
+        #: Point size, or None for the house style's.
+        self.size = None
+        #: "auto" is the theme's ink.
+        self.colour = "auto"
+        #: How the offset is written, or None for the house style's (one
+        #: decimal and a sign, as the template writes it).
+        self.number_format = None
+
+
+#: The heat-flow arrow's own proportions by default: the DSC_Plotter
+#: template's `add_exo_arrow`, in POINTS (tail 4.5 wide, head 13 wide and
+#: 9 long, the tail 0.9 of the head long), so the panel and the published
+#: figure draw the same arrow.
+ARROW_HEAD_LENGTH = 9.0
+ARROW_HEAD_WIDTH = 13.0
+ARROW_TAIL_WIDTH = 4.5
+ARROW_TAIL_LENGTH = 0.9 * ARROW_HEAD_LENGTH
+#: What the tip angle and the head width are kept at when the other two
+#: head dimensions change: "angle", "width", or None (neither).
+ARROW_LOCKS = ("angle", "width")
 
 
 class HeatFlowArrow(Artist):
@@ -859,18 +939,62 @@ class HeatFlowArrow(Artist):
     """
 
     kind = "arrow"
-    #: Its length is a setting rather than a transform, and an arrow that
-    #: says "exo down" cannot be rotated without lying, so neither is offered.
+    #: An arrow that says "exo down" cannot be rotated without lying; it
+    #: can be SCALED (S), which scales its head, tail and text together.
     can_rotate = False
-    can_scale = False
+    can_scale = True
 
     def __init__(self, oid, word=units.WORD_EXO, direction=units.EXO_DOWN):
         Artist.__init__(self, oid, "Heat-flow arrow", 0.045, 0.5)
         self.word = word
         self.direction = direction
-        #: Total length as a fraction of the plot height. The proportions
-        #: inside it are the DSC_Plotter template's, so this is the only knob.
-        self.length = 0.075
+        #: Its dimensions in POINTS, like the template's arguments. The
+        #: head's length, width and tip angle are tied - two decide the
+        #: third - so the angle is not stored: see `tip_angle` and `lock`.
+        self.head_length = ARROW_HEAD_LENGTH
+        self.head_width = ARROW_HEAD_WIDTH
+        self.tail_width = ARROW_TAIL_WIDTH
+        self.tail_length = ARROW_TAIL_LENGTH
+        #: Which of the tip angle and the head width stays put while the
+        #: other head dimensions change: "angle", "width" or None.
+        self.lock = None
+        #: The text's point size, or None for the house style's.
+        self.size = None
+
+    # ------------------------------------------------------------- the head
+    @property
+    def tip_angle(self):
+        """The angle at the point, in degrees: 2 atan(w / 2 / l)."""
+        return math.degrees(2.0 * math.atan2(float(self.head_width) / 2.0,
+                                             float(self.head_length)))
+
+    def head_for_length(self, length):
+        """`(head_length, head_width)` once the head is made `length` long.
+
+        The width follows only when the ANGLE is locked; otherwise it stays
+        and the angle is what changes."""
+        length = max(0.1, float(length))
+        if self.lock == "angle":
+            half = math.radians(self.tip_angle) / 2.0
+            return length, 2.0 * length * math.tan(half)
+        return length, float(self.head_width)
+
+    def head_for_width(self, width):
+        """`(head_length, head_width)` once the head is made `width` wide.
+        With the angle locked the length follows; otherwise the angle does."""
+        width = max(0.1, float(width))
+        if self.lock == "angle":
+            half = math.radians(self.tip_angle) / 2.0
+            return width / 2.0 / math.tan(half), width
+        return float(self.head_length), width
+
+    def head_for_angle(self, degrees):
+        """`(head_length, head_width)` for a tip angle of `degrees`. With the
+        width locked the length follows; otherwise the width does."""
+        half = math.radians(min(170.0, max(5.0, float(degrees)))) / 2.0
+        if self.lock == "width":
+            return float(self.head_width) / 2.0 / math.tan(half),                 float(self.head_width)
+        return float(self.head_length),             2.0 * float(self.head_length) * math.tan(half)
 
     @property
     def orientation(self):
@@ -911,6 +1035,19 @@ class Document(object):
         #: This figure's own sizes and alignments, between an object's and
         #: the user's defaults. Saved with the session; see `core/style.py`.
         self.style = style.FigureStyle()
+        #: The figure's size and the place of its axes box (`core/figure.py`):
+        #: free with the window, a fixed aspect ratio, or exact. A new figure
+        #: starts from the user's default, when they have set one.
+        self.figure = style.figure_default() or figure_module.FigureLayout()
+        #: The framing, as the plot keeps it (`PlotWidget.view_state`):
+        #: `{"x": (lo, hi) or None, "y": ..., "context": (axis, unit, ...)}`,
+        #: or None for "fitted". Part of the figure, so saved with it: a
+        #: y range narrowed to show a peak's label is a decision.
+        self.view = None
+        #: The template's `add_yoffset_markers`: every drawn scan labelled
+        #: with its y offset (`+0.5`), each its own object (`Scan.marker`).
+        #: Off until asked for; a tuning aid that can go into the figure.
+        self.offset_markers = False
         self.path = ""              # the session file, once saved
         self._next = 100
 
@@ -923,7 +1060,10 @@ class Document(object):
     # -------------------------------------------------------------- content
     def objects(self):
         """Everything selectable, in draw order (later is on top)."""
-        return (list(self.scans) + self.analyses() + list(self.labels)
+        markers = ([scan.marker for scan in self.scans]
+                   if self.offset_markers else [])
+        return (list(self.scans) + self.analyses() + markers
+                + list(self.labels)
                 + list(self.axes.values()) + [self.arrow, self.legend])
 
     def add_label(self, text="Label", x=0.5, y=0.5, scan=None):
@@ -1039,8 +1179,10 @@ class Document(object):
             obj.selected = id(obj) in wanted
 
     def select_all(self, on=True):
+        """Everything, or nothing. "Everything" leaves the axes out: they
+        are the frame, not something to move or restyle with the rest."""
         for obj in self.objects():
-            obj.selected = bool(on)
+            obj.selected = bool(on) and not isinstance(obj, Axis)
 
     # ---------------------------------------------------------------- state
     @property

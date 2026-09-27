@@ -34,6 +34,7 @@ NOTES = {
     "app.operator_search": "also the Search button on the menu bar",
     "edit.undo": "also walks back zoom, pan and fit, one gesture at a time",
     "legend.toggle": "or its tick in the outliner",
+    "figure.layout": "exact cm/in and margins, saved with the session",
     "analysis.flush_left": "the selected labels, else all on the selected scans",
 }
 
@@ -59,7 +60,10 @@ WHEN = {
     "arrange.stack": "two or more scans selected",
     "arrange.align": "two or more scans selected",
     "arrange.distribute": "three or more scans selected",
-    "arrange.reset": "some scan has an offset",
+    "arrange.reset": "a selected scan has an offset, or a label or the "
+                     "legend is selected (then R rotates)",
+    "transform.rotate": "a label or the legend is selected",
+    "transform.scale": "the arrow, the legend or a label is selected",
     "object.show_all": "something is hidden",
     "edit.undo": "there is something to undo",
     "edit.redo": "there is something to redo",

@@ -29,7 +29,8 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFrame,
                                QWidget)
 
 from ..core import style
-from .dialogs import NumberBox, StyleChoice, StyleNumber
+from .dialogs import (FontChoice, NumberBox, StyleChoice, StyleNumber,
+                      StyleText, enter_stays, readable)
 
 
 class SettingsDialog(QDialog):
@@ -80,7 +81,18 @@ class SettingsDialog(QDialog):
                 name.setToolTip(setting.note)
             grid.addWidget(name, row, 0)
             key = setting.key
-            if setting.kind == "choice":
+            if setting.kind in ("format", "font"):
+                # The Default column's None is "the built-in value"; the
+                # figure's is "whatever the default says".
+                kind = StyleText if setting.kind == "format" else FontChoice
+                default = kind(style.user_preference(key),
+                               (lambda k=key: style.builtin(k)),
+                               parent=self, reset_text="Built-in")
+                default.changed.connect(
+                    lambda k=key: self._default_changed(k))
+                own = kind(getattr(self.doc.style, key),
+                           (lambda k=key: style.preference(k)), parent=self)
+            elif setting.kind == "choice":
                 default = StyleChoice(setting.choices, style.preference(key),
                                       lambda: "", parent=self,
                                       titles=style.FLUSH_TITLES,
@@ -116,10 +128,8 @@ class SettingsDialog(QDialog):
                 grid.addWidget(own, row, 2)
 
         note = QLabel(
-            "Default is kept on this computer and used by every figure. This "
-            "figure is saved in its session file and wins over the default. "
-            "A size chosen in an object's own settings (double-click it) "
-            "wins over both.")
+            "Default: this computer, every figure. This figure: saved in its "
+            "session. An object's own setting wins over both.")
         note.setWordWrap(True)
         note.setStyleSheet("color: #9a9a9a;")
         layout.addWidget(note)
@@ -129,14 +139,14 @@ class SettingsDialog(QDialog):
                                    | QDialogButtonBox.RestoreDefaults)
         buttons.button(QDialogButtonBox.Cancel).setText("Revert")
         buttons.button(QDialogButtonBox.Cancel).setToolTip(
-            "Put both columns back as they were when this opened, and close. "
-            "Closing any other way keeps the changes.")
+            "Undo this page's changes and close. Closing otherwise keeps "
+            "them.")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.revert)
         buttons.button(QDialogButtonBox.RestoreDefaults).setText(
             "Built-in defaults")
         buttons.button(QDialogButtonBox.RestoreDefaults).setToolTip(
-            "Put the Default column back to what the program shipped with.")
+            "Default column back to the built-in values.")
         buttons.button(QDialogButtonBox.RestoreDefaults).clicked.connect(
             lambda _c=False: self.restore_builtin())
         layout.addWidget(buttons)
@@ -153,7 +163,7 @@ class SettingsDialog(QDialog):
     # ------------------------------------------------------------ editing
     def default_value(self, key):
         widget = self.defaults[key]
-        if isinstance(widget, StyleChoice):
+        if isinstance(widget, (StyleChoice, StyleText, FontChoice)):
             return widget.value()
         return float(widget.value())
 
@@ -161,6 +171,12 @@ class SettingsDialog(QDialog):
         """Change one default as if it had been typed. For the button, and
         for tests."""
         widget = self.defaults[key]
+        if isinstance(widget, (StyleText, FontChoice)):
+            widget.blockSignals(True)
+            widget.set_value(None if value == style.builtin(key) else value)
+            widget.blockSignals(False)
+            self._default_changed(key)
+            return
         inner = widget.combo if isinstance(widget, StyleChoice) else widget
         inner.blockSignals(True)
         if isinstance(widget, StyleChoice):
@@ -217,6 +233,16 @@ class SettingsDialog(QDialog):
         """Its X, Esc or Ctrl+W: keep the changes, like OK (see
         `_LiveDialog.reject`). Only Revert puts them back."""
         self.accept()
+
+    def keyPressEvent(self, ev):
+        """Enter takes the value and keeps the page open (`enter_stays`)."""
+        if enter_stays(self, ev):
+            return
+        QDialog.keyPressEvent(self, ev)
+
+    def showEvent(self, ev):
+        readable(self)
+        QDialog.showEvent(self, ev)
 
     def revert(self):
         style.restore_preferences(self._saved_defaults)

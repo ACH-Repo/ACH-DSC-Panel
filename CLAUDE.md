@@ -43,6 +43,9 @@ going; this file is about how it is done here.
 | `core/undo.py` | commands, gesture merging |
 | `core/session.py` | the `.dscpanel` file |
 | `core/style.py` | the house style: object -> figure -> user default -> built-in |
+| `core/figure.py` | the figure's size: window, aspect ratio, or exact size and margins |
+| `core/labels.py` | what an analysis label says: templates, units, the rules |
+| `core/numbers.py` | how a number is written: the `%.3g` formats |
 | `core/export.py` | CSV, the driver bridge, and the export warnings |
 | `core/ops.py` | the operator registry (copied from MoloM, keep in step) |
 | `ui/plot.py` | the painted plot: view, gestures, picking, drawing |
@@ -189,9 +192,12 @@ going; this file is about how it is done here.
   Revert button (`revert`) puts things back. Either way the window makes
   one undo step.
 * **Unsaved changes are COMPARED, not counted**: `window.is_modified` diffs
-  `session.to_state` against the last save or open. A zoom is on the undo
-  stack but not in the file, so it is not a change; undoing back to the
-  saved state is clean. `closeEvent` asks (`ask_to_save`, stubbable).
+  `session.to_state` (with the plot's live view) against the last save or
+  open. Since round 17 the view IS in the file, so a zoom is a change;
+  undoing back to the saved state is clean. `closeEvent` asks
+  (`ask_to_save`, stubbable). The comparison must never WRITE: it runs on
+  every title refresh, and copying the view onto the document there wiped
+  an opened session's view before it was restored.
 * **A move restores what was STORED, not what was drawn** (`_stored_of`).
   Restoring the drawn value turned "follow the house style" (None) into a
   fixed number whenever a drag was cancelled or undone.
@@ -199,6 +205,25 @@ going; this file is about how it is done here.
   per axis `label_gap`), below them for x and left of the widest for y; the
   margins grow to fit. Session version 3 drops older `label_gap`s, which
   were measured from somewhere else.
+* **The figure is drawn in its OWN space, 96 units per inch** (round 12,
+  `core/figure.py`). 96 is Qt's logical DPI for fonts on screen and in a
+  QImage, so a 12 pt font is 12/72 inch in the figure everywhere. At an
+  exact size the page is scaled onto the pane (`PlotWidget.page`), so every
+  mouse position goes through `to_figure` first, and the pick distance and
+  drag slop are pane pixels divided by the scale. `plot_rect()` is a
+  FRACTIONAL QRectF (an integer rect rounds an exact margin by 0.26 mm):
+  never build a QRect from it, and `QPainter.drawLine` takes QPointF.
+* **At an exact size the MARGINS decide the axes box**; numbers and captions
+  live inside them and `overflow()` says what does not fit. Automatic
+  margins (sized to the widest number) made "10.25" and "0.5" two boxes.
+* **Exports are exact**: the PNG's DPI is written AFTER painting (fonts are
+  converted with the device's DPI, which must be 96 while painting);
+  QSvgGenerator defaults to 72 dpi (every font at 3/4 size until round 12)
+  and its root width/height are rewritten in exact mm.
+* **The driver export is RUN in a test** (`test_data_cases`, skips without
+  achdsc, matplotlib or OJ-12). It used to call `start_plot()` and
+  `finish_plot()`, which the template never had; now it emits a whole
+  `driver()` with `plt.figure(figsize)` and `fig.add_axes` at the margins.
 * **Interval marks** (round 10): a dash at each bound, centred ON the trace,
   in the axis colour; for an analysis whose result is a temperature
   (`Analysis.marks_a_point`: onset, endset, Tg) straight lines bound ->
@@ -218,6 +243,64 @@ going; this file is about how it is done here.
 * **An analysis made in the panel exists nowhere else.** The session stores
   its model and cursors and recomputes it from the re-read file on load; a
   file's own analyses only have their styling stored, matched by `key()`.
+* **A group dialog MIRRORS by diff** (round 14). `_LiveDialog._mirror`
+  copies to the rest of the group only the fields whose value on the shown
+  object changed since the last change, because every `_apply` writes ALL
+  its fields from the widgets - copying everything would flatten each
+  object's own values. A new per-object field goes in `INDIVIDUAL`, its
+  widget in `GROUP_DISABLED`; the undo step reads `dialog.snapshots()`.
+* **The first click of a double-click narrows the selection.** A drag or a
+  settings dialog that should act on a shift-selected group must survive
+  it: `mouseReleaseEvent` keeps `_click_restore`, and the double-click puts
+  the selection back.
+* **The heat-flow arrow is in POINTS** (x 96/72 into figure units), like
+  `add_exo_arrow`'s arguments. Its tip angle is derived, never stored.
+* **An analysis label never holds its number** (round 15). `label` is a
+  template; `{}` is filled by `labels.render` on every draw, in the axes'
+  units unless a unit follows it. Never write a measured number into a
+  label, and read what a label SAYS through `render` (or
+  `Analysis.summary(doc)`), never `analysis.label`.
+* **`%.3g` is NOT Python's here** (`numbers.write`): significant figures,
+  all written, no exponent. A format may hold no text - a unit in a format
+  would print one unit's number with another's sign.
+* **A point on a curve is a SAMPLE, found by walking** (`PlotWidget._walk`):
+  the offset marker, like an analysis span. Temperature jitters sample to
+  sample, so the walk tolerates a few units back before calling it a turn.
+* **Enter must not close a live dialog** (`dialogs.enter_stays`): a spin
+  box ignores Enter after taking its value, and QDialog then presses the
+  first auto-default button - OK.
+* **A plain-text tooltip is drawn on ONE line**, however long. Dialogs run
+  `dialogs.readable` on show, which wraps every tooltip as rich text (and
+  makes labels selectable); a tooltip set after showing is not wrapped.
+* **An analysis's model and interval change through the WINDOW**
+  (`change_model`, `retype_interval`, `remeasure`), each its own undo step,
+  never through a dialog's snapshot: the snapshot would record the same
+  change a second time.
+* **S and R claim their keys through ShortcutOverride** (`PlotWidget.
+  event`): M and C are window shortcuts (x range, measure), and a window
+  shortcut fires before the focused widget sees the key.
+* **A transform places anchors unclamped** (`set_artist_point(...,
+  clamp=False)`): scaling a label about its corner moves its centre, and
+  the 1 % edge clamp a drag uses moved the pivot instead.
+* **A step-name analysis is attributed by being shown** (`Analysis.certain`
+  includes "by step name" and visible). It is offered under every scan of
+  its step; anything that shows analyses in bulk must skip those.
+* **Qt's SVG writer ignores clipping** (checked, PySide6 6.11). Anything
+  inside the axes' clip must stay inside `_paint_all`'s fenced block
+  (`_clip_mark`), which `clip_svg` turns into a real `clipPath` after the
+  export; a PNG clips anyway. Line segments that must never leave the axes
+  are also cut geometrically (`_clip_segment`).
+* **An axis has three hit targets** - `axis_spine_rect` (line and ticks),
+  `axis_numbers_rect`, the caption box - and `axis_hit()` says which.
+  Spine and numbers are never SELECTED (`_frame_part`); `edit_object(axis,
+  part=...)` picks the window.
+* **A scale's pivot is MEASURED, not predicted**: after changing the sizes
+  the anchor goes back, the box is measured, and the anchor is moved by the
+  pivot's error. A box does not grow in proportion to its font.
+* **`markup_runs` returns `(text, italic, script)`**, script False, "sub" or
+  "sup". Every text on the figure goes through it, added labels included.
+* **A painter on an image starts from the APPLICATION font.** `_paint_all`
+  sets `figure_font()` first, or exports lose the house font family.
 * **A segment can record no heat flow at all** (the ramp of an indium
   calibration run). `missing_for` reports a missing SIGNAL exactly like a
   missing molar mass, so it reaches the placeholder, the blink and the export

@@ -127,7 +127,8 @@ def main(argv=None):
     app.setOrganizationName(branding.SETTINGS_ORG)
     app.setApplicationDisplayName(branding.APP_NAME)
     window = MainWindow()
-    window.show()
+    # Maximized, the plot gets the screen (Christian, round 18).
+    window.showMaximized()
     sessions = [p for p in args.paths
                 if str(p).lower().endswith(branding.SESSION_EXT)]
     if sessions:

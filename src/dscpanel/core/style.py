@@ -28,6 +28,7 @@ import json
 import os
 
 from .. import branding
+from . import numbers
 
 #: How an analysis label sits against the arrow that points at its feature,
 #: which is the DSC_Plotter template's `flush`: `left` puts the text's left
@@ -86,6 +87,11 @@ class Setting(object):
             return None
         if self.kind == "choice":
             return value if value in self.choices else None
+        if self.kind == "format":
+            from . import labels
+            return labels.normalise_format(value)
+        if self.kind == "font":
+            return str(value).strip()
         try:
             number = float(value)
         except (TypeError, ValueError):
@@ -105,23 +111,45 @@ class Setting(object):
 #: install (2026-09-25); the rest are what the objects carried before there
 #: was a house style.
 SETTINGS = (
+    # The typeface of everything on the figure. Sizes stay per element
+    # below, and italic is per character (the `*T*` markup), so the one
+    # thing all text shares is the family. Empty is the system's own.
+    Setting("font_family", "Font family", "Bahnschrift", kind="font",
+            note="Typeface of all figure text."),
     Setting("analysis_size", "Analysis labels", 11.0, low=5.0, high=40.0,
-            note="the text of an onset, an integral, a Tg"),
+            note="Onset, integral and Tg labels."),
     Setting("analysis_flush", "Analysis label alignment", FLUSH_LEFT,
             kind="choice", choices=(FLUSH_AUTO,) + FLUSHES,
-            note="which edge of the label sits on its arrow"),
+            note="Edge of the label on its arrow."),
     Setting("caption_size", "Axis captions", 14.0, low=5.0, high=40.0,
-            note="T / degC and Heat Flow / W/g"),
+            note="T / \u00b0C and Heat Flow / W/g."),
     Setting("tick_size", "Axis numbers", 12.0, low=4.0, high=30.0),
     # Between an axis's numbers and its caption. The caption used to sit a
     # fixed 16 px below the axis line, which the numbers themselves nearly
     # fill at 8 pt - and overlapped at anything bigger.
     Setting("caption_gap", "Caption distance", 8.0, low=0.0, high=80.0,
             step=1.0, decimals=0, suffix=" px",
-            note="space between an axis's numbers and its caption"),
+            note="Space between axis numbers and caption."),
     Setting("legend_size", "Legend text", 9.0, low=5.0, high=30.0),
     Setting("label_size", "Labels", 10.0, low=5.0, high=48.0,
-            note="captions placed on the figure (Ctrl+T)"),
+            note="Labels added with Ctrl+T."),
+    # The template's `add_yoffset_markers(..., fs=7)`.
+    Setting("offset_marker_size", "Y-offset markers", 7.0, low=4.0,
+            high=30.0, note="Size of the y-offset markers."),
+    # The template's `add_exo_arrow` writes 'Exo Down' at size=10.
+    Setting("arrow_size", "Heat-flow arrow text", 10.0, low=4.0, high=40.0),
+    # How numbers are WRITTEN (`core/numbers.py`): a percent format for one
+    # number. %.Ng is N significant figures, all written, never 1e+03.
+    Setting("temperature_format", "Temperatures (onset, endset, Tg)",
+            numbers.TEMPERATURE, kind="format",
+            note="Onset, endset, Tg. %.0f whole degrees; %.0f K "
+                 "converts."),
+    Setting("value_format", "Enthalpies and other results", numbers.VALUE,
+            kind="format",
+            note="%.3g: three significant figures. A unit "
+                 "converts."),
+    Setting("offset_format", "Offset markers", numbers.OFFSET, kind="format",
+            note="Text of each y-offset marker."),
     Setting("line_width", "Curve width", 1.0, low=0.2, high=8.0, step=0.2,
             decimals=2),
     # How close a press must be to a curve or a label to act on it (mark an
@@ -130,8 +158,8 @@ SETTINGS = (
     # the old fixed value, and the hand that uses it decides.
     Setting("pick_radius", "Pick distance", 14.0, low=2.0, high=60.0,
             step=1.0, decimals=0, figure=False, suffix=" px",
-            note="how close, in pixels, a press must be to a curve or a "
-                 "label to act on it; further away, a drag draws a box"),
+            note="How near a press acts on an object; further away "
+                 "it draws a box."),
 )
 
 BY_KEY = dict((setting.key, setting) for setting in SETTINGS)
@@ -149,6 +177,9 @@ FIELDS = {
     ("legend", "size"): "legend_size",
     ("label", "size"): "label_size",
     ("scan", "line_width"): "line_width",
+    ("arrow", "size"): "arrow_size",
+    ("offset_marker", "size"): "offset_marker_size",
+    ("offset_marker", "number_format"): "offset_format",
 }
 
 
@@ -175,6 +206,10 @@ class FigureStyle(object):
 #: The user's defaults, as loaded. Empty means "the built-in values".
 _preferences = {}
 
+#: The figure layout a NEW figure starts from (`core/figure.py`), as saved
+#: state, or None for the built-in one. A session keeps its own.
+_figure_default = None
+
 #: Where the preferences live. Tests point this at a temporary file so that
 #: running the suite never touches the defaults of whoever runs it.
 PATH_OVERRIDE = None
@@ -192,7 +227,9 @@ def load_preferences(path=None):
     Unreadable is not an error worth stopping the program for: the file is a
     convenience, and the built-in values are always a correct figure.
     """
+    global _figure_default
     _preferences.clear()
+    _figure_default = None
     path = path or preferences_path()
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -201,6 +238,8 @@ def load_preferences(path=None):
         return dict(_preferences)
     if not isinstance(stored, dict):
         return dict(_preferences)
+    if isinstance(stored.get("figure"), dict):
+        _figure_default = dict(stored["figure"])
     for section in ("style", "handling"):
         entries = stored.get(section)
         if not isinstance(entries, dict):
@@ -229,6 +268,8 @@ def save_preferences(path=None):
                            if BY_KEY[k].figure),
              "handling": dict((k, v) for k, v in changed.items()
                               if not BY_KEY[k].figure)}
+    if _figure_default is not None:
+        state["figure"] = dict(_figure_default)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(state, fh, indent=1)
     return path
@@ -239,13 +280,38 @@ def preferences():
     return dict(_preferences)
 
 
-def restore_preferences(saved):
+def figure_default():
+    """A fresh layout from the user's default for new figures, or None."""
+    if _figure_default is None:
+        return None
+    from . import figure
+    return figure.FigureLayout().load_state(_figure_default)
+
+
+def set_figure_default(layout):
+    """Make `layout` (or None: the built-in one) what new figures start
+    from. Written with the other defaults by `save_preferences`."""
+    global _figure_default
+    _figure_default = None if layout is None else dict(layout.to_state())
+
+
+def restore_preferences(saved, figure_state=False):
+    """Put the defaults back (a Revert, a test). `figure_state` other than
+    False replaces the figure default too."""
+    global _figure_default
     _preferences.clear()
     _preferences.update(saved or {})
+    if figure_state is not False:
+        _figure_default = figure_state
 
 
 def builtin(key):
     return BY_KEY[key].default
+
+
+def user_preference(key):
+    """The user's own default for `key`, or None where they have none."""
+    return _preferences.get(key)
 
 
 def preference(key):
@@ -272,6 +338,11 @@ def figure_value(doc, key):
 
 
 def key_for(obj, attr):
+    if getattr(obj, "kind", "") == "analysis" and attr == "number_format":
+        # By what the number IS, not by the kind of object.
+        return ("temperature_format"
+                if getattr(obj, "quantity", "") == "temperature"
+                else "value_format")
     return FIELDS.get((getattr(obj, "kind", ""), attr))
 
 

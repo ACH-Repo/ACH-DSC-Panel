@@ -186,11 +186,25 @@ Every settings window applies as you touch it and keeps the changes however
 it is closed; its **Revert** button is the one way back. Closing the program
 with unsaved changes asks first.
 
+## Figure size
+
+Edit > **Figure size and margins** (saved with the session) gives the figure
+one of three sizes: whatever the window is, a fixed aspect ratio, or an
+**exact size** in centimetres or inches with four margins. At an exact size
+the margins decide the axes box - the numbers and captions live inside them,
+and the dialog says when one does not fit - so two figures with the same
+settings have identical axes boxes whatever their numbers say, and sit side
+by side in Word without adjusting. On screen the figure is shown as its page,
+scaled to fit. **Use for new figures** makes a layout the default.
+
+Each axis can sit on either side (x bottom or top, y left or right) and hide
+its numbers or its caption (double-click the axis line).
+
 ## Exports
 
 | Export | What it is for |
 | :-- | :-- |
-| PNG / SVG | the figure, drawn in the light palette, warnings stamped on |
+| PNG / SVG | the figure, drawn in the light palette, warnings stamped on; at an exact size, exactly that size (the PNG carries its dpi, the SVG its millimetres) |
 | CSV | the curves as numbers, one x/y column pair per scan |
 | `DSC_Plotter.py` | the arrangement as a driver for ACH-DSC-Plotter |
 

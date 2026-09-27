@@ -17,7 +17,8 @@ the curve, and clicking a curve highlights the row.
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QFont
-from PySide6.QtWidgets import QAbstractItemView, QTreeWidget, QTreeWidgetItem
+from PySide6.QtWidgets import (QAbstractItemView, QHeaderView, QStyle,
+                               QTreeWidget, QTreeWidgetItem)
 
 from ..core import model
 from . import plot as plot_module
@@ -36,6 +37,10 @@ class Outliner(QTreeWidget):
     selection_picked = Signal()
     activated_object = Signal(object)
     menu_for = Signal(object, object)          # object, global QPoint
+    #: A sweep across the boxes began / ended: what it changes between the
+    #: two is ONE undo step.
+    sweep_started = Signal()
+    sweep_finished = Signal()
 
     def __init__(self, parent=None):
         QTreeWidget.__init__(self, parent)
@@ -45,10 +50,22 @@ class Outliner(QTreeWidget):
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.setUniformRowHeights(True)
         self.setIndentation(14)
-        self.header().setStretchLastSection(False)
-        self.setColumnWidth(0, 230)
+        # The names take the room there is and the state column is always
+        # whole: it used to sit past a fixed 230-pixel first column, cut off
+        # however wide the dock was (Christian, round 18).
+        header = self.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setMinimumSectionSize(40)
+        self.headerItem().setToolTip(0, "The figure's objects; tick to show.")
+        self.headerItem().setToolTip(1, "Mass, molar mass, exotherm, "
+                                        "offset, analyses shown.")
         self.doc = None
         self._filling = False
+        #: While a sweep is live, the state it paints onto every box it
+        #: passes (ORCA Workbench's, Blender's), else None.
+        self._sweep = None
         self.itemChanged.connect(self._item_changed)
         self.itemSelectionChanged.connect(self._selection_changed)
         self.itemDoubleClicked.connect(self._double_clicked)
@@ -104,6 +121,9 @@ class Outliner(QTreeWidget):
                 for k in range(row.childCount()):
                     child = row.child(k)
                     child.setExpanded(self._key(child) in expanded)
+            for item in self._items():
+                for column in (0, 1):
+                    item.setToolTip(column, item.text(column))
             legend = QTreeWidgetItem(self)
             legend.setText(0, doc.legend.name)
             legend.setText(1, "{} entries".format(
@@ -206,6 +226,67 @@ class Outliner(QTreeWidget):
         bits.append("exo {}{}".format(
             sample.exo, "?" if sample.exo_source == "assumed" else ""))
         return "  ".join(bits)
+
+    # --------------------------------------------------- sweeping the boxes
+    # Press a box and drag down the list: every box the pointer passes takes
+    # the state the first one was given - as in ORCA Workbench and Blender.
+    # A tap-and-drag on a touchpad and a double-click-drag both start one.
+    def _on_box(self, item, pos):
+        """True when `pos` is on the tick box of `item`."""
+        if item is None or not (item.flags() & Qt.ItemIsUserCheckable):
+            return False
+        cell = self.visualItemRect(item)
+        left = self.visualRect(self.indexFromItem(item, 0)).left()
+        width = self.style().pixelMetric(QStyle.PM_IndicatorWidth) + 8
+        return cell.top() <= pos.y() <= cell.bottom() and \
+            left - 2 <= pos.x() <= left + width
+
+    def _start_sweep(self, item):
+        self._sweep = (Qt.Unchecked if item.checkState(0) == Qt.Checked
+                       else Qt.Checked)
+        self.sweep_started.emit()
+        item.setCheckState(0, self._sweep)
+
+    def mousePressEvent(self, ev):
+        pos = ev.position().toPoint()
+        item = self.itemAt(pos)
+        if ev.button() == Qt.LeftButton and self._on_box(item, pos):
+            self._start_sweep(item)
+            ev.accept()
+            return
+        QTreeWidget.mousePressEvent(self, ev)
+
+    def mouseDoubleClickEvent(self, ev):
+        pos = ev.position().toPoint()
+        item = self.itemAt(pos)
+        if ev.button() == Qt.LeftButton and self._on_box(item, pos):
+            # The second press of a double-click on a box is a box press,
+            # not "open the settings".
+            if self._sweep is None:
+                self._start_sweep(item)
+            ev.accept()
+            return
+        QTreeWidget.mouseDoubleClickEvent(self, ev)
+
+    def mouseMoveEvent(self, ev):
+        if self._sweep is not None:
+            item = self.itemAt(ev.position().toPoint())
+            if (item is not None and item.flags() & Qt.ItemIsUserCheckable
+                    and item.checkState(0) != self._sweep):
+                item.setCheckState(0, self._sweep)
+            ev.accept()
+            return
+        QTreeWidget.mouseMoveEvent(self, ev)
+
+    def mouseReleaseEvent(self, ev):
+        if self._sweep is not None:
+            self._sweep = None
+            # After the changes the sweep queued (they are deferred by a
+            # zero timer, `_item_changed`), so they land inside the step.
+            QTimer.singleShot(0, self.sweep_finished.emit)
+            ev.accept()
+            return
+        QTreeWidget.mouseReleaseEvent(self, ev)
 
     # ------------------------------------------------------------- plumbing
     def _items(self):

@@ -25,21 +25,53 @@ import re
 import numpy as np
 
 from .. import branding
+from . import figure as figure_module
 from . import model
+from . import labels
+from . import numbers
+from . import style
 from . import units
 
 
-def warnings_for(doc):
-    """Everything an export has to admit to, as short lines."""
+def warnings_for(doc, exo=True):
+    """Everything an export has to admit to, as short lines.
+
+    `exo=False` leaves out the assumed exotherm direction: an image is not
+    stamped with it (Christian, round 14), the console and the driver are.
+    """
     out = []
     for scan, missing in doc.scans_missing():
         out.append("NO {}: {} is not drawn".format(missing.upper(),
                                                    scan.display_name()))
+    # A label that asks for a unit it cannot be given without a mass is a
+    # missing value, exactly like a per-mole axis without M.
+    for analysis, rendered in _rendered_labels(doc):
+        for message in rendered.missing():
+            out.append("{} ({} on {})".format(
+                message, analysis.model_name, analysis.scan.display_name()))
     assumed = sorted({s.name for s in doc.samples
                       if s.exo_source == "assumed"})
-    if assumed:
+    if assumed and exo:
         out.append("EXO DIRECTION ASSUMED (down) for: " + ", ".join(assumed))
     return out
+
+
+def label_notes(doc):
+    """What is odd about the analysis labels without being missing: a unit
+    the value cannot be put in, a number typed by hand. Printed on export,
+    not stamped: the figure itself draws the right thing."""
+    out = []
+    for analysis, rendered in _rendered_labels(doc):
+        for kind, message in rendered.problems:
+            if kind != "missing":
+                out.append("{} on {}: {}".format(
+                    analysis.model_name, analysis.scan.display_name(),
+                    message))
+    return out
+
+
+def _rendered_labels(doc):
+    return [(a, labels.render(a, doc)) for a in doc.visible_analyses()]
 
 
 def curves_csv(doc, path):
@@ -91,7 +123,18 @@ def curves_csv(doc, path):
 
 
 def driver_source(doc):
-    """The `DSC_Plotter.py` driver that reproduces what is on screen."""
+    """The `DSC_Plotter.py` driver that reproduces what is on screen.
+
+    A whole `def driver():` that the template runs as it stands: it reads the
+    files, builds the figure - at EXACTLY the panel's size, with the axes box
+    at the panel's margins, when the figure has a size - and draws the lines,
+    their truncation and offsets, the x range, the arrow and the style with
+    the panel's font sizes and axis sides.
+
+    It used to call `start_plot()` and `finish_plot()`, which the template
+    has never had, and to leave `datas` undefined: the exported "runnable"
+    driver stopped at its second line.
+    """
     paths, index = [], {}
     for scan in doc.visible_scans():
         key = os.path.normcase(scan.sample.path)
@@ -106,16 +149,53 @@ def driver_source(doc):
     for warning in warnings_for(doc):
         lines.append("# WARNING: {}".format(warning))
     lines.append("")
-    lines.append("paths = [")
-    for path in paths:
-        lines.append("    r'{}',".format(path))
-    lines.append("]")
-    lines.append("")
     lines.append("MANUAL = True")
     lines.append("")
     lines.append("")
     lines.append("def driver():")
-    lines.append("    fig, ax = start_plot()")
+    lines.append("    paths = [")
+    for path in paths:
+        lines.append("        r'{}',".format(path))
+    lines.append("    ]")
+    lines.append("    datas = {i: read_tri(HERE / p) "
+                 "for i, p in enumerate(paths)}")
+    lines.append("    print_infos(datas)")
+    family = style.figure_value(doc, "font_family")
+    if family:
+        # Its own family first; any sans where the machine lacks it.
+        lines.append("    plt.rcParams['font.family'] = [{!r}, "
+                     "'sans-serif']".format(str(family)))
+    lines.append("")
+    layout = getattr(doc, "figure", None)
+    if (layout is not None and layout.mode == figure_module.MODE_SIZE
+            and layout.is_valid()):
+        width_in, height_in = layout.inches()
+        per_inch = figure_module.PER_INCH[layout.unit]
+        left = layout.margin_left / per_inch
+        right = layout.margin_right / per_inch
+        top = layout.margin_top / per_inch
+        bottom = layout.margin_bottom / per_inch
+        lines.append("    # The panel's figure, exactly: {:g} x {:g} {}, the "
+                     "axes box at its margins.".format(
+                         layout.width, layout.height, layout.unit))
+        lines.append("    fig = plt.figure(figsize=({:.6f}, {:.6f}))".format(
+            width_in, height_in))
+        lines.append("    ax = fig.add_axes(({:.6f}, {:.6f}, {:.6f}, "
+                     "{:.6f}))".format(
+                         left / width_in, bottom / height_in,
+                         (width_in - left - right) / width_in,
+                         (height_in - top - bottom) / height_in))
+        lines.append("    settings['dpi'] = {:d}".format(int(layout.dpi)))
+    else:
+        lines.append("    fig, ax = plt.subplots(figsize=settings['figsize'], "
+                     "layout='constrained')")
+    x_axis, y_axis = doc.axes["x"], doc.axes["y"]
+    lines.append("    settings['ticklabel_fontsize'] = {:g}".format(
+        float(style.value(doc, x_axis, "tick_size"))))
+    lines.append("    settings['xlabel_fontsize'] = {:g}".format(
+        float(style.value(doc, x_axis, "label_size"))))
+    lines.append("    settings['ylabel_fontsize'] = {:g}".format(
+        float(style.value(doc, y_axis, "label_size"))))
     y_dim = {units.UNIT_MW: "'Q'", units.UNIT_W_G: "'Qn'",
              units.UNIT_W_MOL: "'Qn'"}.get(doc.y_unit, "'Qn'")
     x_dim = "'T'" if doc.x_axis == model.AXIS_TEMPERATURE else "'t'"
@@ -143,10 +223,125 @@ def driver_source(doc):
                      .format(branding.APP_NAME))
         lines.append("    # W/g, so each line still needs x M to match.")
     lines.append("    ax.set_xlim({:.6g}, {:.6g})".format(*doc_view_x(doc)))
-    lines.append("    add_exo_arrow(ax)")
-    lines.append("    finish_plot(fig, ax)")
+    view_y = getattr(doc, "view_y_hint", None)
+    if view_y:
+        lines.append("    ax.set_ylim({:.6g}, {:.6g})".format(*view_y))
+    lines.extend(_offset_marker_lines(doc, index))
+    lines.extend(_arrow_lines(doc))
+    lines.append("    style(ax)")
+    lines.extend(_axis_lines(x_axis, "x"))
+    lines.extend(_axis_lines(y_axis, "y"))
+    lines.append("    out = HERE / 'dsc.{}'.format(settings['extension'])")
+    lines.append("    plt.savefig(out, dpi=settings['dpi'], "
+                 "transparent=settings['transparent']) "
+                 "if settings['silent'] else plt.show()")
     lines.append("")
     return "\n".join(lines) + "\n"
+
+
+def _arrow_lines(doc):
+    """The template's `add_exo_arrow` with the panel's dimensions, in the
+    points it takes them in; its total length `l` is an axes fraction, so it
+    is worked out from the axes' height in the driver itself."""
+    arrow = doc.arrow
+    if not arrow.visible:
+        return []
+    total = float(arrow.head_length) + float(arrow.tail_length)
+    return [
+        "    add_exo_arrow(ax, width={:g}, headwidth={:g}, headlength={:g},"
+        .format(arrow.tail_width, arrow.head_width, arrow.head_length),
+        "                  l={:g} / (ax.get_position().height"
+        " * ax.figure.get_figheight() * 72.0))".format(total),
+        "    ax.texts[-1].set_fontsize({:g})".format(
+            float(style.value(doc, arrow, "size"))),
+    ]
+
+
+def _offset_marker_lines(doc, index):
+    """Each y-offset marker, as the template's `mark_spot` - the function
+    its `add_yoffset_markers` calls - with the panel's text, so the number
+    is written in the same format, at the temperature the panel points at
+    (`doc.marker_hint`, from the window)."""
+    if not doc.offset_markers or doc.x_axis != model.AXIS_TEMPERATURE:
+        return []
+    hint = getattr(doc, "marker_hint", None) or {}
+    out = []
+    for scan in doc.visible_scans():
+        marker = scan.marker
+        if not marker.visible:
+            continue
+        typed = (marker.at[1] if marker.at and marker.at[0] == "T"
+                 else None)
+        celsius, yoff = hint.get(id(marker), (typed, None))
+        if celsius is None:
+            continue
+        i = index[os.path.normcase(scan.sample.path)]
+        text = numbers.write(float(scan.offset),
+                             style.value(doc, marker, "number_format"),
+                             numbers.OFFSET)
+        out.append("    mark_spot(ax, datas, ({}, {}), {:.6g}, {!r}, "
+                   "yoff_label={:.4g}, flush='left',".format(
+                       i, scan.seg, celsius, text,
+                       -0.03 if yoff is None else yoff))
+        out.append("              color=(.1, .1, .1), fs={:g}, "
+                   "arrowcolor=(.1, .1, .1))".format(
+                       float(style.value(doc, marker, "size"))))
+    return out
+
+
+def _axis_lines(axis, which):
+    """matplotlib for an axis on its other side, without numbers or
+    without a caption - as the panel draws it."""
+    out = []
+    letter = which
+    far = "top" if which == "x" else "right"
+    near = "bottom" if which == "x" else "left"
+    if getattr(axis, "side", near) != near:
+        far = near
+    # The frame and the ticks as the panel draws them: the opposite spine,
+    # its ticks (no numbers), the steps and the lengths, in points.
+    if not getattr(axis, "mirror", True):
+        out.append("    ax.spines['{}'].set_visible(False)".format(far))
+    mirrored = getattr(axis, "mirror", True) and getattr(axis, "mirror_ticks",
+                                                          True)
+    out.append("    ax.tick_params(axis='{}', which='both', {}={}, "
+               "direction='{}')".format(letter, far, mirrored,
+                                        "in" if axis.ticks_inward else "out"))
+    out.append("    ax.tick_params(axis='{}', which='major', length={:g})"
+               .format(letter, float(axis.tick_length) * 0.75))
+    out.append("    ax.tick_params(axis='{}', which='minor', length={:g})"
+               .format(letter, float(axis.minor_length) * 0.75))
+    if getattr(axis, "major_step", None):
+        out.append("    from matplotlib.ticker import MultipleLocator")
+        out.append("    ax.{}axis.set_major_locator(MultipleLocator({:g}))"
+                   .format(letter, float(axis.major_step)))
+    if not axis.minor_ticks or int(axis.minor_count) < 2:
+        out.append("    from matplotlib.ticker import NullLocator")
+        out.append("    ax.{}axis.set_minor_locator(NullLocator())"
+                   .format(letter))
+    else:
+        out.append("    ax.{}axis.set_minor_locator(AutoMinorLocator({:d}))"
+                   .format(letter, int(axis.minor_count)))
+    spec = getattr(axis, "number_format", None)
+    if spec:
+        out.append("    from matplotlib.ticker import FormatStrFormatter")
+        out.append("    ax.{}axis.set_major_formatter(FormatStrFormatter("
+                   "{!r}))".format(which, spec))
+    side = getattr(axis, "side", "bottom" if which == "x" else "left")
+    if which == "x" and side == "top":
+        out.append("    ax.xaxis.tick_top()")
+        out.append("    ax.xaxis.set_label_position('top')")
+    if which == "y" and side == "right":
+        out.append("    ax.yaxis.tick_right()")
+        out.append("    ax.yaxis.set_label_position('right')")
+    if not getattr(axis, "show_numbers", True):
+        names = (("labelbottom", "labeltop") if which == "x"
+                 else ("labelleft", "labelright"))
+        out.append("    ax.tick_params(axis='{}', {}=False, {}=False)".format(
+            which, names[0], names[1]))
+    if not axis.visible:
+        out.append("    ax.set_{}label('')".format(which))
+    return out
 
 
 def doc_view_x(doc):

@@ -368,35 +368,249 @@ round 9, below.)
   integral's baseline on a cooling scan is right (it used `np.interp`,
   which needs x to increase).
 
+### Round 12 (2026-09-25): figures of exact size
+
+Christian: two session files - first up-scans in one, second up-scans in
+another - exported with the same size settings must sit side by side in Word
+exactly alike, without fiddling.
+
+* **Figure size and margins** (Edit menu, F3), saved with the session:
+  follow the window, a fixed aspect ratio, or an EXACT size in cm or inches
+  with four margins. The margins fix the axes box - numbers and captions
+  live inside them, and the dialog warns when one does not fit - so two
+  figures with the same layout have the same axes box to the hundredth of a
+  millimetre whatever their numbers say. "Use for new figures" makes it the
+  default for new sessions.
+* **On screen** the figure is its page, scaled to fit the pane on a darker
+  surround: what is shown is the export at a zoom.
+* **Exports are exact**: a PNG is width x height inches times its dpi, with
+  the dpi in the file so Word places it at its size (axes lines within a
+  pixel at 600 dpi, tested); an SVG states its size in millimetres. The
+  SVG's fonts had been drawn at 72 dpi - three quarters of their size.
+* **Axes on either side** (x bottom/top, y left/right), and their numbers
+  and caption can each be hidden (axis settings).
+* **The driver export works**: it called two functions the template never
+  had and left `datas` undefined. It now builds the figure with the same
+  size and axes box (`plt.figure(figsize)`, `fig.add_axes`), fonts, sides,
+  truncation and offsets; a test runs it and measures matplotlib's SVG.
+
+### Round 13 (2026-09-26): typed x range, y about zero, offset markers
+
+* **`M` sets the x range by numbers**, as in MestReNova: a two-box pop-up,
+  the first number selected so typing replaces it, Tab to the second, Enter
+  takes both (either order; a comma is a decimal point; a pair that is not a
+  range keeps it open). In the axis's own unit. One undo step, like any
+  zoom (`RangeDialog`, `MainWindow.set_x_range`).
+* **The plain swipe scales y about y = 0**, not about the cursor: zero keeps
+  its place and only the scale changes (`PlotWidget.scale_y`). The pinch
+  (Ctrl) still zooms both axes about the cursor.
+* **Y-offset markers**, the template's `add_yoffset_markers`: every drawn
+  scan labelled with its offset (`+0.5`) a little below the curve on a small
+  arrow, in ink, at the house style's "Y-offset markers" size (7 pt, the
+  template's). F3: "Show or hide the y-offset markers", and "Y-offset
+  markers at a temperature..." to stand them somewhere (stored in Celsius).
+  Unplaced, they stand 10 % into the stretch every drawn scan covers - the
+  view's edge put a later heating scan's arrow on its start-up hook. Saved
+  in the session, drawn in exports, and written into the driver as the
+  template's own call (the driver test runs it).
+
+### Round 14 (2026-09-26): groups, markers as objects, the arrow's shape
+
+* **Offset markers are objects** (`model.OffsetMarker`, one per scan as
+  `Scan.marker`): picked, box-selected, dragged (along the curve and up or
+  down from it), hidden and styled like a label; F3 "Select every offset
+  marker". Unplaced, one points 6 units in from the left end of its own
+  curve - tight against the y axis where the curve reaches it. Round 13's
+  figure-wide temperature is gone; the marker's settings set one (and set
+  for several markers, it lines them up in a column).
+* **Settings for several objects at once.** A settings dialog opened on an
+  object that is part of a selection edits every selected object of its
+  kind (`_LiveDialog.set_group`): what changes on the shown one is copied to
+  the rest, field by field; a field that belongs to one object alone
+  (`INDIVIDUAL`: a label's text, a scan's offset, a position) is not, and
+  its widget is greyed. Revert puts all of them back; one undo step.
+* **A drag carries the selection** (`PlotWidget.drag_group`): dragging one
+  of several selected analysis labels stretches every arrow by the same
+  amount; several markers move together. Never a scan, never an axis. The
+  first click of a double-click narrows the selection; the double-click
+  now puts it back (`_click_restore`), so double-click-drag works on a
+  shift-selected group.
+* **The heat-flow arrow's shape**, in points as `add_exo_arrow` takes them:
+  head length, head width, tip angle, tail length, tail width, and a text
+  size (house style "Heat-flow arrow text", 10 pt). Length, width and angle
+  of the head are tied (w = 2 l tan(angle/2)); "Lock the tip angle" or
+  "Lock the head width" (one at a time) says which stays put, unlocked the
+  angle follows. The defaults are the template's (9 / 13 / 4.5 / 8.1 pt,
+  71.7 degrees), so the arrow on screen is now the size the template draws -
+  smaller than the old 7.5 % of the plot height. The old `length` is not
+  read from older sessions. The driver passes all of it to `add_exo_arrow`.
+* **No "EXO DIRECTION ASSUMED" on a rendered image** (`warnings_for(doc,
+  exo=False)`); the console and the driver still say it.
+* **Ctrl+A leaves the axes out.**
+
+### Round 15 (2026-09-27): what a number on the figure may say
+
+* **Analysis labels are templates** (`core/labels.py`). The words are the
+  user's; `{}` is the measured value, filled in on every draw. Defaults:
+  `*T*_{on} = {}`, `*T*_{end} = {}`, `*T*_{g} = {}`, `\Delta*H* = {}`.
+  A unit after `{}` converts (`{} degF`, `{} K`, `{} kJ/mol`); none follows
+  the axes. A unit the quantity cannot be in is refused and the value shown
+  in its own; one needing a missing molar or sample mass shows `?` and
+  every export says NO MOLAR MASS. A number typed by hand beside a unit of
+  the quantity is allowed (it may be a literature value) and flagged in
+  the settings and on export. Labels no longer store numbers, so nothing
+  has to rewrite them; an old session's generated label is read back as
+  the default template (session version 4). The rules and their reasons
+  are the module docstring.
+* **Number formats** (`core/numbers.py`): Python's percent format for one
+  number, nothing around it. House style: temperatures `%.0f`, enthalpies
+  and other results `%.3g`, offset markers `%+.1f`; each analysis and
+  marker can override, each axis has its own (automatic by default).
+  `%.Ng` is N significant figures written out - 1.50 keeps its zero, 1230
+  never becomes 1.23e+03.
+* **Offset markers point at the curve as SHOWN**: kept samples inside the
+  view. Placed by a sample index (`OffsetMarker.at = ("i", n)`), found and
+  moved by walking ALONG the curve, never by looking a temperature up - a
+  second heating that starts above 30 degC doubles back. A typed
+  temperature (`("T", c)`) takes the shown sample nearest it.
+* **Enter in a settings window commits the field and keeps the window
+  open** (`dialogs.enter_stays`), for every live dialog and the settings
+  page. The arrow's shape is tuned value against value.
+* **The pointer shows while gizmos are up.** The reticle is off then, and
+  the system pointer was hidden as well: nothing to aim with. Now a cross,
+  and a sideways arrow over a handle.
+* **Font family** in Edit > Settings, for the whole figure and the driver
+  (`plt.rcParams['font.family']`).
+* Found on the way: the console no longer printed the exo warning after
+  round 14 took it off images; it prints everything again.
+
+### Round 16 (2026-09-27): the analysis window, S, and units in formats
+
+* **The analysis window**: Model is a drop-down that recomputes the same
+  interval as another kind, in place (`MainWindow.change_model`); Start
+  and End replace the list of TRIOS field names and are TYPED - `98` in
+  the axis unit, `98 F`, `371 K`, `98 c` converted (`units.
+  parse_temperature`) - and recomputed as one undo step
+  (`retype_interval`). Along a measured stretch the typed temperature is
+  found by WALKING the segment from the old cursor (`measure.walk_to`), so
+  it stays on its branch. A file analysis recomputed here becomes the
+  panel's. Results lists what else was computed, in plain names. "Drawn on"
+  is offered only where the scan is a guess (a `.txt` export). "Show",
+  "Show interval markers", "Same as scan"; one line of help.
+* **A unit in a number format converts**, like one after `{}`: `%.0f F` on
+  an onset is Fahrenheit. The label's own unit wins over the format's, the
+  format's over the axes'. A house-style format's unit applies only where
+  it fits (enthalpies and peak heights share one); an analysis's own format
+  with a unit it cannot be in is refused and flagged. An axis format takes
+  no unit - its numbers sit on ticks. A marker's format may name a heat
+  flow unit and the offset is converted (needing the mass when it does).
+* **Offset markers set their scan's offset**: Offset (absolute) and Shift
+  by (relative; a group moves together); in the marker's one undo step.
+* **S scales artists**, Blender's way: the distance from the pivot (the
+  selected artists' centre) is the factor, a typed number overrides it,
+  Shift is precision, Ctrl snaps to tenths, Enter or a click keeps it, Esc
+  or the right button cancels. The arrow (head, tail and text), the legend
+  (text and sample) and labels (text); scans never. The arrow is
+  `can_scale` now.
+* **Windows are readable**: every label selectable for copying, every
+  tooltip wrapped (a plain-text tooltip is one line however long), and the
+  tooltips and notes cut to a line each.
+
+### Round 17 (2026-09-27): S and R with pivots, the view in the file
+
+* **The framing is saved with the figure** (`Document.view`, session
+  version 5). A y range narrowed to show a peak's label came back fitted:
+  the view was never in the file. It is now, so a zoom IS a change (the
+  title's `*`, the save prompt), and undoing back to the saved framing is
+  clean. Found on the way: the modified check wrote the plot's view onto
+  the document, which wiped a just-opened file's view before it was put
+  back; it only compares now.
+* **S and R, with pivots.** R rotates labels and the legend (Blender's R;
+  the arrow is not rotated - its direction is what it says); R with scans
+  selected still resets their offsets, and with nothing selected does
+  nothing. While S or R is live, X / Y / M / C choose the point it is
+  about: X the left edge, X again the right; Y the top, Y again the bottom;
+  M the middle of the edge just chosen; C the centre. `S X M` is the middle
+  of the left edge. S starts about the bottom left, R about the centre. The
+  box and the pivot are drawn while live; the plot claims those keys before
+  the window's shortcuts (M is otherwise the x range). Rotation is stored
+  per artist (`Artist.rotation`, counter-clockwise about its anchor), set in
+  its settings too, and saved.
+* **Arrow Offset**, in an analysis's settings and a marker's: the label's
+  distance from the curve, positive above, absolute (with Default) or
+  shifted relatively (a group moves together). The marker no longer sets
+  its scan's offset - that is the scan's settings' job (round 16 read
+  "offset" as the scan's; it meant the arrow's).
+* **.txt analyses are attributed by the user**: one named only by its step
+  is offered under EVERY scan with that step name and counts as attributed
+  once shown on one (Christian: it is off until ticked, and ticked on the
+  scan he picked). "Show every analysis" leaves those alone. "Drawn on" is
+  gone.
+* **Bahnschrift** is the default figure font (Windows 10 and 11 have it),
+  with a sans fallback list, in the driver too.
+* **The legend has no frame by default** (the template's `frameon=False`);
+  an older session's frame, which was the old default, goes too.
+* A version-4 session could still carry a generated label whose number had
+  gone stale (`\Delta*H* = 2.492 J/g` beside a 2.37 J/g measurement): any
+  label in the exact shape the panel used to generate becomes the template.
+* Windows grow to fit their wrapped text (results and problems were cut
+  off). Analysis formats keep their unit through a save.
+
+### Round 18 (2026-09-27): the frame, exports, and the outliner
+
+* **The scale pivot is exact for any anchor.** It was predicted (the box
+  times the factor) and a box does not grow in proportion - font sizes
+  step, the legend's padding is fixed - so everything but a bottom-left
+  anchor drifted. Now the box is measured after each step and the anchor
+  moved until the pivot is back where it was.
+* **Three axis targets, three windows**: the SPINE (ticks: side, direction,
+  a fixed major step or automatic, minor intervals, both lengths, the line
+  on the opposite side and ticks on it, grid), the NUMBERS (shown, size,
+  format), the CAPTION (shown, text, size, distance). A click on the spine
+  or the numbers selects nothing (no orange); a double-click opens its
+  window. The default frame is Origin's: closed, ticked on all four sides,
+  numbers on two. The driver writes the same (`tick_params`, spines,
+  `MultipleLocator`, `AutoMinorLocator(n)`, lengths in points).
+* **SVG exports are clipped.** Qt's SVG writer ignores clipping, so curves
+  past the y range, shading and interval dashes ran over the margins. The
+  plot fences its clipped drawing with two invisible marks and
+  `plot.clip_svg` wraps what is between them in a real `clipPath`.
+  Interval marks are also cut to the axes geometrically (`_clip_segment`),
+  since not every SVG viewer honours a clip on a zero-width line.
+* **Exports ask** (`ExportDialog`): the file, and the colours - light for a
+  page, or as the theme on screen.
+* **LaTeX between dollars** in every text on the figure (`markup_runs`):
+  `_`/`^` scripts (one character, or a braced group, as mathtext),
+  `\mathrm{}` / `\text{}`, Greek and symbols, `\quad` and friends;
+  letters italic in math. Added labels are drawn with the markup at all
+  (they were plain text). `^{}` superscripts work outside dollars too.
+* **The outliner**: the State column (mass, M, exo, offset, analyses) is
+  never cut off - names take the rest and elide, with a tooltip; a press on
+  a box and a drag down the list gives every box passed the same state, as
+  in ORCA Workbench, as ONE undo step (`UndoStack.begin_group`).
+* Also: Edit > Theme; the legend's line width; the colour picker's basic
+  colours start with the plotter's sixteen, in its order; the window opens
+  maximized.
+
 ## Next
 
-1. **Analyses drawn properly.** Right now a decoded analysis is a tick and a
-   number on the curve (`Tg 78.9`, `13.3 J/g`, `Onset 61.1`). Port
-   `trios_artists`: the onset/endset tangents, the shaded integral with its
-   dH label, and the Tg construction, which now has real numbers to draw
-   from - onset point, end point, step height and midpoint.
-2. ~~New analyses in the panel.~~ Done: rounds 4 and 8 (double-click-drag
-   a curve, pick the model, it is computed and saved with the session).
-3. **Axis limits dialog on `M`**, to match the PXRD window, which would free
-   `Shift+M` back up for the molar mass.
-4. **The heat-flow arrow needs separate style parameters.** `length` scales
-   the whole thing uniformly; the shaft width, head width and head length
-   should be their own settings (Christian, 2026-09-23, explicitly parked).
-   When that lands it is a `can_scale` artist with a non-uniform scale, which
-   is the first case the capability flags will have to answer properly.
-5. ~~A view history.~~ Done in round 9, on the undo stack itself, at
-   Christian's request.
-6. **More artists**: a scale bar, a molecule image, a text note with its own
-   leader arrow. `is_artist` and the transform already carry them; what is
-   missing is the objects and a way to add them.
-7. **Analysis labels may need horizontal freedom** when several clash. Locked
-   vertically for now, on purpose.
-5. **A blank-run subtraction** (empty pan), the DSC counterpart of the PXRD
-   background.
-6. **Closing a file** (as opposed to taking its scans off the plot) has no
-   operator yet: `Document.close_sample` exists and nothing calls it.
-7. **SDT / TGA**: the reader already handles the signal names; it needs a
-   second y axis and a weight-percent unit.
+1. **Analyses drawn properly** - the onset/endset tangents and the Tg
+   construction (`trios_artists`), and the same in the plotter template.
+2. **Controls on a mouse**: everything was built on a trackpad. A plain
+   wheel is read as a swipe (it scales y), there is no middle-button pan,
+   and tap-drag vs press-drag have only been tested with QTest.
+3. **The driver carries neither the legend nor added labels**, nor the
+   rotation of either.
+4. **More artists**: a scale bar, a molecule image, a text note with its own
+   leader arrow.
+5. **Analysis labels may need horizontal freedom** when several clash.
+6. **Picking an object buried in an overlapping stack** (open question).
+7. **Closing a file** (`Document.close_sample` exists, no operator).
+8. **Window geometry and dock state remembered** (QSettings, small).
+9. **A typed y range** (the x range is on `M`).
+10. **Blank-run subtraction**; **SDT / TGA** (a second y axis, weight %).
+11. **Several figures at once** - tabs or windows (round 18: feasible; a
+    second window first, tabs after).
 
 ## Settled on 2026-09-23, with the files Christian supplied
 

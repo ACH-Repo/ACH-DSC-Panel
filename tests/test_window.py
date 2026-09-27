@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from PySide6.QtCore import QPoint, QPointF, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QMenu
 
 from dscpanel.core import export, loader, model, units
@@ -340,9 +340,10 @@ def test_r_resets_the_selection_then_everything(window):
     window.run_op("arrange.reset")
     assert window.doc.scans[0].offset == 0.0
     assert window.doc.scans[1].offset == 2.0
+    # nothing selected, nothing happens (round 17)
     window.select_all(False)
     window.run_op("arrange.reset")
-    assert all(s.offset == 0.0 for s in window.doc.scans)
+    assert window.doc.scans[1].offset == 2.0
 
 
 def test_the_theme_changes_what_is_drawn(window):
@@ -368,7 +369,7 @@ def _wheel(pixels=(0, 0), angles=(0, 0), mods=Qt.NoModifier, at=(200, 200)):
 
 def test_a_plain_swipe_scales_the_y_axis(window):
     """The gesture that is used constantly on a stack: two fingers, no
-    modifier, and the y axis opens or closes about the cursor."""
+    modifier, and the y axis opens or closes about y = 0."""
     plot = window.plot
     plot.grab()
     before_x = plot.view_x()
@@ -433,7 +434,8 @@ def test_an_analysis_says_how_sure_its_attribution_is(window):
     analysis = scan.analysis_objects[0]
     assert analysis.attribution == "by step name"
     assert not analysis.certain
-    assert analysis.summary().startswith("Onset 61.1")
+    # the default template, whole degrees: T_on = 61 degC
+    assert analysis.summary() == "*T*_{on} = 61 \u00b0C"
 
 
 def test_an_analysis_can_be_moved_to_another_scan(window):
@@ -901,9 +903,12 @@ def test_a_measured_analysis_arrives_with_a_label(window):
     scan = window.doc.scans[0]
     made = measure.run("Onset point", scan, 60.0, 120.0)
     assert made is not None
-    assert made.label and "=" in made.label
+    # no text of its own: the default template, number filled in on drawing
+    assert made.label is None
+    text = made.summary(window.doc)
+    assert text.startswith("*T*_{on} = ") and text.endswith("\u00b0C")
     from dscpanel.ui.plot import markup_runs
-    runs = markup_runs(made.label)
+    runs = markup_runs(text)
     assert ("T", True, False) in runs             # italic quantity symbol
     assert any(subscript for _t, _i, subscript in runs)   # and a subscript
 
@@ -930,7 +935,7 @@ def test_nothing_is_drawn_outside_the_axes(window, tmp_path):
     background = image.pixelColor(int(4 * ratio), int(2 * ratio))
     # the strip ABOVE the axes carries nothing at all, so a curve drawn past
     # the frame shows up here and nowhere else
-    for x in range(rect.left() + 5, rect.right() - 5, 23):
+    for x in range(int(rect.left()) + 5, int(rect.right()) - 5, 23):
         pixel = image.pixelColor(int(x * ratio), int(2 * ratio))
         assert pixel == background
 
@@ -946,8 +951,8 @@ def test_every_artist_carries_a_position_and_an_anchor(window):
         assert artist.anchor in core_model.ANCHORS
         assert artist.anchor_offsets() == (0.5, 0.5)
     # the capabilities are per kind, and the dialogs read them
-    assert label.can_scale and not label.can_rotate
-    assert not arrow.can_scale and not arrow.can_rotate
+    assert label.can_scale and label.can_rotate      # S and R
+    assert arrow.can_scale and not arrow.can_rotate   # S, round 16
 
 
 def test_an_artist_keeps_its_place_when_the_space_changes(window):
@@ -1014,13 +1019,13 @@ def test_re_measuring_keeps_the_model_and_needs_no_palette(window):
     assert again is first
     assert first in scan.analysis_objects
     assert first.cursors() == pytest.approx([65.0, 125.0])
-    # the default label carries the NEW number; it used to keep the old one
-    assert first.label != label_before
-    assert first.label == measure.default_label(
-        measure.by_name(first.model_name), first)
+    # the label is a template: what it SHOWS follows the new number
+    assert first.label == label_before
+    first.number_format = "%.3f"         # whole degrees hide the change
+    shown_after = first.summary(window.doc)
     window.undo.undo()
     assert first.cursors() == pytest.approx([60.0, 120.0])
-    assert first.label == label_before
+    assert first.summary(window.doc) != shown_after
 
 
 def test_delete_removes_a_selected_analysis_not_its_scan(window):
@@ -1149,7 +1154,7 @@ def test_the_legend_is_an_artist_that_starts_off(window):
     legend = window.doc.legend
     assert isinstance(legend, core_model.Artist)
     assert legend.visible is False
-    assert legend.can_scale and not legend.can_rotate
+    assert legend.can_scale and legend.can_rotate    # S and R
     assert legend.anchor == "bottom left"
     # ...and it is in the outliner, ticked off
     window.refresh()
@@ -1883,9 +1888,8 @@ def test_the_gizmos_live_only_while_the_settings_are_open(window):
     plot.end_cursor_drag()
     assert analysis in scan.analysis_objects
     assert max(analysis.cursors()) > 150.0
-    assert any(str(round(max(analysis.cursors()), 1))[:4] in
-               dialog.values.item(i).text()
-               for i in range(dialog.values.count()))   # the dialog follows
+    # the dialog follows: its End is the new cursor
+    assert dialog.end.text().startswith("%.2f" % max(analysis.cursors()))
     # closing the settings - here Cancel - ends the gizmos
     dialog.reject()
     assert plot.measuring() is None
@@ -1997,9 +2001,12 @@ def test_closing_with_unsaved_changes_asks_first(window, tmp_path):
     assert window.close() is False and window.isVisible()
     window.save_session(path=str(tmp_path / "kept.dscpanel"))
     assert not window.is_modified()
-    # a zoom is not a change to the file, even though it is undoable
-    window.plot.fit()
+    # the framing is part of the figure since round 17: a zoom IS a change
+    # to the file, and going back to the saved framing is clean again
+    before = window.plot.view_state()
     window.plot.zoom_at(window.plot.plot_rect().center(), 2.0, both=True)
+    assert window.is_modified()
+    window.plot.restore_view(before)
     assert not window.is_modified()
     window.doc.scans[0].offset = 0.3
     assert window.is_modified()
@@ -2210,3 +2217,1156 @@ def test_the_session_keeps_the_temperature_scale(window, tmp_path, sample):
     reopened, _problems = session.load(
         str(path), lambda _p: model.Sample(sample.path, sample.data))
     assert reopened.x_unit == core_units.TEMP_K
+
+
+# ------------------------------------------------------------ round 13
+def test_a_plain_swipe_keeps_zero_where_it_is(window):
+    """Christian, round 13: the y scale moves about y = 0 and nothing else,
+    wherever the cursor is."""
+    plot = window.plot
+    plot.grab()
+    plot.set_view_y(-0.5, 2.0)
+    zero = plot.y_to_px(0.0)
+    for at in ((200, 100), (300, 400)):
+        plot.wheelEvent(_wheel(pixels=(0, 40), at=at))
+        assert plot.y_to_px(0.0) == pytest.approx(zero)
+    lo, hi = plot.view_y()
+    assert lo / hi == pytest.approx(-0.5 / 2.0)       # scaled, not shifted
+    assert hi < 2.0
+
+
+def test_m_is_the_x_range(window):
+    assert {op.id: op.key for op in window.ops.all()}["view.x_range"] == "M"
+
+
+def test_the_x_range_pop_up_is_typed_straight_through(window):
+    """The first number is selected on opening, so typing replaces it; Tab
+    reaches the second; a comma is a decimal point; the pair may be typed in
+    either order."""
+    window.show()
+    dialog = window.x_range_dialog()
+    dialog.show()
+    assert dialog.low_edit.hasFocus() or dialog.focusWidget() is dialog.low_edit
+    assert dialog.low_edit.selectedText() == dialog.low_edit.text()
+    dialog.low_edit.setText("150")
+    dialog.high_edit.setText("40,5")
+    assert dialog.values() == (40.5, 150.0)
+    dialog.high_edit.setText("150")
+    assert dialog.values() is None               # not a range
+    dialog.accept()
+    assert dialog.isVisible()                    # and it stays open
+    dialog.close()
+    window.hide()
+
+
+def test_the_x_range_is_one_undo_step(window):
+    plot = window.plot
+    plot.grab()
+    before = plot.view_x()
+    window.set_x_range(60.0, 120.0)
+    assert plot.view_x() == (60.0, 120.0)
+    assert plot.view_y() is not None
+    window.undo_step()
+    assert plot.view_x() == before
+
+
+def test_m_through_the_window_uses_what_was_typed(window, monkeypatch):
+    from dscpanel.ui import dialogs
+    monkeypatch.setattr(dialogs.RangeDialog, "exec", lambda self: 1)
+    real = window.x_range_dialog
+
+    def filled():
+        dialog = real()
+        dialog.low_edit.setText("70")
+        dialog.high_edit.setText("90")
+        return dialog
+    window.x_range_dialog = filled
+    window.run_op("view.x_range")
+    assert window.plot.view_x() == (70.0, 90.0)
+
+
+def _two_onsets(window):
+    """Two onsets on the first scan, drawn, with their label boxes."""
+    scan = window.doc.scans[0]
+    scan._analyses = None
+    scan.sample.data["analyses"] = {
+        "Ramp 10,00 C/min to 250 C #1": {
+            "Onset point": [{"segment": 1, "Onset x": "90,0 \u00b0C"},
+                            {"segment": 1, "Onset x": "150,0 \u00b0C"}]}}
+    first, second = scan.analysis_objects[:2]
+    first.visible = second.visible = True
+    window.refresh()
+    window.plot.grab()
+    return first, second
+
+
+def _box_of(plot, boxes, obj):
+    box = [b for o, b in boxes if o is obj][0]
+    return (box.center().x(), box.center().y())
+
+
+# ------------------------------------------------------------ round 14
+def test_y_offset_markers_are_objects_against_the_axis(window):
+    doc = window.doc
+    doc.scans[1].offset = 0.5
+    plain = window.plot.grab().toImage()
+    window.run_op("figure.offset_markers")
+    assert doc.offset_markers
+    assert window.plot.grab().toImage() != plain
+    markers = [s.marker for s in doc.scans]
+    assert all(m in doc.objects() for m in markers)
+    plot = window.plot
+    assert len(plot._marker_boxes) == 2
+    # unplaced, each hugs the left end of its curve - against the y axis
+    # where the curve reaches it
+    rect = plot.plot_rect()
+    for scan in doc.scans:
+        trace = plot._trace_of(scan)
+        left = max(rect.left(), plot.x_to_px(float(np.nanmin(trace.x)), rect))
+        x = plot.x_to_px(plot.marker_x(scan.marker), rect)
+        assert x - left == pytest.approx(8.0, abs=4.0)
+    # the object is what is picked where it is drawn
+    at = QPointF(*_box_of(plot, plot._marker_boxes, markers[0]))
+    assert plot.object_at(at) is markers[0]
+
+
+def test_selected_markers_are_dragged_together(window):
+    doc = window.doc
+    window.run_op("figure.offset_markers")
+    plot = window.plot
+    plot.grab()
+    first, second = [s.marker for s in doc.scans]
+    window.run_op("select.offset_markers")
+    assert first.selected and second.selected
+    start = _box_of(plot, plot._marker_boxes, first)
+    before = [(plot.marker_celsius(m), plot.marker_dy(m))
+              for m in (first, second)]
+    plot.mousePressEvent(_press(plot, start))
+    plot.mouseMoveEvent(_move(plot, (start[0] + 20, start[1] + 10)))
+    plot.mouseMoveEvent(_move(plot, (start[0] + 40, start[1] + 20)))
+    plot.mouseReleaseEvent(_release(plot, (start[0] + 40, start[1] + 20)))
+    for marker, (x0, dy0) in zip((first, second), before):
+        assert marker.dy == pytest.approx(dy0 + 20)
+        assert marker.at[0] == "i"                     # pinned to a sample
+        assert plot.marker_celsius(marker) > x0        # both moved right
+    window.undo.undo()                                 # ONE step
+    assert first.at is None and second.at is None
+    assert first.dy is None and second.dy is None
+
+
+def test_shift_selected_analyses_stretch_their_arrows_together(window):
+    """Round 14: shift-click several analyses, double-click-drag one, and
+    every one's arrow changes length by the same amount. The first click of
+    the double-click narrows the selection; the double-click puts it back."""
+    first, second = _two_onsets(window)
+    plot = window.plot
+    window.doc.select_only([first, second])
+    before = [plot.effective_label_dy(a) for a in (first, second)]
+    start = _box_of(plot, plot._analysis_boxes, first)
+    _double_drag(plot, start, (start[0], start[1] - 25))
+    assert first.selected and second.selected
+    assert first.label_dy == pytest.approx(before[0] - 25)
+    assert second.label_dy == pytest.approx(before[1] - 25)
+    window.undo.undo()
+    assert first.label_dy is None and second.label_dy is None
+
+
+def test_one_settings_dialog_sets_what_several_share(window):
+    """Select two onsets, open the settings: a shared property (the label
+    size) goes to both; one that belongs to each alone (the label text) is
+    greyed out. The whole dialog is ONE undo step."""
+    first, second = _two_onsets(window)
+    first.label = "first"
+    window.doc.select_only([first, second])
+    window.edit_object(first)
+    dialog = window._dialogs[-1]
+    assert dialog.group == [second]
+    assert not dialog.label.isEnabled()
+    assert not hasattr(dialog, "shown_on")   # no "Drawn on" any more
+    assert not dialog.model.isEnabled()
+    assert not dialog.start.isEnabled() and not dialog.end.isEnabled()
+    dialog.text_size.box.setValue(15.0)
+    dialog.interval.setChecked(False)
+    assert first.label_size == second.label_size == 15.0
+    assert not first.show_interval and not second.show_interval
+    assert first.label == "first" and second.label is None
+    dialog.accept()
+    assert first.label_size == second.label_size == 15.0
+    window.undo.undo()
+    assert first.label_size is None and second.label_size is None
+    assert first.show_interval and second.show_interval
+
+
+def test_revert_puts_back_every_object_of_a_group(window):
+    first, second = _two_onsets(window)
+    window.doc.select_only([first, second])
+    window.edit_object(first)
+    dialog = window._dialogs[-1]
+    dialog.text_size.box.setValue(18.0)
+    dialog.revert()
+    assert first.label_size is None and second.label_size is None
+
+
+def test_marker_settings_for_several(window):
+    window.run_op("figure.offset_markers")
+    window.plot.grab()
+    window.run_op("select.offset_markers")
+    first, second = [s.marker for s in window.doc.scans]
+    window.edit_object(first)
+    dialog = window._dialogs[-1]
+    dialog.text_size.box.setValue(9.0)
+    dialog.at.setValue(75.0)
+    assert first.size == second.size == 9.0
+    assert first.at == second.at == ("T", 75.0)   # one column
+    assert not dialog.at_auto.isChecked()
+    dialog.accept()
+
+
+def test_the_arrow_head_keeps_what_is_locked():
+    import math
+    arrow = model.HeatFlowArrow(1)
+    # the template's add_exo_arrow, in points
+    assert (arrow.head_length, arrow.head_width, arrow.tail_width) == (
+        9.0, 13.0, 4.5)
+    assert arrow.tip_angle == pytest.approx(
+        math.degrees(2 * math.atan(6.5 / 9.0)))
+    arrow.lock = "angle"
+    angle = arrow.tip_angle
+    length, width = arrow.head_for_length(18.0)
+    assert (length, width) == pytest.approx((18.0, 26.0))  # wider, same angle
+    arrow.head_length, arrow.head_width = arrow.head_for_width(13.0)
+    assert arrow.tip_angle == pytest.approx(angle)
+    arrow.lock = "width"
+    arrow.head_length, arrow.head_width = arrow.head_for_angle(90.0)
+    assert arrow.head_width == pytest.approx(13.0)
+    assert arrow.head_length == pytest.approx(6.5)          # 90 deg: w = 2l
+    arrow.lock = None
+    arrow.head_length, arrow.head_width = arrow.head_for_length(10.0)
+    assert arrow.head_width == pytest.approx(13.0)          # the angle moved
+
+
+def test_the_arrow_dialog_locks_one_at_a_time(window):
+    from dscpanel.ui.dialogs import ArrowSettings
+    arrow = window.doc.arrow
+    dialog = ArrowSettings(window, arrow)
+    dialog.lock_angle.setChecked(True)
+    assert arrow.lock == "angle" and not dialog.tip_angle.isEnabled()
+    dialog.lock_width.setChecked(True)
+    assert arrow.lock == "width" and not dialog.lock_angle.isChecked()
+    assert not dialog.head_width.isEnabled() and dialog.tip_angle.isEnabled()
+    dialog.tip_angle.setValue(90.0)
+    assert arrow.head_length == pytest.approx(arrow.head_width / 2.0)
+    assert dialog.head_length.value() == pytest.approx(arrow.head_length,
+                                                       abs=0.05)
+    dialog.tail_width.setValue(3.0)
+    dialog.text_size.box.setValue(14.0)
+    assert arrow.tail_width == 3.0 and arrow.size == 14.0
+    source = export.driver_source(window.doc)
+    assert "add_exo_arrow(ax, width=3, headwidth=13" in source
+    assert "ax.texts[-1].set_fontsize(14)" in source
+
+
+def test_the_arrow_is_drawn_from_its_points(window):
+    plot = window.plot
+    plot.grab()
+    arrow = window.doc.arrow
+    _top, _tip, _cx, head_len, head_half, tail_half = plot.arrow_geometry()
+    assert head_len == pytest.approx(9.0 * 96 / 72)
+    assert head_half == pytest.approx(13.0 * 96 / 72 / 2)
+    arrow.head_width = 26.0
+    assert plot.arrow_geometry()[4] == pytest.approx(26.0 * 96 / 72 / 2)
+
+
+def test_markers_and_the_arrow_survive_a_session(window, tmp_path, sample):
+    from dscpanel.core import session
+    doc = window.doc
+    doc.offset_markers = True
+    doc.scans[0].marker.at, doc.scans[0].marker.dy = ("i", 42), -12.0
+    doc.scans[1].marker.number_format = "%.2f"
+    doc.scans[1].marker.size = 9.0
+    doc.arrow.head_width, doc.arrow.lock, doc.arrow.size = 20.0, "width", 12.0
+    path = tmp_path / "m.dscpanel"
+    session.save(doc, str(path))
+    loaded, _problems = session.load(
+        str(path), lambda _p: model.Sample(sample.path, sample.data))
+    assert loaded.offset_markers
+    assert (loaded.scans[0].marker.at, loaded.scans[0].marker.dy) == (
+        ("i", 42), -12.0)
+    assert loaded.scans[1].marker.size == 9.0
+    assert loaded.scans[1].marker.number_format == "%.2f"
+    assert (loaded.arrow.head_width, loaded.arrow.lock,
+            loaded.arrow.size) == (20.0, "width", 12.0)
+
+
+def test_the_driver_places_each_marker_as_drawn(window):
+    window.run_op("figure.offset_markers")
+    window.plot.grab()
+    window.doc.scans[1].offset = 0.25
+    window.doc.scans[0].marker.at = ("T", 80.0)
+    window.doc.marker_hint = window.marker_hint()
+    source = export.driver_source(window.doc)
+    at = window.plot.marker_celsius(window.doc.scans[0].marker)
+    assert abs(at - 80.0) < 1.0
+    assert "mark_spot(ax, datas, (0, {}), {:.6g}, '+0.0', yoff_label=".format(
+        window.doc.scans[0].seg, at) in source
+    assert "'+0.2'" in source or "'+0.3'" in source   # %+.1f by default
+    window.run_op("figure.offset_markers")              # off again
+    assert "mark_spot" not in export.driver_source(window.doc)
+
+
+def test_an_image_is_not_stamped_with_the_exo_direction(window, tmp_path):
+    assert any("EXO DIRECTION" in line
+               for line in export.warnings_for(window.doc))
+    assert not any("EXO DIRECTION" in line
+                   for line in export.warnings_for(window.doc, exo=False))
+    path = window.export_image(str(tmp_path / "f.svg"))
+    with open(path, encoding="utf-8") as fh:
+        assert "EXO DIRECTION" not in fh.read()
+    assert "EXO DIRECTION" in export.driver_source(window.doc)
+
+
+def test_ctrl_a_leaves_the_axes_alone(window):
+    window.run_op("select.all")
+    assert all(s.selected for s in window.doc.scans)
+    assert not any(a.selected for a in window.doc.axes.values())
+
+
+# ------------------------------------------------------------ round 15
+def test_number_formats():
+    from dscpanel.core import numbers
+    assert numbers.write(13.247, "%.3g") == "13.2"
+    assert numbers.write(1.5, "%.3g") == "1.50"         # the zero is kept
+    assert numbers.write(0.05234, "%.3g") == "0.0523"
+    assert numbers.write(1234.5, "%.3g") == "1230"      # never 1.23e+03
+    assert numbers.write(9.996, "%.3g") == "10.0"
+    assert numbers.write(61.08, "%.0f") == "61"
+    assert numbers.write(0.5, "%+.1f") == "+0.5"
+    assert numbers.write(-0.04, "%.1f") == "0.0"        # no "-0.0"
+    assert numbers.write(141.2, "{:.2f}") == "141.20"
+    # a format is the number and nothing else: no text, no unit
+    assert numbers.normalise("%.1f degF") is None
+    assert numbers.normalise("%.1f %.1f") is None
+    assert numbers.normalise(".2f") == "%.2f"
+
+
+def test_a_label_is_a_template_and_a_unit_converts(window):
+    from dscpanel.core import labels
+    first, second = _two_onsets(window)          # onsets at 90 and 150 degC
+    doc = window.doc
+    assert labels.render(first, doc).text == "*T*_{on} = 90 \u00b0C"
+    # the axis in Kelvin: the label follows, converted
+    window.set_x_unit(units.TEMP_K)
+    assert labels.render(first, doc).text == "*T*_{on} = 363 K"
+    window.set_x_unit(units.TEMP_C)
+    # a unit written after {} is a CONVERSION
+    first.label = "onset {} \u00b0F"
+    assert labels.render(first, doc).text == "onset 194 \u00b0F"
+    # ...and one the quantity cannot be in is refused, never relabelled
+    first.label = "{} J/g"
+    rendered = labels.render(first, doc)
+    assert rendered.text == "90 \u00b0C"
+    assert rendered.problems[0][0] == "unit"
+    # a number typed by hand beside a temperature unit is flagged
+    first.label = "*T*_{on} = 150 \u00b0C"
+    assert [k for k, _m in labels.render(first, doc).problems] == ["typed"]
+    first.label = "*T*_{on} = {} (lit. 148 \u00b0C)"
+    rendered = labels.render(first, doc)
+    assert rendered.text.startswith("*T*_{on} = 90 \u00b0C")
+    assert rendered.problems and rendered.problems[0][0] == "typed"
+    # the digits are the user's
+    first.label = None
+    first.number_format = "%.2f"
+    assert labels.render(first, doc).text == "*T*_{on} = 90.00 \u00b0C"
+
+
+def test_endset_and_enthalpy_defaults(window):
+    from dscpanel.core import labels, measure
+    scan = window.doc.scans[0]
+    endset = measure.run("Endset point", scan, 60.0, 120.0)
+    assert endset is not None
+    assert labels.render(endset, window.doc).text.startswith("*T*_{end} = ")
+    scan._analyses = None
+    scan.sample.data["analyses"] = {
+        "Ramp 10,00 C/min to 250 C #1": {
+            "Peak Integration (enthalpy)": [
+                {"segment": 1, "Peak temperature": "120,0 \u00b0C",
+                 "Enthalpy (normalized)": "0,04567 J/g",
+                 "Baseline cursor x": "80,0 \u00b0C",
+                 "Baseline cursor x1": "160,0 \u00b0C"}]}}
+    enthalpy = scan.analysis_objects[0]
+    # three significant figures: a small enthalpy keeps its digits
+    assert labels.render(enthalpy, window.doc).text == \
+        "\\Delta*H* = 0.0457 J/g"
+    # per mole needs a molar mass, and says so rather than assuming one
+    enthalpy.label = "\\Delta*H* = {} kJ/mol"
+    rendered = labels.render(enthalpy, window.doc)
+    assert rendered.text.endswith("? kJ/mol")
+    enthalpy.visible = True
+    assert any("NO MOLAR MASS" in line
+               for line in export.warnings_for(window.doc))
+    scan.sample.molar_mass = 200.0
+    assert labels.render(enthalpy, window.doc).text.endswith(
+        "0.00913 kJ/mol")
+
+
+def test_an_old_session_label_with_its_number_becomes_the_template(
+        window, tmp_path, sample):
+    """Before round 15 a panel analysis was GIVEN "*T*_{onset} = 61.1 degC"
+    as its label. Read back, that is the default template again - and a
+    label somebody wrote stays theirs."""
+    import json
+    from dscpanel.core import measure, session
+    scan = window.doc.scans[0]
+    made = measure.run("Onset point", scan, 60.0, 120.0)
+    kept = measure.run("Onset point", scan, 70.0, 130.0)
+    made.label = measure.legacy_label(made)
+    kept.label = "my own words"
+    path = tmp_path / "old.dscpanel"
+    session.save(window.doc, str(path))
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["version"] = 3
+    path.write_text(json.dumps(state), encoding="utf-8")
+    loaded, _problems = session.load(
+        str(path), lambda _p: model.Sample(sample.path, sample.data))
+    panel = [a for a in loaded.scans[0].analysis_objects
+             if a.source == "panel"]
+    assert sorted(str(a.label) for a in panel) == ["None", "my own words"]
+
+
+def test_axis_numbers_take_a_format(window):
+    plot = window.plot
+    axis = window.doc.axes["y"]
+    assert plot.tick_text(axis, 0.5, "y") == "0.5"
+    axis.number_format = "%.2f"
+    assert plot.tick_text(axis, 0.5, "y") == "0.50"
+    plot.grab()
+    assert "FormatStrFormatter('%.2f')" in export.driver_source(window.doc)
+
+
+def test_offset_markers_use_their_format(window):
+    window.run_op("figure.offset_markers")
+    marker = window.doc.scans[1].marker
+    window.doc.scans[1].offset = 0.25
+    assert window.plot.marker_text(marker) in ("+0.2", "+0.3")   # %+.1f
+    marker.number_format = "%.2f"
+    assert window.plot.marker_text(marker) == "0.25"
+
+
+def test_a_marker_spawns_on_the_shown_curve_not_the_raw_data(window):
+    """Round 15: markers are placed on the data as SHOWN - truncated and
+    inside the view - so a hidden start-up hook or a stretch outside the
+    view is never where one points."""
+    plot = window.plot
+    window.run_op("figure.offset_markers")
+    plot.grab()
+    scan = window.doc.scans[0]
+    rect = plot.plot_rect()
+    trace = plot._trace_of(scan)
+    k = plot.marker_sample(scan.marker, trace, rect)
+    assert k is not None
+    # zoomed in, the marker is against the axis of the NEW view
+    lo, hi = plot.view_x()
+    window.set_x_range(lo + 0.3 * (hi - lo), hi)
+    plot.grab()
+    rect = plot.plot_rect()
+    trace = plot._trace_of(scan)
+    k = plot.marker_sample(scan.marker, trace, rect)
+    x = plot.x_to_px(trace.x[k], rect)
+    assert rect.left() <= x <= rect.left() + 20
+    # truncated: the hidden start is not a place to point at
+    scan.keep = (0.2, 1.0)
+    scan._cache_key = None
+    window.plot.fit()
+    window.refresh()
+    plot.grab()
+    trace = plot._trace_of(scan)
+    assert trace.first > 0
+    assert plot.marker_sample(scan.marker, trace) is not None
+    assert plot.marker_at(scan.marker)[1] >= trace.first
+
+
+def test_enter_in_a_settings_field_does_not_close_it(window):
+    from PySide6.QtTest import QTest
+    window.show()
+    window.run_op("arrow.settings")
+    dialog = window._dialogs[-1]
+    dialog.show()
+    dialog.head_length.setFocus()
+    dialog.head_length.lineEdit().selectAll()
+    QTest.keyClicks(dialog.head_length, "12")
+    QTest.keyClick(dialog.head_length, Qt.Key_Return)
+    assert dialog.isVisible()                     # still open
+    assert window.doc.arrow.head_length == pytest.approx(12.0)
+    dialog.close()
+    window.hide()
+
+
+def test_the_pointer_shows_while_gizmos_are_up(window):
+    """The reticle is not drawn while measure cursors or gizmos are up, so
+    the system pointer must be - it used to be hidden too, leaving nothing
+    to aim at a gizmo with."""
+    plot = window.plot
+    plot.grab()
+    rect = plot.plot_rect()
+    away = plot.x_to_px(110.0, rect)          # between the two cursors
+    plot.mouseMoveEvent(_move(plot, (away, rect.center().y()),
+                              buttons=Qt.NoButton))
+    assert plot.cursor().shape() == Qt.BlankCursor        # the reticle's
+    window.doc.select_only([window.doc.scans[0]])
+    plot.start_measure(window.doc.scans[0], [80.0, 140.0])
+    assert plot.cursor().shape() == Qt.CrossCursor
+    x = plot.x_to_px(80.0, rect)
+    plot.mouseMoveEvent(_move(plot, (x, rect.center().y()),
+                              buttons=Qt.NoButton))
+    assert plot.cursor().shape() == Qt.SizeHorCursor      # over a gizmo
+    plot.end_measure()
+
+
+def test_one_font_family_for_the_whole_figure(window):
+    # A family by name: the offscreen platform has no font database, and
+    # the name is what the figure and the driver carry.
+    family = "Arial"
+    window.doc.style.font_family = family
+    window.plot.invalidate()
+    assert window.plot.figure_font().family() == family
+    assert window.plot.font().family() == family
+    window.plot.grab()
+    assert "plt.rcParams['font.family'] = [{!r}, 'sans-serif']".format(
+        family) in \
+        export.driver_source(window.doc)
+
+
+def test_the_settings_page_takes_formats_and_a_font(window):
+    from dscpanel.core import style
+    from dscpanel.ui.settings import SettingsDialog
+    page = SettingsDialog(window)
+    page.figure["value_format"].set_value("%.2f")
+    assert window.doc.style.value_format == "%.2f"
+    page.set_default("temperature_format", "%.1f")
+    assert style.preference("temperature_format") == "%.1f"
+    page.defaults["font_family"].set_value("Arial")
+    assert style.preference("font_family") == "Arial"
+    page.revert()
+    assert window.doc.style.value_format is None
+    assert style.preference("temperature_format") == "%.0f"
+
+
+# ------------------------------------------------------------ round 16
+def test_marker_arrow_offsets_are_set_or_shifted_numerically(window):
+    """Round 17: the marker's ARROW offset - how far its number sits from
+    the curve - absolute or relative; the scan's offset is not in here."""
+    doc = window.doc
+    window.run_op("figure.offset_markers")
+    window.plot.grab()
+    first, second = doc.scans
+    first.marker.dy, second.marker.dy = 10.0, 20.0     # below the curve
+    window.run_op("select.offset_markers")
+    window.edit_object(first.marker)
+    dialog = window._dialogs[-1]
+    assert not hasattr(dialog, "offset") and not hasattr(dialog, "shift")
+    assert dialog.arrow_offset.value() == pytest.approx(-10.0)   # up is +
+    dialog.arrow_shift.setValue(4.0)                  # relative: both move
+    assert (first.marker.dy, second.marker.dy) == pytest.approx((6.0, 16.0))
+    assert dialog.arrow_shift.value() == 0.0
+    dialog.arrow_offset.setValue(-30.0)               # absolute: both
+    assert first.marker.dy == second.marker.dy == pytest.approx(30.0)
+    dialog.accept()
+    window.undo.undo()                                # the window: ONE step
+    assert (first.marker.dy, second.marker.dy) == (10.0, 20.0)
+    assert (first.offset, second.offset) == (0.0, 0.0)
+
+
+def test_s_scales_the_artists_and_nothing_measured(window):
+    doc = window.doc
+    arrow, legend = doc.arrow, doc.legend
+    legend.visible = True
+    label = window.add_label("note", at=QPointF(300, 200))
+    window.plot.grab()
+    scan = doc.scans[0]
+    doc.select_only([arrow, legend, label, scan])
+    before = (arrow.head_length, arrow.tail_width, legend.sample)
+    assert window.plot.start_scale()
+    assert scan not in [e["obj"] for e in
+                        window.plot._scale["entries"]]   # data never
+    for key, text in ((Qt.Key_2, "2"), (Qt.Key_Return, "")):
+        window.plot.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, key,
+                                            Qt.NoModifier, text))
+    assert arrow.head_length == pytest.approx(2 * before[0])
+    assert arrow.tail_width == pytest.approx(2 * before[1])
+    assert arrow.size == pytest.approx(20.0)          # its 10 pt text too
+    assert legend.sample == pytest.approx(2 * before[2])
+    assert label.size == pytest.approx(20.0)
+    window.undo.undo()                                # ONE step
+    assert (arrow.head_length, arrow.tail_width, legend.sample) == before
+    assert arrow.size is None and label.size is None  # house style again
+    # dragged, and cancelled: nothing changes
+    doc.select_only([arrow])
+    window.plot.start_scale()
+    window.plot.mouseMoveEvent(_move(window.plot, (600, 400),
+                                     buttons=Qt.NoButton))
+    assert arrow.head_length != before[0]
+    window.plot.mousePressEvent(_press(window.plot, (600, 400),
+                                       button=Qt.RightButton))
+    assert arrow.head_length == before[0]
+    assert {op.id: op.key for op in window.ops.all()}["transform.scale"] \
+        == "S"
+
+
+def test_the_model_is_switched_in_place(window):
+    from dscpanel.core import measure
+    scan = window.doc.scans[0]
+    analysis = measure.run("Onset point", scan, 60.0, 120.0)
+    window.refresh()
+    window.doc.select_only([analysis])
+    window.edit_object(analysis)
+    dialog = window._dialogs[-1]
+    dialog.model.setCurrentIndex(dialog.model.findData("Endset point"))
+    assert analysis.model_name == "Endset point"
+    assert analysis in scan.analysis_objects             # the same object
+    assert analysis.summary(window.doc).startswith("*T*_{end} = ")
+    assert dialog.windowTitle().startswith("Endset point")
+    window.undo.undo()
+    assert analysis.model_name == "Onset point"
+
+
+def test_start_and_end_are_typed_with_or_without_a_unit(window):
+    from dscpanel.core import measure
+    scan = window.doc.scans[0]
+    analysis = measure.run("Peak Integration (enthalpy)", scan, 70.0, 150.0)
+    window.refresh()
+    window.doc.select_only([analysis])
+    window.edit_object(analysis)
+    dialog = window._dialogs[-1]
+    assert dialog.start.text().startswith("70.00")
+    dialog.start.setText("80")                        # the axis unit
+    dialog.end.setText("284 F")                       # 140 degC
+    dialog._typed_interval()
+    low, high = analysis.cursors()
+    assert low == pytest.approx(80.0, abs=1.0)
+    assert high == pytest.approx(140.0, abs=1.0)
+    assert dialog.end.text().startswith("%.2f" % high)
+    assert window.undo.can_undo()
+    dialog.end.setText("banana")
+    dialog._typed_interval()
+    assert "d04040" in dialog.end.styleSheet()         # refused, marked
+
+
+def test_a_file_analysis_retyped_becomes_the_panels(window):
+    scan = window.doc.scans[0]
+    scan._analyses = None
+    scan.sample.data["analyses"] = {
+        "Ramp 10,00 C/min to 250 C #1": {
+            "Onset point": [{"segment": 1, "Onset x": "90,0 \u00b0C",
+                             "Onset cursor x": "60,0 \u00b0C",
+                             "Transition cursor x": "120,0 \u00b0C"}]}}
+    analysis = scan.analysis_objects[0]
+    assert analysis.source == "file"
+    assert window.retype_interval(analysis, 65.0, 125.0) is analysis
+    assert analysis.source == "panel"
+    assert analysis.cursors() == pytest.approx([65.0, 125.0])
+
+
+def test_the_analysis_window_says_it_briefly(window):
+    from dscpanel.core import measure
+    scan = window.doc.scans[0]
+    analysis = measure.run("Onset point", scan, 60.0, 120.0)
+    window.refresh()
+    window.doc.select_only([analysis])
+    window.edit_object(analysis)
+    dialog = window._dialogs[-1]
+    assert dialog.visible.text() == "Show"
+    assert dialog.interval.text() == "Show interval markers"
+    assert dialog.auto.text() == "Same as scan"
+    assert dialog.note.text().startswith("Adjust the values as needed.")
+    assert not hasattr(dialog, "shown_on")
+    assert "T" in dialog.preview.text() and "<sub>on</sub>" in \
+        dialog.preview.text()
+    # readable: labels selectable, tooltips wrapped
+    dialog.show()
+    assert dialog.note.textInteractionFlags() & Qt.TextSelectableByMouse
+    assert dialog.start.toolTip().startswith("<qt>")
+    dialog.close()
+
+
+def test_a_unit_in_the_number_format_converts(window):
+    from dscpanel.core import labels, numbers
+    first, _second = _two_onsets(window)             # 90 degC
+    first.number_format = labels.normalise_format("%.0f f")
+    assert first.number_format == "%.0f \u00b0F"
+    assert labels.render(first, window.doc).text == \
+        "*T*_{on} = 194 \u00b0F"
+    # a unit written after {} still wins
+    first.label = "{} K"
+    assert labels.render(first, window.doc).text == "363 K"
+    # a unit the quantity cannot be in, in ITS OWN format, is refused
+    first.label = None
+    first.number_format = labels.normalise_format("%.1f J/g")
+    rendered = labels.render(first, window.doc)
+    assert rendered.text == "*T*_{on} = 90.0 \u00b0C"
+    assert rendered.problems[0][0] == "unit"
+    # ...but an axis format never takes a unit: its numbers sit on ticks
+    assert numbers.normalise("%.1f K") is None
+    assert labels.normalise_format("%.1f banana") is None
+
+
+def test_typed_temperatures():
+    from dscpanel.core import units as u
+    assert u.parse_temperature("98", u.TEMP_C) == pytest.approx(98.0)
+    assert u.parse_temperature("98", u.TEMP_K) == pytest.approx(-175.15)
+    for text in ("208.4 F", "208.4f", "208.4 \u00b0F", "208.4 degF"):
+        assert u.parse_temperature(text) == pytest.approx(98.0)
+    assert u.parse_temperature("371.15 k") == pytest.approx(98.0)
+    assert u.parse_temperature("98,5 C") == pytest.approx(98.5)
+    assert u.parse_temperature("hot") is None
+
+
+def test_a_marker_format_with_a_unit_converts_the_offset(window):
+    window.run_op("figure.offset_markers")
+    scan = window.doc.scans[1]
+    scan.offset = 0.5                                # W/g on the axis
+    marker = scan.marker
+    marker.number_format = "%.1f mW"
+    mass = scan.sample.mass_g
+    if mass:
+        assert window.plot.marker_text(marker) == "%.1f mW" % (0.5 * mass
+                                                                * 1000)
+    else:
+        assert window.plot.marker_text(marker) == "? mW"
+
+
+# ------------------------------------------------------------ round 17
+def test_the_framing_is_saved_with_the_figure(window, tmp_path, sample):
+    """Christian's glitch: a y range narrowed to show a peak's label came
+    back fitted when the session was reopened. The view is in the file."""
+    from dscpanel.core import session
+    plot = window.plot
+    plot.grab()
+    lo, hi = plot.view_y()
+    plot.set_view_y(lo, lo + (hi - lo) / 3.0)
+    narrowed = plot.view_y()
+    path = str(tmp_path / "framed.dscpanel")
+    window.save_session(path=path)
+    loaded, _problems = session.load(
+        path, lambda _p: model.Sample(sample.path, sample.data))
+    assert loaded.view["y"] == pytest.approx(narrowed)
+    # and the window puts it back on opening
+    window.doc.view = None
+    window.plot.fit()
+    import dscpanel.ui.window as window_module
+    real = window_module.session.load
+    window_module.session.load = lambda p, _r: (loaded, [])
+    try:
+        window.open_session(path)
+    finally:
+        window_module.session.load = real
+    assert window.plot.view_y() == pytest.approx(narrowed)
+    assert not window.is_modified()
+
+
+def test_bahnschrift_with_a_fallback():
+    from dscpanel.core import style
+    from dscpanel.ui.plot import FALLBACK_FAMILIES
+    assert style.builtin("font_family") == "Bahnschrift"
+    assert "Arial" in FALLBACK_FAMILIES and "DejaVu Sans" in FALLBACK_FAMILIES
+
+
+def test_the_figure_font_lists_its_fallbacks(window):
+    font = window.plot.figure_font()
+    assert font.families()[0] == "Bahnschrift"
+    assert "DejaVu Sans" in font.families()
+    assert "plt.rcParams['font.family'] = ['Bahnschrift', 'sans-serif']" \
+        in export.driver_source(window.doc)
+
+
+def test_the_legend_has_no_frame_until_asked(window, tmp_path, sample):
+    import json
+    from dscpanel.core import session
+    assert window.doc.legend.show_frame is False          # frameon=False
+    window.doc.legend.show_frame = True                   # chosen
+    path = tmp_path / "framed.dscpanel"
+    session.save(window.doc, str(path))
+    reader = (lambda _p: model.Sample(sample.path, sample.data))
+    assert session.load(str(path), reader)[0].legend.show_frame is True
+    # an older file's True was the old default, not a choice
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["version"] = 4
+    path.write_text(json.dumps(state), encoding="utf-8")
+    assert session.load(str(path), reader)[0].legend.show_frame is False
+
+
+def test_a_stale_generated_label_in_a_version_4_file(window, tmp_path,
+                                                     sample):
+    import json
+    from dscpanel.core import measure, session
+    scan = window.doc.scans[0]
+    made = measure.run("Peak Integration (enthalpy)", scan, 70.0, 150.0)
+    made.label = "\\Delta*H* = 2.492 J/g"            # not the measurement
+    path = tmp_path / "v4.dscpanel"
+    session.save(window.doc, str(path))
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["version"] = 4
+    path.write_text(json.dumps(state), encoding="utf-8")
+    loaded, _problems = session.load(
+        str(path), lambda _p: model.Sample(sample.path, sample.data))
+    again = [a for a in loaded.scans[0].analysis_objects
+             if a.source == "panel"][0]
+    assert again.label is None                 # the template, live number
+
+
+def test_a_txt_analysis_is_offered_on_every_scan_of_its_step():
+    """Round 17: an analysis a .txt export names by STEP is offered under
+    every segment with that step name, and attributed by being shown on
+    the one it belongs to."""
+    from conftest import make_data
+    data = make_data(segments=3, analyses={
+        "Ramp 10,00 C/min to 250 C": {
+            "Onset point": [{"Onset x": "61,08 \u00b0C"}]}})
+    sample = model.Sample("x.tri", data)
+    assert len(sample.analyses_for(0)) == 1        # first heating
+    assert len(sample.analyses_for(2)) == 1        # second heating too
+    assert sample.analyses_for(1) == []            # the cooling: not its step
+    doc = model.Document()
+    doc.add_sample(sample, [0, 2])
+    first, second = [s.analysis_objects[0] for s in doc.scans]
+    assert not first.certain and not second.certain
+    second.visible = True                          # shown on ITS scan
+    assert second.certain and not first.certain
+
+
+def test_show_every_analysis_leaves_the_step_name_ones_alone(window):
+    scan = window.doc.scans[0]
+    scan._analyses = None
+    scan.sample.data["analyses"] = {
+        "Ramp 10,00 C/min to 250 C": {
+            "Onset point": [{"Onset x": "61,08 \u00b0C"}]},
+        "Ramp 10,00 C/min to 250 C #1": {
+            "Onset point": [{"segment": 1, "Onset x": "80,0 \u00b0C"}]}}
+    window.doc.select_only([scan])
+    window.set_analyses(True)
+    shown = {a.attribution: a.visible for a in scan.analysis_objects}
+    assert shown == {"cached curve": True, "by step name": False}
+
+
+def _key(plot, key, text=""):
+    plot.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, key,
+                                 Qt.NoModifier, text))
+
+
+def test_pivot_keys_reach_all_nine_points(window):
+    label = window.add_label("a longer label", at=QPointF(400, 250))
+    plot = window.plot
+    plot.grab()
+    window.doc.select_only([label])
+    assert plot.start_scale()
+    assert plot._scale["pivot"] == (0.0, 1.0)            # bottom left
+    reached = {plot._scale["pivot"]}
+    for keys in ("x", "xx", "y", "yy", "xxy", "xm", "xxm", "ym", "yym", "c"):
+        plot._scale["pivot"], plot._scale["last"] = (0.0, 1.0), None
+        for key in keys:
+            plot.pivot_key(key)
+        reached.add(plot._scale["pivot"])
+    assert reached == {(fx, fy) for fx in (0.0, 0.5, 1.0)
+                       for fy in (0.0, 0.5, 1.0)}
+    plot._scale["pivot"], plot._scale["last"] = (0.0, 1.0), None
+    plot.pivot_key("x")
+    plot.pivot_key("m")
+    assert plot._scale["pivot"] == (0.0, 0.5)             # S X M
+    assert plot.pivot_name((0.0, 0.5)) == "middle left"
+    plot._finish_transform(cancel=True)
+
+
+def test_a_scale_keeps_its_pivot_where_it_is(window):
+    label = window.add_label("a longer label", at=QPointF(400, 250))
+    plot = window.plot
+    plot.grab()
+    window.doc.select_only([label])
+    plot.start_scale()
+    entry = plot._scale["entries"][0]
+    before = plot._pivot_point(entry)
+    _key(plot, Qt.Key_2, "2")
+    rect = plot.plot_rect()
+    live = dict(entry, anchor=plot.artist_point(label, rect),
+                box=plot.artist_box(label, rect))
+    after = plot._pivot_point(live)
+    # bottom left stays, within the box's fixed padding, which does not scale
+    assert after == pytest.approx(before, abs=5.0)
+    _key(plot, Qt.Key_Return)
+    assert label.size == pytest.approx(20.0)
+
+
+def test_r_rotates_a_label_about_its_centre(window):
+    label = window.add_label("a longer label", at=QPointF(400, 250))
+    plot = window.plot
+    plot.grab()
+    window.doc.select_only([label])
+    centre = plot.artist_point(label)            # anchored at its centre
+    window.run_op("arrange.reset")               # R, with a label selected
+    assert plot.scaling() and plot._scale["mode"] == "rotate"
+    _key(plot, Qt.Key_9, "9")
+    _key(plot, Qt.Key_0, "0")
+    _key(plot, Qt.Key_Return)
+    assert label.rotation == pytest.approx(90.0)
+    assert plot.artist_point(label) == pytest.approx(centre, abs=1.0)
+    plot.grab()
+    box = [b for lb, b in plot._text_boxes if lb is label][0]
+    assert box.height() > box.width()            # it stands upright now
+    window.undo.undo()
+    assert label.rotation == 0.0
+
+
+def test_the_arrow_is_not_rotated(window):
+    window.doc.select_only([window.doc.arrow])
+    assert not window.rotatable_selected()
+    assert not window.run_op("arrange.reset")
+    assert not window.plot.scaling()
+
+
+def test_s_and_r_keep_their_keys_from_the_window(window):
+    label = window.add_label("note", at=QPointF(400, 250))
+    window.plot.grab()
+    window.doc.select_only([label])
+    window.plot.start_scale()
+    override = QKeyEvent(QKeyEvent.Type.ShortcutOverride, Qt.Key_M,
+                         Qt.NoModifier, "m")
+    assert window.plot.event(override) and override.isAccepted()
+    window.plot._finish_transform(cancel=True)
+
+
+def test_analysis_arrow_offset_is_typed_and_shifted(window):
+    first, second = _two_onsets(window)
+    window.doc.select_only([first, second])
+    window.edit_object(first)
+    dialog = window._dialogs[-1]
+    assert dialog.arrow_default.isChecked()         # automatic side
+    dialog.arrow_offset.setValue(30.0)              # 30 above the curve
+    assert first.label_dy == second.label_dy == pytest.approx(-30.0)
+    second.label_dy = -50.0
+    dialog.arrow_shift.setValue(10.0)               # both, 10 higher
+    assert (first.label_dy, second.label_dy) == pytest.approx((-40.0, -60.0))
+    dialog.accept()
+
+
+def test_a_long_problem_under_a_label_is_not_cut_off(window):
+    from dscpanel.core import measure
+    scan = window.doc.scans[0]
+    analysis = measure.run("Peak Integration (enthalpy)", scan, 70.0, 150.0)
+    analysis.label = "\\Delta*H* = 2.492 J/g (typed by hand, as it was)"
+    window.refresh()
+    window.doc.select_only([analysis])
+    window.edit_object(analysis)
+    dialog = window._dialogs[-1]
+    dialog.show()
+    for label in (dialog.preview, dialog.results):
+        assert label.height() >= label.heightForWidth(label.width()) - 1
+    dialog.close()
+
+
+# ------------------------------------------------------------ round 18
+@pytest.mark.parametrize("anchor", ["center", "top right", "bottom left"])
+@pytest.mark.parametrize("keys", ["", "c", "xx", "yym"])
+def test_the_scale_pivot_stays_put_whatever_the_anchor(window, anchor, keys):
+    """Round 18: with the anchor anywhere but bottom left, a scale drifted,
+    because a box does not grow in proportion (font sizes step, padding
+    does not scale). The pivot is now measured back into place."""
+    legend = window.doc.legend
+    legend.visible = True
+    legend.anchor = anchor
+    plot = window.plot
+    plot.grab()
+    window.doc.select_only([legend])
+    assert plot.start_scale()
+    for key in keys:
+        plot.pivot_key(key)
+    entry = plot._scale["entries"][0]
+    before = plot._pivot_point(entry)
+    for factor in ("1.37", "2.5", "0.6"):
+        plot._scale["typed"] = factor
+        plot._update_transform()
+        rect = plot.plot_rect()
+        live = dict(entry, anchor=plot.artist_point(legend, rect),
+                    box=plot.artist_box(legend, rect))
+        assert plot._pivot_point(live) == pytest.approx(before, abs=1.0)
+    plot._finish_transform(cancel=True)
+
+
+def test_the_legend_line_width(window, tmp_path, sample):
+    from dscpanel.core import session
+    from dscpanel.ui.dialogs import LegendSettings
+    legend = window.doc.legend
+    assert legend.line_width is None                  # each scan's own
+    dialog = LegendSettings(window, legend)
+    dialog.line_width.setValue(2.5)
+    assert legend.line_width == 2.5
+    dialog.line_width.setValue(0.0)
+    assert legend.line_width is None
+    legend.line_width = 3.0
+    path = tmp_path / "lw.dscpanel"
+    session.save(window.doc, str(path))
+    loaded, _p = session.load(
+        str(path), lambda _p: model.Sample(sample.path, sample.data))
+    assert loaded.legend.line_width == 3.0
+
+
+def test_latex_between_dollars(window):
+    from dscpanel.ui.plot import markup_runs
+    assert markup_runs("(Hbc)$_{1.00}$") == [("(Hbc)", False, False),
+                                               ("1.00", False, "sub")]
+    # mathtext's rule: without braces only one character is lowered
+    assert markup_runs("$_1.00$")[0] == ("1", False, "sub")
+    assert markup_runs("$x^2$") == [("x", True, False), ("2", False, "sup")]
+    runs = markup_runs("$T \\quad / \\quad \\mathrm{K}$")
+    assert runs[0] == ("T", True, False)                 # a variable: italic
+    assert runs[-1][0].endswith("K") and not runs[-1][1]  # mathrm: upright
+    assert markup_runs("price \\$5") == [("price $5", False, False)]
+    # an added label is drawn with it, so its box is the markup's width
+    label = window.add_label("(Hbc)$_{1.00}$", at=QPointF(300, 200))
+    window.plot.grab()
+    from PySide6.QtGui import QFontMetrics
+    box = window.plot._label_box(label, window.plot.plot_rect(),
+                                 window.plot.figure_font())
+    font = window.plot.figure_font()
+    font.setPointSizeF(window.plot.style_of(label, "size"))
+    assert box.width() < QFontMetrics(font).horizontalAdvance(label.text)
+
+
+def test_the_basic_colours_start_with_the_plotters():
+    from PySide6.QtWidgets import QColorDialog
+    from dscpanel.ui.dialogs import PLOTTER_COLOURS, install_basic_colours
+    assert install_basic_colours() == 48
+    # read left to right: Qt numbers the grid down its six rows first
+    assert QColorDialog.standardColor(0).name() == PLOTTER_COLOURS[0]
+    assert QColorDialog.standardColor(6).name() == PLOTTER_COLOURS[1]
+    assert QColorDialog.standardColor(1).name() == PLOTTER_COLOURS[8]
+
+
+def test_a_sweep_down_the_outliner_boxes_is_one_step(window, qapp):
+    outliner = window.outliner
+    window.show()
+    rows = [item for item in outliner._items()
+            if outliner._key(item) and outliner._key(item)[0] == "scan"]
+    assert len(rows) == 2 and all(s.visible for s in window.doc.scans)
+
+    def box_point(item):
+        cell = outliner.visualItemRect(item)
+        left = outliner.visualRect(outliner.indexFromItem(item, 0)).left()
+        return QPointF(left + 5, cell.center().y())
+
+    first, second = box_point(rows[0]), box_point(rows[1])
+    outliner.mousePressEvent(QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress, first, first, Qt.LeftButton,
+        Qt.LeftButton, Qt.NoModifier))
+    outliner.mouseMoveEvent(QMouseEvent(
+        QMouseEvent.Type.MouseMove, second, second, Qt.NoButton,
+        Qt.LeftButton, Qt.NoModifier))
+    outliner.mouseReleaseEvent(QMouseEvent(
+        QMouseEvent.Type.MouseButtonRelease, second, second, Qt.LeftButton,
+        Qt.NoButton, Qt.NoModifier))
+    for _ in range(4):
+        qapp.processEvents()
+    assert not any(s.visible for s in window.doc.scans)
+    window.undo.undo()                              # ONE step
+    assert all(s.visible for s in window.doc.scans)
+    window.hide()
+
+
+def test_the_outliner_state_column_is_never_cut_off(window):
+    from PySide6.QtWidgets import QHeaderView
+    header = window.outliner.header()
+    assert header.sectionResizeMode(0) == QHeaderView.Stretch
+    assert header.sectionResizeMode(1) == QHeaderView.ResizeToContents
+
+
+def test_the_theme_is_in_the_edit_menu(window):
+    theme = window.menus["Theme"]
+    texts = [a.text() for a in theme.actions()]
+    assert any("light" in t for t in texts) and len(texts) == 2
+    window._sync_menu_state()
+    ticked = [a.text() for a in theme.actions() if a.isChecked()]
+    assert ticked == ["Theme: {}".format(window.doc.theme)]
+
+
+def test_an_export_in_the_theme_or_for_a_page(window, tmp_path):
+    from PySide6.QtGui import QImage
+    from dscpanel.ui import plot as plot_module
+    window.set_theme(plot_module.THEME_DARK)
+    window.ask_export = lambda: (str(tmp_path / "dark.png"), False)
+    window.export_image()
+    dark = QImage(str(tmp_path / "dark.png"))
+    assert QColorFrom(dark.pixel(2, 2)).lightness() < 80
+    window.ask_export = lambda: (str(tmp_path / "page.png"), True)
+    window.export_image()
+    page = QImage(str(tmp_path / "page.png"))
+    assert QColorFrom(page.pixel(2, 2)).lightness() > 240
+
+
+def QColorFrom(value):
+    from PySide6.QtGui import QColor
+    return QColor.fromRgba(value)
+
+
+def test_an_svg_export_is_clipped_to_the_axes(window, tmp_path):
+    import xml.etree.ElementTree as ElementTree
+    plot = window.plot
+    plot.grab()
+    lo, hi = plot.view_y()
+    plot.set_view_y(lo, lo + (hi - lo) / 4.0)       # curves run off the top
+    path = window.export_image(str(tmp_path / "clipped.svg"), light=True)
+    text = open(path, encoding="utf-8").read()
+    assert "clip-path=" in text and "<clipPath" in text
+    assert plot.CLIP_OPEN not in text and plot.CLIP_CLOSE not in text
+    ElementTree.fromstring(text.encode("utf-8"))        # still well formed
+
+
+def test_spine_numbers_and_caption_are_three_windows(window):
+    plot = window.plot
+    plot.grab()
+    axis = window.doc.axes["x"]
+    assert axis.mirror and axis.mirror_ticks            # Origin's frame
+    spine = plot.axis_spine_rect("x").center()
+    numbers = plot.axis_numbers_rect("x").center()
+    assert plot.object_at(spine) is axis and plot.axis_hit() == "spine"
+    assert plot.object_at(numbers) is axis and plot.axis_hit() == "numbers"
+    # a click on the spine selects nothing: no orange on the frame
+    plot.select_at(spine)
+    assert not axis.selected
+    from dscpanel.ui.dialogs import AxisSettings, CaptionSettings, \
+        NumberSettings
+    for part, kind in (("spine", AxisSettings), ("numbers", NumberSettings),
+                       ("caption", CaptionSettings)):
+        window.edit_object(axis, part=part)
+        assert isinstance(window._dialogs[-1], kind)
+        window._dialogs[-1].close()
+
+
+def test_the_ticks_are_set_in_the_spine_window(window):
+    from dscpanel.ui.dialogs import AxisSettings
+    axis = window.doc.axes["y"]
+    dialog = AxisSettings(window, axis, window.doc)
+    assert dialog.step_auto.isChecked()
+    dialog.step_auto.setChecked(False)
+    dialog.step.setValue(0.25)
+    dialog.minor_count.setValue(4)
+    dialog.mirror_ticks.setChecked(False)
+    assert axis.major_step == 0.25 and axis.minor_count == 4
+    assert axis.mirror and not axis.mirror_ticks
+    lo, hi = window.plot.view_y()
+    assert window.plot.tick_step(axis, lo, hi) == 0.25
+    source = export.driver_source(window.doc)
+    assert "MultipleLocator(0.25)" in source
+    assert "AutoMinorLocator(4)" in source
+    assert "ax.tick_params(axis='y', which='both', right=False" in source
+    assert "ax.tick_params(axis='x', which='both', top=True" in source
+
+
+def test_an_interval_mark_is_cut_to_the_axes():
+    from PySide6.QtCore import QRectF
+    from dscpanel.ui.plot import _clip_segment
+    box = QRectF(10.0, 10.0, 100.0, 50.0)
+    # a dash left of the axes (a bound outside the view) is not drawn
+    assert _clip_segment(QPointF(2.0, 20.0), QPointF(2.0, 28.0), box) is None
+    # one across the edge is cut at it
+    a, b = _clip_segment(QPointF(0.0, 30.0), QPointF(50.0, 30.0), box)
+    assert (a.x(), b.x()) == pytest.approx((10.0, 50.0))
+    inside = _clip_segment(QPointF(20.0, 20.0), QPointF(30.0, 25.0), box)
+    assert inside[0] == QPointF(20.0, 20.0) and inside[1] == QPointF(30.0,
+                                                                    25.0)
