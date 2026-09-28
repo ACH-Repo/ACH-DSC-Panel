@@ -159,6 +159,26 @@ class Sample(object):
     def name(self):
         return self.sample_name
 
+    @property
+    def mass_source(self):
+        """Where the sample mass came from: "recorded" (the file's own
+        field, or an export's header), "derived from the weight" (an SDT
+        run: the reader's Weight / Weight Change, an inference however
+        exact), or None when there is no mass."""
+        if not self.mass_g:
+            return None
+        head = (self.data or {}).get("head", {}) or {}
+        return head.get("mass_source") or "recorded"
+
+    def mass_text(self):
+        """"21.5473 mg (derived from the weight)", "8 mg", or None."""
+        if not self.mass_g:
+            return None
+        derived = self.mass_source == "derived from the weight"
+        return "{:g} mg{}".format(self.mass_g * 1000.0,
+                                  " (derived from the weight)"
+                                  if derived else "")
+
     def segment_count(self):
         return len((self.data or {}).get("numdata", []))
 
@@ -208,25 +228,47 @@ class Sample(object):
 
 
 def _trim_empty_ends(data):
-    """Drop the samples at either end of a segment that have no
-    temperature: an SDT run's last dozen or so, which the instrument flags
-    as empty and the reader returns as NaN (round 25). Off the ENDS only,
-    so every other sample keeps its index - a span, a marker's sample and
-    `trace.first` all count from the segment's start. A gap in the middle
-    stays, and the curve is drawn broken there."""
+    """Drop the TRAILING samples of a segment whose temperature or recorded
+    heat flow holds no measurement: the flagged tail of a run's last
+    segment, which the reader returns as NaN (TRI-FORMAT.md section 3 - a
+    DSC25's Temperature 5 and Heat Flow 35 samples, an SDT650's 25).
+
+    Off the END only, so every sample keeps its index counted from the
+    segment's start: a session stores sample spans, and a marker's sample
+    and `trace.first` count from there too. Trimming the start as well
+    (round 25) shifted every index of a run that flags its FIRST samples
+    (some DSC25 runs do, in segment 1). NaN at the start or in the middle
+    stays, and whatever reads the arrays has to skip it; the curve is drawn
+    broken there. The heat flow is the one `Scan.heat_flow` reads: watts
+    when the file has them, else the normalised one of a `.txt` export."""
     for step in (data or {}).get("numdata", []) or []:
         dims = step.get("dims") or []
         nums = step.get("nums")
-        if "Temperature" not in dims or nums is None or not len(nums):
+        if nums is None or not len(nums):
+            continue
+        flow = ("Heat Flow" if "Heat Flow" in dims
+                else "Heat Flow (Normalized)")
+        columns = [dims.index(name) for name in ("Temperature", flow)
+                   if name in dims]
+        if not columns:
             continue
         with np.errstate(invalid="ignore"):
-            good = np.flatnonzero(np.isfinite(
-                np.asarray(nums[:, dims.index("Temperature")], dtype=float)))
-        if not len(good):
+            good = np.all(np.isfinite(
+                np.asarray(nums[:, columns], dtype=float)), axis=1)
+        measured = np.flatnonzero(good)
+        if not len(measured):
             continue
-        first, last = int(good[0]), int(good[-1])
-        if first > 0 or last < len(nums) - 1:
-            step["nums"] = nums[first:last + 1]
+        last = int(measured[-1])
+        if last < len(nums) - 1:
+            step["nums"] = nums[:last + 1]
+
+
+def _measured(values):
+    """True when `values` holds at least one measured (finite) sample."""
+    if values is None or not len(values):
+        return False
+    with np.errstate(invalid="ignore"):
+        return bool(np.isfinite(np.asarray(values, dtype=float)).any())
 
 
 def _mass_g(head):
@@ -238,7 +280,10 @@ def _mass_g(head):
     """
     for key in ("Sample Mass", "samplesize"):
         value = number(head.get(key))
-        if value:
+        # A mass that is not positive is none: dividing by one turns a curve
+        # upside down under an exo arrow that still says it is the right
+        # way up (the DESY runs whose balance read -99.9 mg, round 25).
+        if value and value > 0:
             return value / 1000.0
     return None
 
@@ -275,6 +320,9 @@ class Scan(Obj):
         #: The analyses drawn on this scan, as objects. Built from the file
         #: the first time they are asked for; see `analysis_objects`.
         self._analyses = None
+        #: The file's analyses made on the weight (`weight_analyses`), built
+        #: with `_analyses`.
+        self._weight_analyses = []
         #: Grams per mole for THIS scan, overriding the sample's.
         self.molar_mass_override = None
         #: Its y-offset marker (the template's `add_yoffset_markers`), drawn
@@ -333,6 +381,8 @@ class Scan(Obj):
         if move == "iso":
             target = number(prog.split("to")[-1]) if "to" in prog else None
             temp = self.temperature()
+            if temp is not None:
+                temp = temp[np.isfinite(temp)]      # flagged samples
             value = target if target is not None else (
                 float(np.mean(temp)) if temp is not None and len(temp) else None)
             return ("{} iso {:.0f} °C".format(index, value)
@@ -343,8 +393,13 @@ class Scan(Obj):
         return "{} {}".format(index, word)
 
     def direction(self):
-        """"up", "down" or "iso", from the temperature the sample reached."""
+        """"up", "down" or "iso", from the temperature the sample reached -
+        between the first and the last MEASURED sample: a run can flag its
+        first samples (NaN), and NaN compared with anything called a heating
+        ramp "cool" (CN-INDIUM-CHECK)."""
         temp = self.temperature()
+        if temp is not None:
+            temp = temp[np.isfinite(temp)]
         if temp is None or len(temp) < 2:
             return "iso"
         change = float(temp[-1]) - float(temp[0])
@@ -376,10 +431,10 @@ class Scan(Obj):
         So the base travels with the values and `core/units.py` works out what
         is still needed.
 
-        `(None, None)` when the segment records no heat flow at all. That
-        happens: the ramp segment of a DSC25 calibration run stores only the
-        raw sensors, and this file has no Heat Flow T1 to fill it from (see
-        TRI-FORMAT.md section 8).
+        `(None, None)` when the segment records no heat flow at all. The
+        indium calibration run's ramp was thought to be one until its
+        flagged arrays were read (TRI-FORMAT.md section 3); none on the
+        development machine is now, but a segment can still lack a signal.
         """
         watts = self._column("Heat Flow")
         if watts is not None:
@@ -389,39 +444,134 @@ class Scan(Obj):
             return normalised, units.UNIT_W_G
         return None, None
 
+    def _weight_column(self, unit):
+        """The segment's own weight column in `unit` ("%" or "mg"), or None.
+
+        Decided by the column's UNIT wherever the step states one, and by
+        the reader's name only where it does not: "Weight" is mg, "Weight
+        Change" is % (TRIOS's signal list). A TRIOS export calls its
+        percentage "Weight" too, with "%" beside it, and reading that by the
+        name drew 99.7 % as 99.7 mg and as 462 % of a 21.5 mg sample (review
+        F2, 2026-09-28). A "Weight Change" in mg is a CHANGE of weight, which
+        is neither."""
+        step = self.step
+        dims = step.get("dims") or []
+        stated = list(step.get("units") or [])
+        for index, name in enumerate(dims):
+            if name not in ("Weight", "Weight Change"):
+                continue
+            said = (str(stated[index]).strip() if index < len(stated)
+                    and stated[index] else "")
+            if said == "%":
+                kind = WEIGHT_PCT
+            elif said == "mg":
+                kind = WEIGHT_MG if name == "Weight" else None
+            elif said:
+                kind = None
+            else:
+                kind = WEIGHT_PCT if name == "Weight Change" else WEIGHT_MG
+            if kind == unit:
+                return step["nums"][:, index]
+        return None
+
     def has_weight(self):
         """True when this segment recorded a weight: an SDT or TGA run."""
-        dims = self.step.get("dims") or []
-        return "Weight Change" in dims or "Weight" in dims
+        return (self._weight_column(WEIGHT_PCT) is not None
+                or self._weight_column(WEIGHT_MG) is not None)
 
     def weight_values(self, unit=WEIGHT_PCT):
-        """The weight in `unit` ("%" of the sample mass, or "mg"), or None.
+        """The weight in `unit` ("%" of the sample mass, or "mg"), or None
+        when that needs a sample mass there is not (`weight_missing_for`
+        says which).
 
-        The percentage is TRIOS's own "Weight Change", taken against the
-        sample mass; from the milligrams it needs that mass, and without it
-        there is none - never a percentage of some other reference."""
-        if unit == WEIGHT_MG:
-            return self._column("Weight")
-        percent = self._column("Weight Change")
-        if percent is not None:
-            return percent
-        grams = self._column("Weight")
+        Each unit is the file's own column where it recorded one. The other
+        is made from it with the sample mass, and without one there is none -
+        never a percentage of some other reference (golden rule 4). A
+        percentage recorded BESIDE the milligrams also needs the mass: the
+        reader finds none exactly when Weight / Weight Change is no single
+        positive mass (TRI-FORMAT.md section 3b), and then the percentage is
+        of a reference nobody knows - on the DESY runs a negative one, which
+        turns the weight loss the percentage shows into a gain."""
         mass = self.sample.mass_g
-        if grams is None or not mass:
+        percent = self._weight_column(WEIGHT_PCT)
+        grams = self._weight_column(WEIGHT_MG)
+        if unit == WEIGHT_MG:
+            if grams is not None:
+                return grams
+            if percent is not None and mass:
+                return percent / 100.0 * (float(mass) * 1000.0)
             return None
-        return grams / (float(mass) * 1000.0) * 100.0
+        if percent is not None and (mass or grams is None):
+            return percent
+        if grams is not None and mass:
+            return grams / (float(mass) * 1000.0) * 100.0
+        return None
+
+    def weight_missing_for(self, unit, axis=None):
+        """What stops this scan's weight being drawn in `unit` against
+        `axis`, or None - `missing_for` for the weight: "weight in this
+        segment" (none recorded, or every sample flagged), "temperature in
+        this segment" (an isothermal that recorded none), or "sample mass"
+        (mg from a percentage, or a percentage whose mass is unknown)."""
+        if not self.has_weight():
+            return "weight in this segment"
+        recorded = [c for c in (self._weight_column(WEIGHT_PCT),
+                                self._weight_column(WEIGHT_MG))
+                    if c is not None]
+        if not any(_measured(c) for c in recorded):
+            return "weight in this segment"
+        if axis is not None and not _measured(self.x_values(axis)):
+            return "{} in this segment".format(axis.lower())
+        if self.weight_values(unit) is None:
+            return "sample mass"
+        return None
 
     def weight_curve(self, axis, unit=WEIGHT_PCT, x_unit=units.TEMP_C):
         """`(x, w)` of the weight, the KEPT samples only (like `kept_curve`),
-        or `(None, None)`."""
+        or `(None, None)` when it cannot be drawn (`weight_missing_for`)."""
+        if self.weight_missing_for(unit, axis) is not None:
+            return None, None
         x = self.x_values(axis)
         weight = self.weight_values(unit)
-        if x is None or weight is None:
-            return None, None
         if axis == AXIS_TEMPERATURE:
             x = units.from_celsius(x, x_unit)
         k0, k1 = self.kept_range(len(x))
         return x[k0:k1], weight[k0:k1]
+
+    def weight_hidden(self, axis, unit=WEIGHT_PCT, x_unit=units.TEMP_C):
+        """The weight's truncated ends as `[(x, w), ...]`, each overlapping
+        the kept part by one sample (like a trace's `hidden`)."""
+        if self.weight_missing_for(unit, axis) is not None:
+            return []
+        x = self.x_values(axis)
+        weight = self.weight_values(unit)
+        if axis == AXIS_TEMPERATURE:
+            x = units.from_celsius(x, x_unit)
+        k0, k1 = self.kept_range(len(x))
+        out = []
+        if k0 > 0:
+            out.append((x[:k0 + 1], weight[:k0 + 1]))
+        if k1 < len(x):
+            out.append((x[k1 - 1:], weight[k1 - 1:]))
+        return out
+
+    # The weight curve's two switches, as the scan's settings edit them: a
+    # dialog mirrors and snapshots attributes of the object it is on.
+    @property
+    def weight_visible(self):
+        return bool(self.weight.visible)
+
+    @weight_visible.setter
+    def weight_visible(self, value):
+        self.weight.visible = bool(value)
+
+    @property
+    def weight_dashed(self):
+        return bool(self.weight.dashed)
+
+    @weight_dashed.setter
+    def weight_dashed(self, value):
+        self.weight.dashed = bool(value)
 
     def heat_flow_w(self):
         """Heat flow in WATTS, or None when that needs a mass there is not."""
@@ -446,9 +596,12 @@ class Scan(Obj):
         being absent, which is the one outcome that misleads.
         """
         values, base = self.heat_flow()
-        if values is None:
+        # A column whose every sample is flagged (NaN) is no signal either:
+        # a range made of it is NaN, and a NaN range made `_nice_step` raise
+        # inside paintEvent - an abort, not a message (review F11).
+        if values is None or not _measured(values):
             return "heat flow in this segment"
-        if axis is not None and self.x_values(axis) is None:
+        if axis is not None and not _measured(self.x_values(axis)):
             return "{} in this segment".format(axis.lower())
         return units.missing(unit, base, self.sample.mass_g, self.molar_mass)
 
@@ -476,19 +629,48 @@ class Scan(Obj):
         if x is not None and axis == AXIS_TEMPERATURE:
             x = units.from_celsius(x, x_unit)
         values, base = self.heat_flow()
-        scale = None
-        if base is not None:
-            scale = units.factor(unit, base, self.sample.mass_g,
-                                 self.molar_mass)[0]
-        if x is None or values is None or scale is None:
+        y = None
+        if _measured(x) and _measured(values):
+            y = self._on_axes(values, base, unit, exo)
+        if y is None:
             self._cache_key, self._cache = key, (None, None)
             return self._cache
+        self._cache_key, self._cache = key, (x, y)
+        return self._cache
+
+    def _on_axes(self, values, base, unit, exo):
+        """Heat flow `values`, stored in `base` ("W" or "W/g"), as this
+        scan's y shows it in `unit`: converted, flipped to the figure's exo
+        direction, offset. None when the unit needs a number that is not
+        there (`units.factor`) - never a substitute.
+
+        The ONE place this is done: the curve goes through it, and so does
+        anything drawn at the curve's heat flow (`axes_points`, a tangent
+        construction), so a point taken off the curve lands on it in every
+        unit."""
+        if base is None:
+            return None
+        scale = units.factor(unit, base, self.sample.mass_g,
+                             self.molar_mass)[0]
+        if scale is None:
+            return None
         # The arrays are in the FILE's convention, so a flip is needed only
         # when the figure is drawn in the other one.
         sign = 1.0 if exo == self.sample.exo else -1.0
-        y = values * (scale * sign) + float(self.offset)
-        self._cache_key, self._cache = key, (x, y)
-        return self._cache
+        return values * (scale * sign) + float(self.offset)
+
+    def axes_points(self, points, base, unit, exo, x_unit=units.TEMP_C):
+        """`(x, y)` arrays for `points` - `[[degC, heat flow in base], ...]`,
+        a tangent construction - on the temperature axis and this scan's y,
+        exactly as `curve` maps the scan's own samples. `(None, None)` when
+        the unit needs a sample or molar mass this scan does not have."""
+        if points is None or not len(points):
+            return None, None
+        array = np.asarray(points, dtype=float).reshape(-1, 2)
+        y = self._on_axes(array[:, 1], base, unit, exo)
+        if y is None:
+            return None, None
+        return units.from_celsius(array[:, 0], x_unit), y
 
     def kept_range(self, count):
         """`(k0, k1)`: the slice of `count` samples that is drawn.
@@ -537,15 +719,69 @@ class Scan(Obj):
         """
         if self._analyses is None:
             self._analyses = []
+            self._weight_analyses = []
             for entry in self.analyses():
                 attribution = entry.get("attribution") or "cached curve"
-                self._analyses.append(Analysis(
+                curve = _analysed_curve(entry, self.has_weight())
+                if curve is None:
+                    # A run with a heat flow AND a weight, and the file does
+                    # not say which this was made on: offered, never as
+                    # certain (dashed, with a question mark).
+                    attribution = CURVE_NOT_STATED
+                analysis = Analysis(
                     id(entry) % 1000000, self, entry.get("Model", "analysis"),
-                    entry, source="file", attribution=attribution))
+                    entry, source="file", attribution=attribution)
+                if curve == "weight":
+                    self._weight_analyses.append(analysis)
+                else:
+                    self._analyses.append(analysis)
         return self._analyses
+
+    @property
+    def weight_analyses(self):
+        """The file's analyses made on the WEIGHT curve (an SDT run's onsets
+        of mass loss): kept apart from `analysis_objects`, so they are never
+        offered, shown or drawn as heat-flow analyses. Their numbers are
+        temperatures on the weight curve, and drawing them at the heat flow
+        was what round 25 did (review F5, 2026-09-28). The panel does not
+        draw them yet; the outliner and the scan's settings list them."""
+        if self._analyses is None:
+            self.analysis_objects
+        return self._weight_analyses
 
     def visible_analyses(self):
         return [a for a in self.analysis_objects if a.visible]
+
+
+#: The attribution of a stored analysis on an SDT run whose record does not
+#: say which curve it was made on (a `.txt` export's onset without an
+#: "Analysed variables" line): never certain, whoever shows it.
+CURVE_NOT_STATED = "curve not stated"
+
+#: What the reader's `variable` calls the weight (TRIOS's Weight (%) is the
+#: reader's "Weight Change").
+WEIGHT_VARIABLES = ("Weight Change", "Weight")
+
+#: How a file's analysis made on the weight is listed (`Scan.
+#: weight_analyses`): in the outliner and the scan's settings, with no box.
+WEIGHT_ANALYSIS_NOTE = "on the weight, not drawn"
+
+
+def _analysed_curve(entry, has_weight):
+    """"weight", "heat flow", or None when a run with both does not say.
+
+    The reader decodes the analysed variable from a `.tri` record and from
+    an export's "Analysed variables" line. Where it gives none, a DSC run
+    has only the one curve, and an integration's result (J/g) is a heat
+    flow's whatever the file says."""
+    variable = entry.get("variable")
+    if variable in WEIGHT_VARIABLES:
+        return "weight"
+    if variable or not has_weight:
+        return "heat flow"
+    if "Integration" in str(entry.get("Model", "")):
+        return "heat flow"
+    return None
 
 
 def _rate(prog):
@@ -560,8 +796,8 @@ def _rate(prog):
 DECODED_MODELS = ("Onset point", "Endset point", "Peak Integration",
                   "Glass transition")
 
-#: The models whose RESULT is a temperature on the curve, drawn with lines
-#: from the interval's bounds to that point.
+#: The models whose RESULT is a temperature on the curve, drawn with their
+#: tangent construction (or chords from the interval's bounds to it).
 POINT_MODELS = ("Onset point", "Endset point", "Glass transition")
 
 
@@ -593,6 +829,13 @@ class Analysis(Obj):
         self.scan = scan
         self.model_name = str(model_name)
         self.fields = dict(fields or {})
+        #: TRIOS's own tangent construction for a `.tri`'s onset, endset or
+        #: glass transition: [[x degC, y], ...], three points (four for a
+        #: Tg), y in the unit of the reader's column `fields["variable"]`
+        #: names. None for everything else. Taken OUT of `fields`, which are
+        #: text and are listed as results (`labels.results` would show the
+        #: first number of the list).
+        self.stored_construction = self.fields.pop("construction", None)
         self.source = source
         self.attribution = attribution
         #: OFF when a file opens. A DSC run routinely carries a dozen stored
@@ -623,9 +866,19 @@ class Analysis(Obj):
         #: Shade the integrated area for a peak integration, as the template
         #: does. Meaningless for the other models, and ignored there.
         self.shade = True
-        #: Dashed verticals at the two cursors, so the figure says which
-        #: interval an analysis covers - the markers the template draws.
+        #: The dashes at the two ends of the interval, so the figure says
+        #: which interval an analysis covers. The dashes only: the lines of
+        #: an onset, endset or Tg are `construction`.
         self.show_interval = True
+        #: The lines of an onset, endset or glass transition
+        #: (`marks_a_point`): "tangents" (the tangent construction, TRIOS's
+        #: own for a `.tri`'s analysis, see `measure.tangent_points`),
+        #: "chords" (straight lines bound -> point -> bound, round 10) or
+        #: "none"; None follows the house style (`core/style.py`,
+        #: tangents built in). Read it through `style.value`.
+        self.construction = None
+        #: `measure.tangent_points`'s memo: (what it depends on, result).
+        self._tangent_memo = None
         #: Point size for the label, or None for the house style's (see
         #: `core/style.py`). Read it through `style.value`.
         self.label_size = None
@@ -652,9 +905,9 @@ class Analysis(Obj):
         """True when the result IS a temperature on the curve.
 
         An onset, an endset, a glass transition's midpoint - as opposed to an
-        area (integration) or a height. These are drawn as the template's
-        construction: straight lines from each bound of the interval to the
-        result point (Christian, round 10).
+        area (integration) or a height. These get LINES as well as the
+        interval's dashes (`construction`): the tangent construction, or the
+        round-10 chords from each bound of the interval to the result point.
         """
         return any(name in self.model_name for name in POINT_MODELS)
 
@@ -993,12 +1246,14 @@ class Legend(Artist):
 
         A scan's own label wins over its program name, which is what makes
         the legend say "second heating" when that is what the curve was
-        renamed to. A scan's weight curve follows it, "(weight)" (round 25).
+        renamed to. A scan's weight curve follows it, "(weight)" (round 25),
+        when it is DRAWN: a weight that cannot be (`weight_missing_for`) has
+        no line to stand for, and says so on the plot instead.
         """
         out = []
         for scan in doc.visible_scans():
             out.append((scan, scan.display_name()))
-            if scan.weight.visible and scan.has_weight():
+            if scan.weight.visible and doc.weight_drawn(scan):
                 out.append((scan.weight,
                             "{} (weight)".format(scan.display_name())))
         return out
@@ -1419,6 +1674,25 @@ class Document(object):
                 out.append((scan, missing))
         return out
 
+    def weight_drawn(self, scan):
+        """True when `scan`'s weight can be drawn on this figure's axes -
+        whether or not it is switched on."""
+        return scan.weight_missing_for(self.weight_unit, self.x_axis) is None
+
+    def weights_missing(self):
+        """`scans_missing` for the weight curves: `[(scan, reason), ...]`
+        for every weight SWITCHED ON, on a shown scan that recorded one,
+        that cannot be drawn in the weight axis's unit."""
+        out = []
+        for scan in self.scans:
+            if not (scan.visible and scan.weight.visible
+                    and scan.has_weight()):
+                continue
+            missing = scan.weight_missing_for(self.weight_unit, self.x_axis)
+            if missing:
+                out.append((scan, missing))
+        return out
+
     def set_unit(self, unit):
         """Change the y unit, carrying every offset across with it.
 
@@ -1480,12 +1754,14 @@ def default_segments(sample, file_count=1):
 
 
 def first_upscan(sample):
-    """The first segment whose temperature ends above where it started."""
+    """The first segment whose temperature ends above where it started
+    (measured samples only, like `Scan.direction`)."""
     for seg, step in enumerate((sample.data or {}).get("numdata", [])):
         dims = step.get("dims") or []
         if "Temperature" not in dims:
             continue
         temp = step["nums"][:, dims.index("Temperature")]
+        temp = temp[np.isfinite(temp)]
         if len(temp) > 1 and float(temp[-1]) - float(temp[0]) > ISOTHERMAL_K:
             return seg
     return 0

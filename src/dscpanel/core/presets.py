@@ -17,7 +17,9 @@ What a preset holds:
   millimetre - Christian's two stacks side by side in Word (round 12).
 * **the frame and the furniture** every figure has (round 24: the arrow's
   place and the axis captions did not come across): both axes - caption,
-  sizes, distances, ticks, numbers, sides - the heat-flow arrow's place,
+  sizes, distances, ticks, numbers, sides - and the weight axis of an SDT
+  run (all but its side, which follows the heat flow's), the heat-flow
+  arrow's place,
   shape and text size, and the legend's place and look. Not what the arrow
   SAYS (exo up or down is a fact about the data) and nothing that belongs
   to one figure's data: scans, labels, analyses, pictures.
@@ -58,6 +60,10 @@ _AXIS_FIELDS = ("visible", "label", "label_size", "label_along", "label_gap",
 OBJECT_FIELDS = {
     "axis_x": _AXIS_FIELDS,
     "axis_y": _AXIS_FIELDS,
+    # The weight axis of an SDT run: its side is always the one opposite
+    # the heat flow's, and it has no line of its own on the far side.
+    "axis_y2": tuple(f for f in _AXIS_FIELDS
+                     if f not in ("side", "mirror", "mirror_ticks")),
     "arrow": ("visible", "x", "y", "space", "anchor", "colour", "size",
               "head_length", "head_width", "tail_width", "tail_length",
               "lock"),
@@ -91,6 +97,7 @@ _SIDES = {"axis_x": ("bottom", "top"), "axis_y": ("left", "right")}
 def figure_objects(doc):
     """`{name: object}` for the objects a preset styles."""
     return {"axis_x": doc.axes["x"], "axis_y": doc.axes["y"],
+            "axis_y2": doc.axes["y2"],
             "arrow": doc.arrow, "legend": doc.legend}
 
 
@@ -127,7 +134,8 @@ def _checked(name, field, raw):
 class Preset(object):
     """A named look: `values` {setting key: value}; `layout` - a
     `FigureLayout` state - or None to leave the size alone; and `objects`
-    {"axis_x" / "axis_y" / "arrow" / "legend": {field: value}}."""
+    {"axis_x" / "axis_y" / "axis_y2" / "arrow" / "legend": {field:
+    value}}."""
 
     def __init__(self, name, values=None, layout=None, path="",
                  objects=None):

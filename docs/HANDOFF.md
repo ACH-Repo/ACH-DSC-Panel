@@ -1,11 +1,98 @@
-# Handoff: the chat that built DSC-Panel (2026-09-22 to 2026-09-25)
+# Handoff: the chat that built DSC-Panel (2026-09-22 to 2026-09-28)
 
 Everything a new session needs to pick this up cold. Read this, then
 `docs/PLAN.md` (the decisions and the round-by-round log) and `CLAUDE.md` (the
 rules and the traps). `docs/OPERATORS.md` is generated from the code and is
-always current.
+always current. `docs/TRI-FORMAT.md` is the binary format.
 
-## 1. State right now
+## 0. LATEST: round 25, 2026-09-28 (laptop) - UNCOMMITTED, possibly unfinished
+
+The repo is on GitHub (`ACH-Repo/ACH-DSC-Panel`, private, branch `main`).
+Christian works from a laptop and a desktop PC. `4bc9426 "intermediary"` was
+pushed from the desktop mid-round-25 (an interrupted session there); this
+laptop pulled it and continued. **Everything below is in the WORKING TREE of
+the laptop, not committed**, and the session may have been cut off by the
+usage limit while a multi-agent workflow was still running.
+
+**Decisions Christian made on 2026-09-28 (do not reopen):**
+- **ACH-DSC-Plotter is RETIRED.** The reader (`core/trios_io.py`,
+  `core/trios_analysis.py`) is the panel's OWN: fix it here. `tools/vendor.py`
+  and the cross-repo drift test are deleted ("why would we make a test
+  dependent on a different repo?"); `docs/TRI-FORMAT.md` and
+  `tests/test_reader.py` came over from the Plotter. Its `TEST.txt` was left
+  behind (it carries a name and an instrument IP).
+- **The `DSC_Plotter.py` driver export is FROZEN** as it is: no tangents, no
+  new weight features in it.
+- Tangent constructions and SDT support were the two most important items.
+
+**Done (stages 1 and 2 of the workflow, suite green at 405 passed after
+stage 2):**
+1. **Reader** - the round-25 SDT code matched flagged arrays by 8 fixed bytes,
+   4 of which are a BYTE COUNT (fits only 33601-sample arrays), so CN-81
+   (39001) and most SDT runs misread (Weight in kg drawn as heat flow). Now
+   one array layout, length fields checked, flags read (TRI-FORMAT.md 3/3b).
+   Side effect: the DSC "partial final segment" and the indium ramp's
+   "missing" heat flow were flagged arrays all along - now read (the indium
+   melt integrates to 28.56 J/g from the `.tri` alone). Sample mass of an SDT
+   run is derived from Weight / Weight Change, refused when not positive and
+   consistent (three DESY runs have a negative recorded weight: no mass), and
+   marked "derived from the weight". A `.txt` SDT export's % column "Weight"
+   becomes "Weight Change". Onset/endset cursors read at +86/+132 (the endset
+   was misread), TRIOS's construction points kept (`construction`), and the
+   analysed variable decoded (`variable`: heat flow or weight). Validated on
+   all 468 `.tri` here and 231 `.tri`/`.txt` pairs.
+2. **Tangents** - onset, endset and Tg drawn as tangents by default (TRIOS's
+   own stored points for a `.tri` analysis, Python's for a panel one, chords
+   for a `.txt` one with a note); per analysis "Lines": tangents / chords /
+   none; house style `analysis_construction` and `tangent_overshoot` (6 pt).
+   The panel's own ENDSET was the onset (fixed: OJ-12 94.83 -> 108.06, TRIOS
+   108.02) and a cooling onset took its baseline on the wrong side (fixed:
+   the flat cursor goes by acquisition order). `tests/test_tangents.py`.
+
+**In progress when this was written (stage 3 of 5): the SDT UI fixes** -
+findings F2-F14 of the round-25 review (weight % vs mg by unit, the y2 range
+in sessions, weight analyses not drawn against heat flow, a missing weight
+said where it would be drawn, the weight axis's own tick step, weights in the
+stack order, y2-only framings saved, NaN safety everywhere data is read, CSV
+for TGA-only segments), plus Scan settings for the weight curve. Then stage 4
+(review from three angles, each finding verified) and stage 5 (fixes).
+
+**If you pick this up in a new session:**
+1. `git status` / `git diff --stat` shows what landed. Run the suite. If it
+   is red, the workflow was cut off mid-edit: find the half-done change in
+   the diff before anything else.
+2. Every report is kept OUTSIDE the repo (they contain local paths):
+   `C:\Users\<you>\.claude\backlog\dsc-panel-round25\` - the investigations
+   (`report_sdt_reader.md`, `report_sdt_ui_review.json` with F1-F14 and the
+   gaps, `report_tangents.md`, `report_plotter_sync.md`) and the stage
+   reports (`stage1_reader_report.md`, `stage2_tangents_report.md`, and
+   later ones if they were written). The workflow journal with every
+   agent's full report is under that session's folder in
+   `.claude\projects\...\f13728c1-...\subagents\workflows\wf_799aa108-cf3\`.
+3. Whatever of stage 3 is missing: redo it from `report_sdt_ui_review.json`
+   (F2, F4, F5, F7-F14; F1/F3/F14 are done in the reader; F6 and the driver
+   halves of F7/F12 are NOT to be done - the driver is frozen). Then review.
+4. Then the doc pass: PLAN.md round 25 is written (below it says what is
+   done); CLAUDE.md has the new traps; README's "vendored" lines and
+   `tools/vendor.py` mentions still need removing.
+5. Commit only when Christian asks.
+
+**Open for Christian (from the stage reports):** tune the Python onset fit
+towards TRIOS (panel analyses are 1.06 K median, up to 8.1 K off TRIOS on the
+same cursors); should an analysis label's arrow point at the tangents'
+crossing rather than the curve; a cooling panel Tg now runs in acquisition
+order (step height sign flips); the Weight Corrected Heat Flow fallback
+(normalises by the weight LEFT, labelled W/g) - keep it?; CSV blanks empty or
+`nan`; F does not make room for tangents past the data; no cooling
+onset/endset/Tg record exists here to confirm TRIOS's point order there.
+
+**The ACH-DSC-Plotter repo** (retired, left untouched): the laptop has
+`d743702` unpushed; the desktop has uncommitted SDT reader edits and a
+`TRI-FORMAT-SDT.md` (KC-122/KC-127 findings) that exists nowhere else -
+worth copying into this repo's docs next time at the desktop. Pushing or
+archiving it is Christian's call.
+
+## 1. State right now (as of 2026-09-25; see section 0 for what is newer)
 
 **Both repos have been committed once, nothing pushed.** Work after
 `f261ce5` (panel) is in the working tree only.

@@ -11,10 +11,14 @@ What each model needs is declared in `MODELS`, so the quick-select list, the
 enabling rules and the dispatch all read one table.
 """
 
+import collections
+
 import numpy as np
 
 from . import model
+from . import style
 from . import trios_analysis
+from . import units
 
 
 class Measurement(object):
@@ -51,6 +55,12 @@ def _series(scan, span=None):
     to seconds itself. Handing it seconds gives an enthalpy sixty times too
     large, which is exactly as wrong as it sounds and looks entirely
     plausible on screen.
+
+    MEASURED samples only: a flagged sample is NaN (TRI-FORMAT.md section
+    3; a DSC run's last segment ends in some, a few runs start with some),
+    and one NaN in a least-squares window makes every tangent NaN. They are
+    dropped after the slicing, so the kept range and the span still count
+    in the segment's own indices.
     """
     temperature = scan.temperature()
     minutes = scan.time_min()
@@ -71,17 +81,72 @@ def _series(scan, span=None):
         hi = min(hi, int(max(span)) + 1)
     if hi - lo < 3:
         return None
-    return minutes[lo:hi], temperature[lo:hi], values[lo:hi]
+    minutes, temperature, values = (minutes[lo:hi], temperature[lo:hi],
+                                    values[lo:hi])
+    with np.errstate(invalid="ignore"):
+        measured = (np.isfinite(minutes) & np.isfinite(temperature)
+                    & np.isfinite(values))
+    if measured.sum() < 3:
+        return None
+    if not measured.all():
+        minutes, temperature, values = (minutes[measured],
+                                        temperature[measured],
+                                        values[measured])
+    return minutes, temperature, values
+
+
+def acquisition_order(scan, x0, x1, span=None):
+    """`(earlier, later)`: two cursor temperatures in the order the
+    instrument MET them.
+
+    What decides which side of a transition is its flat side: an onset's
+    baseline is the one BEFORE it, an endset's the one after, and on a
+    cooling scan "before" is the high temperature. Sorting the cursors and
+    taking the low one as flat made the panel's endset the onset under
+    another name, and put a cooling onset's baseline on the far side.
+
+    Measured along the curve (`span`, two sample indices), the samples say
+    it; otherwise the scan's direction does. An isothermal or unmeasurable
+    one counts as heating.
+    """
+    low, high = sorted((float(x0), float(x1)))
+    span = clean_span(span)
+    temperature = scan.temperature()
+    if span is not None and temperature is not None \
+            and span[1] < len(temperature):
+        first = float(temperature[span[0]])
+        last = float(temperature[span[1]])
+        if np.isfinite(first) and np.isfinite(last) and first != last:
+            return (low, high) if first < last else (high, low)
+    if scan.direction() == "down":
+        return high, low
+    return low, high
+
+
+def flat_and_transition(scan, x0, x1, kind="onset", span=None):
+    """`(flat, transition)` cursors of an onset or an endset: the flat one
+    is the earlier for an onset and the later for an endset."""
+    earlier, later = acquisition_order(scan, x0, x1, span)
+    return (later, earlier) if kind == "endset" else (earlier, later)
 
 
 def onset(scan, x0, x1, kind="onset", span=None):
+    """An onset or endset between the cursors `x0 <= x1`.
+
+    The fields keep the cursors low first, as every panel analysis does
+    (the gizmos and the Start / End fields read them in that order); which
+    one is FLAT is worked out here, by acquisition order, and again by
+    `tangent_points` - never taken from the field names.
+    """
     series = _series(scan, span)
     if series is None:
         return None
     _t, temperature, flow = series
-    result = trios_analysis.onset_point(temperature, flow, x0, x1, kind=kind)
+    flat, transition = flat_and_transition(scan, x0, x1, kind, span)
+    result = trios_analysis.onset_point(temperature, flow, flat, transition,
+                                        kind=kind)
     key = "Endset x" if kind == "endset" else "Onset x"
-    if key not in result:
+    if key not in result or not np.isfinite(result[key]):
         return None
     return {"Model": "Endset point" if kind == "endset" else "Onset point",
             "Onset cursor x": "{:.4f} °C".format(x0),
@@ -116,7 +181,10 @@ def glass_transition(scan, x0, x1, span=None):
     if series is None:
         return None
     _t, temperature, flow = series
-    result = trios_analysis.glass_transition(temperature, flow, x0, x1)
+    # The onset is the side met FIRST: the high one on a cooling scan.
+    earlier, later = acquisition_order(scan, x0, x1, span)
+    result = trios_analysis.glass_transition(temperature, flow, earlier,
+                                             later)
     if not result or "Midpoint" not in result:
         return None
     return {"Model": "Glass transition",
@@ -235,6 +303,149 @@ def compute(name, scan, x0, x1, span=None):
     except Exception:
         return None
     return fields or None
+
+
+#: What `tangent_points` returns. `points` is `[[degC, y], ...]` - three for
+#: an onset or endset, four for a glass transition, in TRIOS's order - or
+#: None; `base` is the unit of y, as `units.factor` takes it ("W/g", or "W"
+#: for a file analysis made on the raw heat flow); `reason` says in one
+#: short line why there are no points, for the analysis window.
+Construction = collections.namedtuple("Construction", "points base reason")
+
+#: The reasons, one line each (Christian, 2026-09-28: the settings say so
+#: "in one short line").
+NO_TANGENTS_EXPORT = "A TRIOS export stores no tangents: drawn as chords."
+NO_TANGENTS_FILE = "The file stores no tangents for it: drawn as chords."
+ON_THE_WEIGHT = "Made on the weight curve: drawn as chords."
+NOT_FITTED = "No tangents could be fitted here: drawn as chords."
+DEGENERATE = ("The tangents cross far outside the interval: drawn as "
+              "chords.")
+
+#: The unit a stored construction's y is in, by the reader's `variable`.
+_BASE_OF = {"Heat Flow (Normalized)": units.UNIT_W_G,
+            "Heat Flow": units.BASE_UNIT}
+
+
+def tangent_points(analysis, scan=None):
+    """The tangent construction of an onset, endset or Tg: a `Construction`.
+
+    Whose construction it is follows who made the number (Christian,
+    2026-09-28):
+
+    * **a `.tri`'s own analysis** draws TRIOS's STORED points (the reader's
+      `construction`, `Analysis.stored_construction`), never a Python
+      recomputation: those meet at the number TRIOS reported, and a Python
+      fit misses it by up to a few K.
+    * **one made here** draws the Python construction on its own cursors
+      and span - the same fit its number came from, so again they meet.
+    * **a `.txt` export's** has no points (the export stores none), and a
+      Python construction whose tangents cross far outside the interval
+      (near-parallel lines) is not drawn either: `points` is None and
+      `reason` says why, and the window draws chords.
+
+    Recomputed only when something it depends on changes: the model, the
+    cursors, the span, the scan's kept range and its sample mass.
+    """
+    scan = scan if scan is not None else analysis.scan
+    if not analysis.marks_a_point:
+        return Construction(None, None, "")
+    if analysis.source != "panel":
+        return _stored_construction(analysis, scan)
+    key = (analysis.model_name, tuple(analysis.cursors()),
+           tuple(analysis.span) if analysis.span else None,
+           tuple(scan.keep), scan.sample.mass_g, id(scan))
+    memo = getattr(analysis, "_tangent_memo", None)
+    if memo is not None and memo[0] == key:
+        return memo[1]
+    found = _python_construction(analysis, scan)
+    analysis._tangent_memo = (key, found)
+    return found
+
+
+def lines_note(analysis, doc=None):
+    """Why an analysis that is to be drawn with tangents gets chords, in one
+    short line, or "" - for its settings (Christian: "say so in one short
+    line"). Besides `tangent_points`' reasons, the one the axes add: points
+    in W/g on an mW axis need the sample mass, which is never made up."""
+    if not analysis.marks_a_point or style.value(
+            doc, analysis, "construction") != style.LINES_TANGENTS:
+        return ""
+    found = tangent_points(analysis)
+    if not found.points:
+        return found.reason
+    unit = getattr(doc, "y_unit", units.UNIT_W_G)
+    scan = analysis.scan
+    missing = units.factor(unit, found.base, scan.sample.mass_g,
+                           scan.molar_mass)[1]
+    if missing:
+        return "Drawing them needs the {}: drawn as chords.".format(missing)
+    return ""
+
+
+def _stored_construction(analysis, scan):
+    points = analysis.stored_construction
+    if not points:
+        export = str(scan.sample.path).lower().endswith(".txt")
+        return Construction(None, None, NO_TANGENTS_EXPORT if export
+                            else NO_TANGENTS_FILE)
+    variable = analysis.fields.get("variable")
+    base = _BASE_OF.get(variable)
+    if base is None:
+        return Construction(None, None, ON_THE_WEIGHT
+                            if variable == "Weight Change"
+                            else NO_TANGENTS_FILE)
+    wanted = 4 if "Glass" in analysis.model_name else 3
+    try:
+        cleaned = [[float(x), float(y)] for x, y in points]
+    except (TypeError, ValueError):
+        cleaned = []
+    if len(cleaned) != wanted or not np.all(np.isfinite(cleaned)):
+        return Construction(None, None, NO_TANGENTS_FILE)
+    return Construction(cleaned, base, "")
+
+
+def _python_construction(analysis, scan):
+    cursors = analysis.cursors()
+    if len(cursors) != 2:
+        return Construction(None, None, NOT_FITTED)
+    series = _series(scan, clean_span(analysis.span))
+    if series is None:
+        return Construction(None, None, NOT_FITTED)
+    _t, temperature, flow = series
+    name = analysis.model_name
+    try:
+        with np.errstate(all="ignore"):
+            if "Glass" in name:
+                earlier, later = acquisition_order(scan, cursors[0],
+                                                   cursors[1], analysis.span)
+                result = trios_analysis.glass_transition(
+                    temperature, flow, earlier, later)
+                crossings = (result.get("Onset x"), result.get("End x"))
+            else:
+                kind = "endset" if "Endset" in name else "onset"
+                flat, transition = flat_and_transition(
+                    scan, cursors[0], cursors[1], kind, analysis.span)
+                result = trios_analysis.onset_point(
+                    temperature, flow, flat, transition, kind=kind)
+                crossings = (result.get("Endset x" if kind == "endset"
+                                        else "Onset x"),)
+    except (ValueError, IndexError, FloatingPointError, ZeroDivisionError,
+            np.linalg.LinAlgError):
+        return Construction(None, None, NOT_FITTED)
+    if not result or any(c is None for c in crossings):
+        return Construction(None, None, NOT_FITTED)
+    # Near-parallel tangents meet a long way off, or not at all: more than
+    # one interval's width outside the interval is not a construction.
+    low, high = sorted(cursors)
+    width = high - low
+    if any(not np.isfinite(c) or c < low - width or c > high + width
+           for c in crossings):
+        return Construction(None, None, DEGENERATE)
+    points = result.get("construction")
+    if not points or not np.all(np.isfinite(points)):
+        return Construction(None, None, NOT_FITTED)
+    return Construction([[float(x), float(y)] for x, y in points],
+                        units.UNIT_W_G, "")
 
 
 def relabelled(analysis, fields):

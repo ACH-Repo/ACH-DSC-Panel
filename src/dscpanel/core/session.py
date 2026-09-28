@@ -42,6 +42,10 @@ def view_to_state(view):
     return {"x": list(view["x"]) if view.get("x") else None,
             "y": list(view["y"]) if view.get("y") else None,
             "y2": list(view["y2"]) if view.get("y2") else None,
+            # The weight range is a number of % or of mg: which, beside it
+            # (the plot restores it only in that unit). Round 25 wrote the
+            # range and not this, so it never came back (review F4).
+            "y2_unit": view.get("y2_unit") if view.get("y2") else None,
             "context": list(view.get("context") or ())}
 
 
@@ -56,6 +60,9 @@ def _view_from(saved):
                 else None,
                 "y2": tuple(float(v) for v in saved["y2"])
                 if saved.get("y2") else None,
+                "y2_unit": (saved.get("y2_unit")
+                            if saved.get("y2_unit") in model.WEIGHT_UNITS
+                            else None),
                 "context": tuple(saved.get("context") or ())}
     except (TypeError, ValueError, KeyError):
         return None
@@ -121,6 +128,7 @@ def _analysis_state(analysis):
              "label_dy": analysis.label_dy, "shade": analysis.shade,
              "label_size": analysis.label_size, "flush": analysis.flush,
              "show_interval": analysis.show_interval,
+             "construction": analysis.construction,
              "number_format": analysis.number_format,
              "label_at": analysis.label_at, "z": analysis.z,
              "attribution": analysis.attribution,
@@ -144,7 +152,20 @@ def _restore_analysis(analysis, saved, version):
     flush = saved.get("flush")
     analysis.flush = flush if flush in style.FLUSHES else None
     analysis.show_interval = bool(saved.get("show_interval", True))
-    analysis.attribution = saved.get("attribution", analysis.attribution)
+    if "construction" in saved:
+        lines = saved.get("construction")
+        analysis.construction = lines if lines in style.LINES else None
+    else:
+        # Saved before an onset's lines had a switch of their own
+        # (2026-09-28): "Show interval markers" was the dashes AND the
+        # lines, so one saved with it off had no lines either, and opens
+        # that way. No version bump: the missing key says it.
+        analysis.construction = (None if analysis.show_interval
+                                 else style.LINES_NONE)
+    if analysis.attribution != model.CURVE_NOT_STATED:
+        # What the FILE does not say stays unsaid, whatever a session
+        # written before that was known recorded.
+        analysis.attribution = saved.get("attribution", analysis.attribution)
     # With its unit, if it names one (`%.0f degF`): a unit-less read
     # dropped such a format on every reopen.
     analysis.number_format = labels.normalise_format(
@@ -359,6 +380,14 @@ def load(path, read_sample):
             saved = wanted.get(analysis.key())
             if saved:
                 _restore_analysis(analysis, saved, version)
+        for analysis in scan.weight_analyses:
+            # Shown on the heat flow by round 25, which did not know it was
+            # made on the weight: said, not drawn.
+            saved = wanted.get(analysis.key())
+            if saved and saved.get("visible"):
+                problems.append(
+                    "{}: {} was made on the weight and is not drawn".format(
+                        scan.display_name(), analysis.model_name))
         for saved in stored:
             if saved.get("source") != "panel":
                 continue
@@ -523,5 +552,10 @@ def load(path, read_sample):
     doc.theme = state.get("theme", doc.theme)
     doc.offset_markers = bool(state.get("offset_markers", False))
     doc.view = _view_from(state.get("view"))
+    if doc.view and doc.view.get("y2") and not doc.view.get("y2_unit"):
+        # Written by round 25, which kept the range and not its unit: it was
+        # the weight unit saved with it (a change of unit fits the range
+        # again, so a range is always in the unit in force).
+        doc.view["y2_unit"] = doc.weight_unit
     doc.path = str(path)
     return doc, problems

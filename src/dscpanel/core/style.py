@@ -51,14 +51,32 @@ FLUSH_TITLES = {
     FLUSH_RIGHT: "right",
 }
 
+#: The lines an onset, endset or glass transition is drawn with
+#: (`Analysis.construction`, Christian, 2026-09-28): the tangent
+#: construction - TRIOS's own for a `.tri`'s analysis - or the round-10
+#: chords from the interval's bounds to the point, or none. The interval's
+#: dashes are a separate switch (`Analysis.show_interval`).
+LINES_TANGENTS = "tangents"
+LINES_CHORDS = "chords"
+LINES_NONE = "none"
+LINES = (LINES_TANGENTS, LINES_CHORDS, LINES_NONE)
+
+LINES_TITLES = {
+    LINES_TANGENTS: "tangents",
+    LINES_CHORDS: "chords to the point",
+    LINES_NONE: "none",
+}
+
 
 class Setting(object):
     """One row of the house style: a name, a built-in value and its limits."""
 
     def __init__(self, key, title, default, kind="size", low=None, high=None,
                  step=0.5, decimals=1, choices=(), note="", figure=True,
-                 suffix=""):
+                 suffix="", titles=None):
         self.key = key
+        #: Words for a choice's values, for the settings page.
+        self.titles = dict(titles or {})
         #: Shown after the number in a settings field (" px").
         self.suffix = suffix
         self.title = title
@@ -126,7 +144,15 @@ SETTINGS = (
             note="Onset, integral and Tg labels."),
     Setting("analysis_flush", "Analysis label alignment", FLUSH_LEFT,
             kind="choice", choices=(FLUSH_AUTO,) + FLUSHES,
-            note="Edge of the label on its arrow."),
+            titles=FLUSH_TITLES, note="Edge of the label on its arrow."),
+    # Christian, 2026-09-28: tangents by default, drawn solid in the axis
+    # colour, each running this far past where it crosses the other.
+    Setting("analysis_construction", "Onset, endset and Tg lines",
+            LINES_TANGENTS, kind="choice", choices=LINES, titles=LINES_TITLES,
+            note="Tangent construction, chords to the point, or none."),
+    Setting("tangent_overshoot", "Tangent overshoot", 6.0, low=0.0,
+            high=72.0, step=1.0, decimals=1, suffix=" pt",
+            note="How far a tangent runs past its crossing."),
     Setting("caption_size", "Axis captions", 14.0, low=5.0, high=40.0,
             note="T / \u00b0C and Heat Flow / W/g."),
     Setting("tick_size", "Axis numbers", 12.0, low=4.0, high=30.0),
@@ -177,6 +203,7 @@ FIGURE_SETTINGS = tuple(s for s in SETTINGS if s.figure)
 FIELDS = {
     ("analysis", "label_size"): "analysis_size",
     ("analysis", "flush"): "analysis_flush",
+    ("analysis", "construction"): "analysis_construction",
     ("axis", "label_size"): "caption_size",
     ("axis", "tick_size"): "tick_size",
     ("axis", "label_gap"): "caption_gap",

@@ -45,7 +45,7 @@ from PySide6.QtGui import (QColor, QFont, QFontMetrics, QImage, QPainter,
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..core import figure as figure_module
-from ..core import labels, model, numbers, style, units
+from ..core import labels, measure, model, numbers, style, units
 
 #: The ways this program draws.
 #:
@@ -213,15 +213,17 @@ class WeightTrace(object):
     run, against the second y axis (round 25). Built by `rebuild` like a
     `Trace`, and picked by what was last drawn."""
 
-    __slots__ = ("scan", "weight", "x", "y", "px", "py")
+    __slots__ = ("scan", "weight", "x", "y", "px", "py", "hidden")
 
-    def __init__(self, scan, x, y):
+    def __init__(self, scan, x, y, hidden=()):
         self.scan = scan
         self.weight = scan.weight
         self.x = x
         self.y = y
         self.px = None
         self.py = None
+        #: The truncated ends as `[(x, w), ...]`, drawn dotted on hover.
+        self.hidden = list(hidden)
 
 
 class Trace(object):
@@ -358,6 +360,9 @@ class PlotWidget(QWidget):
         self._view_y2 = None
         #: The weight curves drawn (`WeightTrace`), from the last rebuild.
         self.weight_traces = []
+        #: `[(scan, reason), ...]`: weights switched on that cannot be drawn
+        #: (`Scan.weight_missing_for`), said by a blinking label.
+        self.weight_missing = []
         self._cursor = None
         self._mode = None
         self._drag = None           # a navigation drag (zoom band / pan)
@@ -433,18 +438,25 @@ class PlotWidget(QWidget):
                 traces.append(Trace(scan, x[k0:k1], y[k0:k1], scan.colour,
                                     None, hidden, k0))
         self.traces = traces
-        weights = []
+        weights, missing = [], []
         if doc is not None:
             for scan in doc.scans:
                 if not (scan.visible and scan.weight.visible
                         and scan.has_weight()):
                     continue
-                x, w = scan.weight_curve(
-                    doc.x_axis, getattr(doc, "weight_unit", "%"),
-                    getattr(doc, "x_unit", units.TEMP_C))
-                if x is not None:
-                    weights.append(WeightTrace(scan, x, w))
+                unit = getattr(doc, "weight_unit", model.WEIGHT_PCT)
+                x_unit = getattr(doc, "x_unit", units.TEMP_C)
+                reason = scan.weight_missing_for(unit, doc.x_axis)
+                if reason is not None:
+                    # Not drawn, and SAID, where the heat flow's absence
+                    # is said too (golden rule 4, review F7).
+                    missing.append((scan, reason))
+                    continue
+                x, w = scan.weight_curve(doc.x_axis, unit, x_unit)
+                weights.append(WeightTrace(
+                    scan, x, w, scan.weight_hidden(doc.x_axis, unit, x_unit)))
         self.weight_traces = weights
+        self.weight_missing = missing
         if not keep_view:
             self._view_x = self._view_y = self._view_y2 = None
         self._sync_blink()
@@ -512,9 +524,10 @@ class PlotWidget(QWidget):
     def data_x(self):
         lows, highs = [], []
         for trace in self.drawable():
-            if trace.x is not None and len(trace.x):
-                lows.append(float(np.nanmin(trace.x)))
-                highs.append(float(np.nanmax(trace.x)))
+            span = _finite_span(trace.x)
+            if span is not None:
+                lows.append(span[0])
+                highs.append(span[1])
         if not lows:
             return (0.0, 100.0)
         lo, hi = min(lows), max(highs)
@@ -627,9 +640,10 @@ class PlotWidget(QWidget):
         """The curves' y range, with `y_margin` of it either side."""
         lows, highs = [], []
         for trace in self.drawable():
-            if trace.y is not None and len(trace.y):
-                lows.append(float(np.nanmin(trace.y)))
-                highs.append(float(np.nanmax(trace.y)))
+            span = _finite_span(trace.y)
+            if span is not None:
+                lows.append(span[0])
+                highs.append(span[1])
         for trace in self.traces:
             if trace.missing is not None:
                 lows.append(float(trace.scan.offset))
@@ -647,9 +661,10 @@ class PlotWidget(QWidget):
         side; 0 to 100 with none."""
         lows, highs = [], []
         for trace in self.weight_traces:
-            if trace.y is not None and np.isfinite(trace.y).any():
-                lows.append(float(np.nanmin(trace.y)))
-                highs.append(float(np.nanmax(trace.y)))
+            span = _finite_span(trace.y)
+            if span is not None:
+                lows.append(span[0])
+                highs.append(span[1])
         if not lows:
             return (0.0, 100.0)
         lo, hi = min(lows), max(highs)
@@ -1169,9 +1184,15 @@ class PlotWidget(QWidget):
         automatic one."""
         which = getattr(axis, "which", "x")
         chosen = getattr(axis, "major_step", None)
-        if chosen and chosen > 0 and (hi - lo) / float(chosen) <= 200:
+        span = hi - lo
+        if not (np.isfinite(span) and span > 0):
+            # Never reached from a range this program fits (they skip
+            # flagged samples), but a NaN here raised inside paintEvent,
+            # which aborts the program (review F11).
+            span = 1.0
+        if chosen and chosen > 0 and span / float(chosen) <= 200:
             return float(chosen)
-        return _nice_step(hi - lo, 8 if which == "x" else 6)
+        return _nice_step(span, 8 if which == "x" else 6)
 
     def _widest_number(self, axis, metrics):
         """The widest number a y axis (or the weight axis) writes."""
@@ -3620,7 +3641,8 @@ class PlotWidget(QWidget):
 
     # -------------------------------------------------------------- blinking
     def _sync_blink(self):
-        need = any(t.missing for t in self.traces)
+        need = (any(t.missing for t in self.traces)
+                or bool(getattr(self, "weight_missing", None)))
         if need and not self._blink_timer.isActive():
             self._blink_timer.start()
         elif not need and self._blink_timer.isActive():
@@ -3667,7 +3689,8 @@ class PlotWidget(QWidget):
                  if doc else ()),
                 (tuple(style.figure_value(doc, key) for key in (
                     "font_family", "temperature_format", "value_format",
-                    "offset_format"))
+                    "offset_format", "analysis_construction",
+                    "tangent_overshoot"))
                  + tuple(a.number_format for a in doc.axes.values())
                  if doc else ()),
                 (doc.arrow.x, doc.arrow.y, doc.arrow.word, doc.arrow.direction,
@@ -3678,7 +3701,13 @@ class PlotWidget(QWidget):
                 tuple((id(t.scan), t.scan.offset,
                        t.colour.rgb(), t.scan.selected, t.missing,
                        tuple((id(a), a.visible, a.selected, a.colour,
-                              a.label, a.attribution, a.number_format)
+                              a.label, a.attribution, a.number_format,
+                              # the interval's dashes and lines, and what
+                              # a construction is computed from
+                              a.show_interval, a.construction, a.source,
+                              a.model_name,
+                              tuple(a.cursors()) if a.visible else (),
+                              tuple(a.span) if a.span else None)
                              for a in t.scan.analysis_objects),
                        len(t.x) if t.x is not None else 0)
                       for t in self.traces))
@@ -3804,22 +3833,52 @@ class PlotWidget(QWidget):
         export can carry it.
         """
         shown = self.hidden_shown()
-        if not shown:
+        weights = self.hidden_weights_shown()
+        if not shown and not weights:
             return
         rect = self.plot_rect()
         limit = max(50, 2 * rect.width())
         p.setRenderHint(QPainter.Antialiasing, True)
-        for trace in shown:
-            colour = trace_colour(trace)
-            colour.setAlpha(170)
-            pen = QPen(colour, self.style_of(trace.scan, "line_width")
-                       * CURVE_WIDTH, Qt.DashLine)
-            p.setPen(pen)
-            for x, y in trace.hidden:
-                stride = max(1, int(len(x) // limit))
-                p.drawPolyline(_polyline(self.x_to_px(x[::stride], rect),
-                                         self.y_to_px(y[::stride], rect)))
+        # A dashed weight's hidden ends DOTTED, or they would not show as
+        # the part that is cut.
+        for group, to_py, dash in ((shown, self.y_to_px, Qt.DashLine),
+                                   (weights, self.y2_to_px, Qt.DotLine)):
+            for trace in group:
+                colour = (trace_colour(trace) if isinstance(trace, Trace)
+                          else QColor(for_light(trace.scan.colour)
+                                      if THEME == THEME_LIGHT
+                                      else trace.scan.colour))
+                colour.setAlpha(170)
+                pen = QPen(colour, self.style_of(trace.scan, "line_width")
+                           * CURVE_WIDTH, dash)
+                p.setPen(pen)
+                for x, y in trace.hidden:
+                    stride = max(1, int(len(x) // limit))
+                    # Flagged samples (NaN) break the line; a NaN point
+                    # in a polyline draws nothing sensible.
+                    for xs, ys in _finite_runs(x[::stride], y[::stride]):
+                        p.drawPolyline(_polyline(self.x_to_px(xs, rect),
+                                                 to_py(ys, rect)))
         p.setRenderHint(QPainter.Antialiasing, False)
+
+    def hidden_weights_shown(self):
+        """The weight curves whose truncated ends are on screen now: while
+        the weight or its scan is hovered or selected."""
+        cursor = self._cursor if self._move is None else None
+        hovered = self._trace_at(cursor) if cursor is not None else None
+        near = None
+        if cursor is not None:
+            radius = self.pick_radius()
+            for trace in getattr(self, "weight_traces", ()):
+                gap = self._gap_to(trace, cursor)
+                if gap is not None and gap <= radius:
+                    near = trace
+                    break
+        return [t for t in getattr(self, "weight_traces", ())
+                if t.hidden and (t is near or t.weight.selected
+                                 or t.scan.selected
+                                 or (hovered is not None
+                                     and hovered.scan is t.scan))]
 
     def _surround(self):
         return (_BG if self.layout_mode() == figure_module.MODE_WINDOW
@@ -4862,8 +4921,8 @@ class PlotWidget(QWidget):
             if analysis.shade and "Integration" in analysis.model_name:
                 self._paint_integral(p, rect, trace, analysis, colour)
             # After the shading, so the dashes sit ON TOP of trace and fill.
-            if analysis.show_interval:
-                self._paint_interval(p, rect, trace, analysis)
+            # The dashes follow `show_interval`, the lines `construction`.
+            self._paint_interval(p, rect, trace, analysis)
             self._paint_analysis_label(p, rect, trace, analysis, value,
                                        anchor_y, colour)
 
@@ -4963,12 +5022,20 @@ class PlotWidget(QWidget):
         and said nothing the dashes did not:
 
         * **dashes**: a short vertical dash at each bound, centred ON the
-          trace. Every analysis with two cursors has them.
+          trace. Every analysis with two cursors has them; `show_interval`
+          decides whether they are PAINTED, not whether they are here.
         * **lines**: only where the result is a temperature on the curve
-          (`Analysis.marks_a_point` - onset, endset, glass transition). A
-          straight line from the left bound to the result point and on to the
-          right bound: the template's construction. No dash at the point
-          itself; the label's arrow already marks it.
+          (`Analysis.marks_a_point` - onset, endset, glass transition), as
+          its `construction` says (Christian, 2026-09-28):
+          - "tangents", the default: the tangent construction
+            (`tangent_lines`) - two tangents for an onset or endset, three
+            for a Tg - each run a little past where it crosses;
+          - "chords": a straight line from the left bound to the result
+            point and on to the right bound, round 10's. No dash at the
+            point itself; the label's arrow already marks it. Also what
+            "tangents" falls back on where there are none to draw
+            (`measure.tangent_points` says why);
+          - "none": nothing.
         * an integration gets the dashes alone: its shading and baseline show
           what was integrated, and a connecting curve must never be drawn.
 
@@ -4997,25 +5064,75 @@ class PlotWidget(QWidget):
         dashes = [(QPointF(b.x(), b.y() - INTERVAL_TICK),
                    QPointF(b.x(), b.y() + INTERVAL_TICK)) for b in bounds]
         lines = []
-        value = analysis.value() if analysis.marks_a_point else None
-        if value is not None:
-            x = self.to_axis(value)
-            y = self._curve_y_at(trace, x, rect, stretch)
-            if y is not None:
-                point = QPointF(float(self.x_to_px(x, rect)), float(y))
-                lines = [(bounds[0], point), (point, bounds[1])]
-        return dashes, lines
+        choice = (self.style_of(analysis, "construction")
+                  if analysis.marks_a_point else style.LINES_NONE)
+        if choice == style.LINES_TANGENTS:
+            lines = self.tangent_lines(trace, analysis, rect)
+            if lines is None:
+                choice = style.LINES_CHORDS
+        if choice == style.LINES_CHORDS:
+            lines = self._chord_lines(trace, analysis, rect, bounds, stretch)
+        return dashes, lines or []
+
+    def _chord_lines(self, trace, analysis, rect, bounds, stretch):
+        """Round 10's lines: bound -> the result point on the curve ->
+        bound."""
+        value = analysis.value()
+        if value is None:
+            return []
+        x = self.to_axis(value)
+        y = self._curve_y_at(trace, x, rect, stretch)
+        if y is None:
+            return []
+        point = QPointF(float(self.x_to_px(x, rect)), float(y))
+        return [(bounds[0], point), (point, bounds[1])]
+
+    def tangent_lines(self, trace, analysis, rect=None):
+        """The tangent construction in pixels: `[(a, b), ...]`, or None when
+        there is none to draw (then the caller draws chords).
+
+        The points are `measure.tangent_points`' - TRIOS's own for a
+        `.tri`'s analysis, Python's for one made here - in degC and the
+        heat flow, mapped onto the axes by the SCAN (`Scan.axes_points`),
+        the same arithmetic that places its curve: units, exo direction,
+        offset. A unit this scan cannot be drawn in has no construction
+        either. Each tangent runs `tangent_overshoot` points past its
+        crossing(s), measured on the figure, so the overshoot looks the
+        same whatever the axes' scales.
+        """
+        doc = self.doc
+        if doc is None or doc.x_axis != model.AXIS_TEMPERATURE:
+            return None
+        rect = rect or self.plot_rect()
+        found = measure.tangent_points(analysis, trace.scan)
+        if not found.points:
+            return None
+        xs, ys = trace.scan.axes_points(found.points, found.base, doc.y_unit,
+                                        doc.exo, getattr(doc, "x_unit",
+                                                         units.TEMP_C))
+        if xs is None:
+            return None
+        px = np.asarray(self.x_to_px(xs, rect), dtype=float)
+        py = np.asarray(self.y_to_px(ys, rect), dtype=float)
+        if not (np.all(np.isfinite(px)) and np.all(np.isfinite(py))):
+            return None
+        points = [QPointF(float(a), float(b)) for a, b in zip(px, py)]
+        overshoot = float(style.figure_value(doc, "tangent_overshoot") or 0.0)
+        return construction_segments(points, overshoot * PT)
 
     def _paint_interval(self, p, rect, trace, analysis):
         """The interval marks, in the axis colour: structure, not data.
 
         The template draws these and a figure needs them - an enthalpy with
         no interval marked is a number somebody has to take on trust. Each
-        analysis can switch them off (`show_interval`) for the cases where
-        two overlap.
+        analysis can switch its dashes off (`show_interval`) for the cases
+        where two overlap, and its lines (`construction`) separately. Solid,
+        the dashes' pen, never orange: the selection shows on the label.
         """
         dashes, lines = self.interval_marks(trace, analysis, rect)
-        if not dashes:
+        if not analysis.show_interval:
+            dashes = []
+        if not (dashes or lines):
             return
         p.setPen(QPen(QColor(_AXIS), 1.0))
         for a, b in lines + dashes:
@@ -5780,6 +5897,26 @@ class PlotWidget(QWidget):
             p.setPen(QColor(255, 255, 255))
             p.drawText(box, Qt.AlignCenter, text)
             p.setBrush(Qt.NoBrush)
+        # A weight that cannot be drawn has no place of its own on the
+        # heat flow's axis: its labels stand on the weight axis's side, one
+        # under another from the top, and name their scan.
+        side = (self.axis_side(self.doc.axes["y2"])
+                if self.doc is not None and "y2" in self.doc.axes
+                else "right")
+        for row, (scan, reason) in enumerate(
+                getattr(self, "weight_missing", ())):
+            text = "NO {}: {} weight".format(reason.upper(),
+                                            scan.display_name())
+            width = metrics.horizontalAdvance(text) + 12
+            left = (int(rect.right()) - 8 - width if side == "right"
+                    else int(rect.left()) + 8)
+            box = QRect(left, int(rect.top()) + 8 + 22 * row, width, 18)
+            p.setBrush(_ALARM)
+            p.setPen(QPen(_ALARM.lighter(140), 1))
+            p.drawRoundedRect(box, 3, 3)
+            p.setPen(QColor(255, 255, 255))
+            p.drawText(box, Qt.AlignCenter, text)
+            p.setBrush(Qt.NoBrush)
 
     # ----------------------------------------------------------------- paper
     def darken_for_paper(self):
@@ -5882,6 +6019,30 @@ def _m4(px, py, col):
     keep[order[first]] = True
     keep[order[last]] = True
     return px[keep], py[keep]
+
+
+def _finite_span(values):
+    """`(low, high)` of the measured samples of `values`, or None."""
+    if values is None or not len(values):
+        return None
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if not len(values):
+        return None
+    return float(values.min()), float(values.max())
+
+
+def _finite_runs(x, y):
+    """`[(x, y), ...]`: the stretches of a curve with no flagged (NaN)
+    sample in either, two samples or more each - what can be drawn as a
+    polyline."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    good = np.flatnonzero(np.isfinite(x) & np.isfinite(y))
+    if not len(good):
+        return []
+    runs = np.split(good, np.flatnonzero(np.diff(good) > 1) + 1)
+    return [(x[run], y[run]) for run in runs if len(run) > 1]
 
 
 def _polyline(px, py):
@@ -6139,6 +6300,32 @@ def _chord(xs, ys):
     if abs(span) < 1e-12:
         return np.full(len(ys), float(ys[0]))
     return ys[0] + (ys[-1] - ys[0]) * (xs - xs[0]) / span
+
+
+def construction_segments(points, overshoot):
+    """A tangent construction's points as segments: `[(a, b), ...]`.
+
+    TRIOS's extents (Christian, 2026-09-28): segment k runs from point k to
+    point k + 1, so an onset or endset (three points) is two tangents and a
+    Tg (four) is three. Every INNER point is a crossing, and a tangent that
+    ends or starts at one runs `overshoot` figure units past it, along
+    itself - the inflection tangent of a Tg both ways. A segment of no
+    length has no direction and is not extended.
+    """
+    segments = []
+    last = len(points) - 1
+    for k in range(last):
+        a, b = QPointF(points[k]), QPointF(points[k + 1])
+        dx, dy = b.x() - a.x(), b.y() - a.y()
+        length = math.hypot(dx, dy)
+        if length > 1e-9 and overshoot > 0.0:
+            ux, uy = dx / length * overshoot, dy / length * overshoot
+            if k > 0:
+                a = QPointF(a.x() - ux, a.y() - uy)
+            if k + 1 < last:
+                b = QPointF(b.x() + ux, b.y() + uy)
+        segments.append((a, b))
+    return segments
 
 
 def _rect_distance(box, point):

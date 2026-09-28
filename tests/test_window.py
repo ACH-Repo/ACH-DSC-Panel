@@ -1846,11 +1846,14 @@ def test_an_integration_is_marked_by_two_dashes_and_nothing_between(window):
 
 
 def test_an_onset_is_marked_by_lines_to_its_point_in_the_axis_colour(window):
+    """Round 10's chords, which since 2026-09-28 are the "chords" choice of
+    an onset's Lines (the default is its tangent construction)."""
     from dscpanel.core import measure
     from dscpanel.ui import plot as plot_module
     scan = window.doc.scans[0]
     onset = measure.run("Onset point", scan, 60.0, 120.0)
     assert onset.marks_a_point
+    onset.construction = "chords"
     window.refresh()
     plot = window.plot
     trace = _trace_of(window, scan)

@@ -54,20 +54,22 @@ class ReadError(Exception):
 
 
 def reader_origin():
-    """Where the vendored reader came from, for the About box.
+    """Where the reader came from, for the About box.
 
-    Read off the header `tools/vendor.py` writes, so it says what is actually
-    installed rather than what somebody remembered to type.
+    Read off the reader's own first comment, so it says what is actually
+    installed rather than what somebody remembered to type. The reader has
+    lived here since ACH-DSC-Plotter was retired (2026-09-28).
     """
     try:
         with open(trios_io.__file__, "r", encoding="utf-8") as fh:
-            first = fh.readline()
+            head = fh.read(400)
     except OSError:
         return "unknown"
-    match = re.match(r"# VENDORED from (.+?) on (\S+?)\.?\s*$", first)
+    match = re.search(r"started in (\S+) \(([^)]+)\)", head)
     if not match:
-        return "unknown"
-    return "{}, copied {}".format(match.group(1), match.group(2))
+        return "this program's own"
+    return "this program's own, from {} {}".format(match.group(1),
+                                                   match.group(2))
 
 
 def looks_readable(path):
@@ -150,14 +152,15 @@ def read_sample(path):
 def sibling_export(path):
     """A TRIOS `.txt` export of the same run, beside the `.tri`, or None.
 
-    Worth finding, because it is the ANSWER when a `.tri` segment records no
-    heat flow: TRIOS derives the missing signals when it exports, so the
-    export of the same run has them. Measured on the indium calibration run:
-    the export gives 28.56 J/g for the melt against indium's 28.5, while
-    reconstructing the segment from its raw sensors (constants fitted on the
-    file's own isothermal segment) is 7 % out in heat flow and 0.29 K out in
-    temperature - worse than the +-2 % and +-0.1 degC the calibration itself
-    is judged by. So the panel points at the export instead of guessing.
+    Worth finding when a `.tri` segment records no heat flow: the export of
+    the same run is the other place a heat flow can come from, and
+    reconstructing one from the raw sensors is not an option (on the indium
+    calibration run it was 7 % out in heat flow and 0.29 K out in
+    temperature, worse than the calibration is judged by). That indium ramp
+    was the case this was written for, and it turned out to be RECORDED, in
+    arrays with a flags list the reader did not read before 2026-09-28
+    (TRI-FORMAT.md section 3); no segment on the development machine lacks
+    a heat flow now, but the mechanism stays for one that does.
     """
     folder = os.path.dirname(os.path.abspath(str(path)))
     stem = os.path.splitext(os.path.basename(str(path)))[0].lower()
@@ -186,7 +189,13 @@ def summary(sample):
     """One line about a file that was just opened, for the note line."""
     bits = ["{}: {} segments".format(sample.name, sample.segment_count())]
     if sample.mass_g:
-        bits.append("{:g} mg".format(sample.mass_g * 1000.0))
+        # An SDT run has no sample-size field: the reader derives the mass
+        # from Weight / Weight Change, and an inference says so.
+        head = (sample.data or {}).get("head", {}) or {}
+        derived = head.get("mass_source") == "derived from the weight"
+        bits.append("{:g} mg{}".format(
+            sample.mass_g * 1000.0,
+            " (derived from the weight)" if derived else ""))
     else:
         bits.append("NO SAMPLE MASS")
     count = sum(len(sample.analyses_for(seg))

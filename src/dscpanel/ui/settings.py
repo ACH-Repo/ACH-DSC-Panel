@@ -93,17 +93,17 @@ class SettingsDialog(QDialog):
                 own = kind(getattr(self.doc.style, key),
                            (lambda k=key: style.preference(k)), parent=self)
             elif setting.kind == "choice":
+                titles = setting.titles
                 default = StyleChoice(setting.choices, style.preference(key),
                                       lambda: "", parent=self,
-                                      titles=style.FLUSH_TITLES,
-                                      allow_default=False)
+                                      titles=titles, allow_default=False)
                 default.changed.connect(
                     lambda k=key: self._default_changed(k))
                 own = StyleChoice(
                     setting.choices, getattr(self.doc.style, key),
-                    (lambda k=key: style.FLUSH_TITLES.get(
+                    (lambda k=key, t=titles: t.get(
                         style.preference(k), style.preference(k))),
-                    parent=self, titles=style.FLUSH_TITLES)
+                    parent=self, titles=titles)
             else:
                 default = NumberBox(self)
                 default.setDecimals(setting.decimals)

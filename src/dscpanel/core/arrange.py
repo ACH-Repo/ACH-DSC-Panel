@@ -23,9 +23,15 @@ def _monotonic(x, y):
     a cooling scan runs backwards - so anything that interpolates has to sort
     first. Duplicate x values are averaged rather than dropped, because
     dropping one silently prefers whichever sample came first.
+
+    A flagged sample (NaN in either) is left out: `np.interp` over one gives
+    NaN, and a NaN offset is a curve drawn nowhere and saved so (review
+    F11).
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
+    measured = np.isfinite(x) & np.isfinite(y)
+    x, y = x[measured], y[measured]
     order = np.argsort(x, kind="stable")
     x, y = x[order], y[order]
     unique, index, inverse = np.unique(x, return_index=True,
@@ -52,6 +58,8 @@ def align_to(reference, scans, curve_of, window=(0.0, 1.0), points=2000):
     if ref_x is None or len(ref_x) < 2:
         return []
     ref_x, ref_y = _monotonic(ref_x, ref_y)
+    if len(ref_x) < 2:
+        return []
     changes = []
     for scan in scans:
         if scan is reference:
@@ -60,6 +68,8 @@ def align_to(reference, scans, curve_of, window=(0.0, 1.0), points=2000):
         if x is None or len(x) < 2:
             continue
         x, y = _monotonic(x, y)
+        if len(x) < 2:
+            continue
         lo = max(float(ref_x[0]), float(x[0]))
         hi = min(float(ref_x[-1]), float(x[-1]))
         if hi <= lo:
@@ -123,7 +133,11 @@ def suggested_step(scans, curve_of, fraction=0.6):
         x, y = curve_of(scan)
         if y is None or not len(y):
             continue
-        spans.append(float(np.nanmax(y) - np.nanmin(y)))
+        y = np.asarray(y, dtype=float)
+        y = y[np.isfinite(y)]
+        if not len(y):
+            continue
+        spans.append(float(np.max(y) - np.min(y)))
     if not spans:
         return 0.0
     return max(spans) * float(fraction)

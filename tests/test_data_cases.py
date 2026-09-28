@@ -4,7 +4,9 @@ Every test here is a fact about a file on his machine, so they skip when the
 file is not there. Between them they pin the three things that were guesses
 until those files existed: which way exotherms point, what a glass-transition
 record holds, and what happens to a segment the instrument recorded without a
-heat flow.
+heat flow - which the indium ramp turned out not to be (2026-09-28: its heat
+flow is stored with a flags list), so that last one is pinned on the
+reader's shape now, and the ramp's own melt beside it.
 """
 
 import os
@@ -12,9 +14,9 @@ import os
 import numpy as np
 import pytest
 
-from dscpanel.core import export, loader, model, units
+from dscpanel.core import export, loader, measure, model, units
 
-from conftest import local_file
+from conftest import local_file, make_data
 
 # By NAME only. Where each one lives is listed in the uncommitted
 # tests/local_testdata.txt (see `conftest.local_file`).
@@ -72,20 +74,38 @@ def test_indium_proves_the_sign_from_the_raw_sensors():
     assert 150.0 < float(t0[window][int(excursion.argmin())]) < 170.0
 
 
-def test_the_panel_points_at_the_export_when_a_segment_is_unusable():
-    """The export of the same run has what the .tri segment does not, so the
-    note line says so rather than leaving somebody to wonder."""
-    sample = _sample(INDIUM)
+def test_the_panel_points_at_the_export_when_a_segment_is_unusable(
+        tmp_path):
+    """A segment the instrument recorded without a heat flow: the export of
+    the same run is the other place one can come from, so the note line
+    says so rather than leaving somebody to wonder.
+
+    The indium ramp was the real case until 2026-09-28, when its heat flow
+    turned out to be recorded in flagged arrays (TRI-FORMAT.md section 3,
+    and the test below). No file on the development machine lacks one now,
+    so this is the reader's SHAPE with the column taken out, and an export
+    file of the same name beside it."""
+    data = make_data()
+    step = data["numdata"][1]
+    step["dims"], step["units"] = step["dims"][:2], step["units"][:2]
+    step["nums"] = step["nums"][:, :2]
+    path = tmp_path / "TEST-1.tri"
+    (tmp_path / "test-1.txt").write_text("Filename\tTEST-1\n")
+    sample = model.Sample(str(path), data)
     assert loader.segments_without_heat_flow(sample) == [2]
-    export = loader.sibling_export(_path(INDIUM))
-    if export is None:
-        pytest.skip("no .txt export beside the indium run")
-    assert os.path.basename(export).lower().endswith(".txt")
+    assert loader.sibling_export(str(path)).lower().endswith("test-1.txt")
     assert "records no heat flow" in loader.summary(sample)
     assert "instead" in loader.summary(sample)
+    doc = model.Document()
+    doc.add_sample(sample)
+    ramp = doc.scans[1]
+    assert ramp.missing_for(doc.y_unit, doc.x_axis) == \
+        "heat flow in this segment"
+    assert ramp.curve(doc.x_axis, doc.y_unit, doc.exo) == (None, None)
+    assert any("NO HEAT FLOW" in line for line in export.warnings_for(doc))
 
 
-def test_the_indium_export_is_the_measurement_the_tri_cannot_give():
+def test_the_indium_export_gives_the_melt_too():
     """Opening the export draws both segments, and its melt comes out at
     indium's own enthalpy - which is also the third independent confirmation
     that these files are exo down."""
@@ -111,18 +131,43 @@ def test_the_indium_export_is_the_measurement_the_tri_cannot_give():
     assert enthalpy == pytest.approx(28.5, rel=0.05)
 
 
-def test_a_segment_without_heat_flow_is_reported_not_dropped():
-    """The ramp of this calibration run stores only the raw sensors, and the
-    file has no Heat Flow T1 to fill it from. The panel must say so."""
+def test_the_indium_ramp_is_recorded_and_melts_at_indiums_enthalpy():
+    """The ramp was read as "records no heat flow" until 2026-09-28: its
+    Temperature, Heat Flow, Heat Flow Phase and Total Heat Capacity are
+    stored with a flags list (the last 5 / 35 samples flagged), which the
+    reader did not read (TRI-FORMAT.md section 3). Read, the .tri alone
+    draws the ramp and its melt integrates to indium's 28.5 J/g, pointing
+    UP in the stored arrays - the recorded heat flow itself now proves exo
+    down, without the Delta T argument above."""
     sample = _sample(INDIUM)
+    assert loader.segments_without_heat_flow(sample) == []
+    assert "records no heat flow" not in loader.summary(sample)
     doc = model.Document()
     doc.add_sample(sample)
     ramp = doc.scans[1]
-    assert ramp.missing_for(doc.y_unit, doc.x_axis) == "heat flow in this segment"
-    assert ramp.curve(doc.x_axis, doc.y_unit, doc.exo) == (None, None)
-    assert any("NO HEAT FLOW" in line for line in export.warnings_for(doc))
-    # and it is not called isothermal just because nothing measured it
-    assert "ramp" in ramp.short_program().lower()
+    assert ramp.missing_for(doc.y_unit, doc.x_axis) is None
+    x, y = ramp.curve(doc.x_axis, doc.y_unit, doc.exo)
+    assert x is not None and np.all(np.isfinite(y))
+    assert not any("NO HEAT FLOW" in line for line in export.warnings_for(doc))
+    # 4801 recorded, the flagged tail of 35 trimmed off the END only
+    assert len(ramp.temperature()) == 4766
+    assert "heat" in ramp.short_program().lower()
+    temp = ramp.temperature()
+    flow = ramp._column("Heat Flow (Normalized)")
+    seconds = ramp.time_min() * 60.0
+    window = (temp > 150) & (temp < 168)
+    base = np.interp(seconds[window],
+                     [seconds[window][0], seconds[window][-1]],
+                     [flow[window][0], flow[window][-1]])
+    deviation = flow[window] - base
+    assert deviation.max() > 100 * abs(deviation.min())    # the melt points UP
+    assert 157.5 < float(temp[window][int(deviation.argmax())]) < 159.0
+    enthalpy = abs(float(np.trapz(deviation, seconds[window])))
+    assert enthalpy == pytest.approx(28.56, abs=0.01)
+    # and the panel's own integration says the same
+    fields = measure.compute("Peak Integration (enthalpy)", ramp, 150.0, 168.0)
+    assert model.number(fields["Enthalpy (normalized)"]) == \
+        pytest.approx(28.56, abs=0.01)
 
 
 # ------------------------------------------------- the glass transition

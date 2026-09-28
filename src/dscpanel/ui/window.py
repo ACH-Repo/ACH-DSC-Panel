@@ -386,8 +386,11 @@ class MainWindow(QMainWindow):
     def _current_view(self):
         """The plot's framing, or None where it is fitted."""
         state = self.plot.view_state()
+        # The weight axis's range counts too: M on its row alone, then F
+        # once (which resets x first), leaves only y2 framed, and that was
+        # neither saved nor a change (review F10).
         return (None if state["x"] is None and state["y"] is None
-                else dict(state))
+                and state.get("y2") is None else dict(state))
 
     def _sync_view(self):
         """The framing on the document, where the session file finds it:
@@ -1584,9 +1587,15 @@ class MainWindow(QMainWindow):
         return len(artists)
 
     def stack_objects(self):
-        """Everything with a place in the stack, bottom first."""
+        """Everything with a place in the stack, bottom first. The weight
+        curves too (round 25): drawn by `z_of` like the rest, and left out
+        here they kept z None - drawn at 5 - while a restack numbered
+        everything else from 0, which put a weight over the legend (review
+        F9)."""
         doc = self.doc
-        objs = (list(doc.scans) + doc.analyses()
+        objs = (list(doc.scans)
+                + [s.weight for s in doc.scans if s.has_weight()]
+                + doc.analyses()
                 + ([s.marker for s in doc.scans] if doc.offset_markers
                    else [])
                 + [doc.arrow, doc.legend] + list(doc.labels)

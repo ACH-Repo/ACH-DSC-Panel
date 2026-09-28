@@ -96,6 +96,101 @@ def test_text_export_analyses_are_matched_by_step_name(sample):
     assert sample.analyses_for(1) == []
 
 
+def test_trios_construction_is_kept_out_of_the_text_fields(document):
+    """The reader hands a `.tri`'s onset its construction as a list of
+    [x, y] floats. `fields` are text, listed as results: the list there
+    showed up as a result called "construction", worth its first number."""
+    from dscpanel.core import labels
+    sample = document.samples[0]
+    points = [[53.4029, 0.21003], [61.0851, 0.22756], [68.0461, 0.27806]]
+    sample.data["analyses"] = {
+        "Ramp 10,00 C/min to 250 C #1": {
+            "Onset point": [{"segment": 1, "Onset cursor x": "53.4029 \u00b0C",
+                             "Transition cursor x": "68.0859 \u00b0C",
+                             "Onset x": "61.0851 \u00b0C",
+                             "variable": "Heat Flow (Normalized)",
+                             "construction": points}]}}
+    scan = document.scans[0]
+    scan._analyses = None
+    (analysis,) = scan.analysis_objects
+    assert analysis.stored_construction == points
+    assert "construction" not in analysis.fields
+    assert [name for name, _text in labels.results(analysis)] == ["Onset"]
+    assert analysis.key() == "Onset point|53.4029|68.0859"
+    # and the reader's own record is left alone
+    assert "construction" in sample.data["analyses"][
+        "Ramp 10,00 C/min to 250 C #1"]["Onset point"][0]
+
+
+def _nan_data():
+    """Two segments; the second with the reader's flagged samples: NaN at
+    its START (some runs flag the first samples of segment 1 too), in the
+    middle, and a tail where the temperature ends 5 samples and the heat
+    flow 12 before the end - the DSC25 pattern (5 and 35)."""
+    from conftest import make_data
+    data = make_data(points=60)
+    nums = data["numdata"][1]["nums"]
+    nums[:3, 1] = np.nan
+    nums[20, 2] = np.nan
+    nums[-5:, 1] = np.nan
+    nums[-12:, 2] = np.nan
+    return data
+
+
+def test_only_the_flagged_tail_is_trimmed():
+    """The tail where temperature OR heat flow is NaN goes; the start and a
+    gap in the middle stay, so every sample keeps its index counted from the
+    segment's start (a session stores sample spans). Round 25 trimmed the
+    start too, and by the temperature only."""
+    data = _nan_data()
+    before = data["numdata"][1]["nums"].copy()
+    model.Sample("C:/nowhere/TEST-1.tri", data)
+    after = data["numdata"][1]["nums"]
+    assert len(after) == 60 - 12
+    assert np.array_equal(after, before[:48], equal_nan=True)
+    assert np.isnan(after[:3, 1]).all() and np.isnan(after[20, 2])
+    assert len(data["numdata"][0]["nums"]) == 60      # nothing to trim
+
+
+def test_a_flagged_first_sample_does_not_turn_a_heating_into_a_cooling():
+    """A heating ramp whose first samples are flagged (NaN) was called
+    "cool": the direction compared the last temperature with a NaN. The
+    default scan (the first up-scan) and an isothermal's label ("iso nan
+    degC") had the same trap."""
+    from conftest import make_data
+    data = make_data(segments=4, points=60)
+    first = data["numdata"][0]["nums"]
+    first[:, 1] = first[::-1, 1].copy()             # segment 1 cools
+    data["numdata"][2]["nums"][:4, 1] = np.nan      # segment 3 heats
+    iso = data["numdata"][3]
+    iso["prog"] = "Isothermal 1,0 min #4"
+    iso["nums"][:, 1] = 100.0
+    iso["nums"][:4, 1] = np.nan
+    sample = model.Sample("C:/nowhere/TEST-1.tri", data)
+    assert model.first_upscan(sample) == 2
+    heating = model.Scan(1, sample, 2, "#000000")
+    assert heating.direction() == "up"
+    assert heating.short_program().split()[1] == "heat"
+    assert model.Scan(2, sample, 3, "#000000").short_program() == \
+        "#4 iso 100 \u00b0C"
+
+
+def test_the_note_line_says_a_mass_was_derived():
+    """An SDT run has no sample-size field; a mass read off Weight / Weight
+    Change is an inference, and the note line says so."""
+    from conftest import make_data
+    from dscpanel.core import loader
+    data = make_data()
+    data["head"].pop("samplesize")
+    data["head"].update({"Sample Mass": "21.5473 mg",
+                         "mass_source": "derived from the weight"})
+    sample = model.Sample("C:/nowhere/TEST-1.tri", data)
+    assert "21.5473 mg (derived from the weight)" in loader.summary(sample)
+    data["head"]["mass_source"] = "recorded"
+    sample = model.Sample("C:/nowhere/TEST-1.tri", data)
+    assert "derived" not in loader.summary(sample)
+
+
 # --------------------------------------------------------------- arranging
 def test_align_puts_curves_on_top_of_one_another(document):
     a, b = document.scans[0], document.scans[1]

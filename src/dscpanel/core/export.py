@@ -43,6 +43,10 @@ def warnings_for(doc, exo=True):
     for scan, missing in doc.scans_missing():
         out.append("NO {}: {} is not drawn".format(missing.upper(),
                                                    scan.display_name()))
+    # A weight switched on that cannot be drawn, the same way (round 25).
+    for scan, missing in doc.weights_missing():
+        out.append("NO {}: {} weight is not drawn".format(
+            missing.upper(), scan.display_name()))
     # A label that asks for a unit it cannot be given without a mass is a
     # missing value, exactly like a per-mole axis without M.
     for analysis, rendered in _rendered_labels(doc):
@@ -81,41 +85,50 @@ def curves_csv(doc, path):
     share a temperature axis: they were sampled at their own points, and a
     cooling scan runs the other way. Interpolating them onto a common grid
     would be inventing data.
+
+    A scan's weight (an SDT or TGA run, round 25) shares its samples, so it
+    is a third column beside the pair - or the second, for a segment that
+    recorded a weight and no heat flow. A flagged sample (NaN) is an EMPTY
+    cell, as in TRIOS's own export, never the text "nan".
     """
     # The KEPT part of each: a truncated end is not part of the figure, so
     # it is not part of its numbers either.
-    scans = [s for s in doc.visible_scans()
-             if s.kept_curve(doc.x_axis, doc.y_unit, doc.exo,
-                             doc.x_unit)[0] is not None]
-    if not scans:
+    blocks = []
+    for scan in doc.visible_scans():
+        x, y = scan.kept_curve(doc.x_axis, doc.y_unit, doc.exo, doc.x_unit)
+        weight = None
+        if scan.weight.visible and scan.has_weight():
+            wx, weight = scan.weight_curve(doc.x_axis, doc.weight_unit,
+                                           doc.x_unit)
+            if x is None:
+                x = wx
+        if x is None:
+            continue
+        blocks.append((scan, x, y, weight))
+    if not blocks:
         return None
     columns, headers = [], []
     x_label = ("Temperature/C" if doc.x_axis == model.AXIS_TEMPERATURE
                else "Time/min")
-    for scan in scans:
-        x, y = scan.kept_curve(doc.x_axis, doc.y_unit, doc.exo, doc.x_unit)
-        columns.append(x)
-        columns.append(y)
+    for scan, x, y, weight in blocks:
         name = scan.display_name().replace(",", " ")
+        columns.append(x)
         headers.append("{} {}".format(name, x_label))
-        headers.append("{} HeatFlow/{}".format(name, doc.y_unit))
-        if scan.weight.visible and scan.has_weight():
-            # The weight shares the scan's samples, so its own column.
-            _wx, weight = scan.weight_curve(doc.x_axis, doc.weight_unit,
-                                            doc.x_unit)
-            if weight is not None:
-                columns.append(weight)
-                headers.append("{} Weight/{}".format(name, doc.weight_unit))
+        if y is not None:
+            columns.append(y)
+            headers.append("{} HeatFlow/{}".format(name, doc.y_unit))
+        if weight is not None:
+            columns.append(weight)
+            headers.append("{} Weight/{}".format(name, doc.weight_unit))
     rows = max(len(c) for c in columns)
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("# {} export\n".format(branding.APP_NAME))
         for line in warnings_for(doc):
             fh.write("# {}\n".format(line))
-        for scan in scans:
+        for scan, _x, _y, _weight in blocks:
             fh.write("# {}: {}, mass {}, M {}, exo {} ({})\n".format(
                 scan.display_name(), scan.sample.path,
-                "{:g} mg".format(scan.sample.mass_g * 1000.0)
-                if scan.sample.mass_g else "unknown",
+                scan.sample.mass_text() or "unknown",
                 "{:g} g/mol".format(scan.molar_mass) if scan.molar_mass
                 else "not given",
                 scan.sample.exo, scan.sample.exo_source))
@@ -123,10 +136,15 @@ def curves_csv(doc, path):
         for i in range(rows):
             cells = []
             for column in columns:
-                cells.append("{:.6g}".format(column[i])
-                             if i < len(column) else "")
+                cells.append(_cell(column[i]) if i < len(column) else "")
             fh.write(",".join(cells) + "\n")
     return path
+
+
+def _cell(value):
+    """A number as a CSV cell: `%.6g`, and empty for a flagged sample."""
+    value = float(value)
+    return "{:.6g}".format(value) if np.isfinite(value) else ""
 
 
 def driver_source(doc):

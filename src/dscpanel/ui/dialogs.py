@@ -1057,7 +1057,7 @@ class ScanSettings(_LiveDialog):
     """Everything about one scan, plus its sample's molar mass."""
 
     FIELDS = ("colour", "label", "offset", "line_width", "keep",
-              "molar_mass_override")
+              "molar_mass_override", "weight_visible", "weight_dashed")
     INDIVIDUAL = ("label", "offset", "molar_mass_override")
     GROUP_DISABLED = ("label", "offset", "molar", "own_molar", "analyses")
 
@@ -1089,6 +1089,26 @@ class ScanSettings(_LiveDialog):
 
         self.line_width = _style_number(self, scan, "line_width")
         form.addRow("Line width", self.line_width)
+
+        # An SDT or TGA run's weight, against the second y axis (round 25):
+        # shown or not, dashed or solid - for a group too.
+        self.weight_shown = self.weight_dashed = None
+        if scan.has_weight():
+            weight = QWidget(self)
+            weight_row = QHBoxLayout(weight)
+            weight_row.setContentsMargins(0, 0, 0, 0)
+            self.weight_shown = QCheckBox("Show")
+            self.weight_shown.setChecked(bool(scan.weight.visible))
+            self.weight_shown.setToolTip("Draw the weight against the "
+                                         "weight axis.")
+            self.weight_dashed = QCheckBox("Dashed")
+            self.weight_dashed.setChecked(bool(scan.weight.dashed))
+            self.weight_dashed.setToolTip("Dashed, to tell it from the heat "
+                                          "flow in the same colour.")
+            weight_row.addWidget(self.weight_shown)
+            weight_row.addWidget(self.weight_dashed)
+            weight_row.addStretch(1)
+            form.addRow("Weight curve", weight)
 
         # The template's x_truncate: hide the ends by POSITION along the
         # curve, never by temperature (a segment doubles back at its start).
@@ -1131,16 +1151,29 @@ class ScanSettings(_LiveDialog):
                                 else Qt.Unchecked)
             entry.setData(Qt.UserRole, analysis)
             self.analyses.addItem(entry)
-        if not scan.analysis_objects:
+        # The file's analyses made on the WEIGHT: listed, never offered as
+        # heat-flow ones (review F5). No box, so nothing ticks one on.
+        for analysis in scan.weight_analyses:
+            entry = QListWidgetItem("{}   ({})".format(
+                analysis.summary(), units_module.WEIGHT_ANALYSIS_NOTE))
+            entry.setFlags(Qt.NoItemFlags)
+            entry.setToolTip("Made in TRIOS on the weight curve. The panel "
+                             "does not draw analyses on the weight yet.")
+            self.analyses.addItem(entry)
+        if not scan.analysis_objects and not scan.weight_analyses:
             self.analyses.addItem("no analyses in the file for this scan")
             self.analyses.setEnabled(False)
         form.addRow("Analyses", self.analyses)
 
         # ------------------------------------------------- the molar mass
-        mass = scan.sample.mass_g
-        form.addRow("Sample mass", QLabel(
-            "{:g} mg (from the file)".format(mass * 1000.0) if mass
-            else "not in the file"))
+        sample = scan.sample
+        if not sample.mass_g:
+            said = "not in the file"
+        elif sample.mass_source == "derived from the weight":
+            said = sample.mass_text()
+        else:
+            said = "{:g} mg (from the file)".format(sample.mass_g * 1000.0)
+        form.addRow("Sample mass", QLabel(said))
 
         self.molar = NumberBox()
         self.molar.setDecimals(4)
@@ -1173,6 +1206,9 @@ class ScanSettings(_LiveDialog):
         self.label.textChanged.connect(self._apply)
         for box in (self.offset, self.molar, self.own_molar):
             box.valueChanged.connect(self._apply)
+        for check in (self.weight_shown, self.weight_dashed):
+            if check is not None:
+                check.toggled.connect(self._apply)
         self.line_width.changed.connect(self._apply)
         self.cut_start.valueChanged.connect(self._apply)
         self.cut_end.valueChanged.connect(self._apply)
@@ -1239,6 +1275,9 @@ class ScanSettings(_LiveDialog):
         scan.line_width = self.line_width.value()
         scan.keep = (round(self.cut_start.value() / 100.0, 6),
                      round(1.0 - self.cut_end.value() / 100.0, 6))
+        if self.weight_shown is not None:
+            scan.weight_visible = self.weight_shown.isChecked()
+            scan.weight_dashed = self.weight_dashed.isChecked()
         self._describe_cut()
         scan.molar_mass_override = (float(self.own_molar.value())
                                     if self.own_molar.value() > 0 else None)
@@ -1306,6 +1345,14 @@ class SampleSettings(_LiveDialog):
         self._live()
 
 
+def axis_title(axis, part=""):
+    """"X axis", "Y axis numbers", "Weight axis caption": the windows of an
+    axis, the weight axis by its name rather than "Y2"."""
+    name = ("Weight axis" if axis.which == "y2"
+            else "{} axis".format(axis.which.upper()))
+    return "{} {}".format(name, part) if part else name
+
+
 class CaptionSettings(_LiveDialog):
     """An axis CAPTION: its words and its size, and nothing else.
 
@@ -1322,7 +1369,7 @@ class CaptionSettings(_LiveDialog):
     def __init__(self, parent, axis, doc, on_change=None):
         _LiveDialog.__init__(self, parent, axis, on_change)
         self.doc = doc
-        self.setWindowTitle("{} axis caption".format(axis.which.upper()))
+        self.setWindowTitle(axis_title(axis, "caption"))
         layout = QVBoxLayout(self)
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -1385,8 +1432,7 @@ class AxisSettings(_LiveDialog):
     def __init__(self, parent, axis, doc, on_change=None):
         _LiveDialog.__init__(self, parent, axis, on_change)
         self.doc = doc
-        self.setWindowTitle("Weight axis" if axis.which == "y2"
-                            else "{} axis".format(axis.which.upper()))
+        self.setWindowTitle(axis_title(axis))
         layout = QVBoxLayout(self)
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -1451,6 +1497,11 @@ class AxisSettings(_LiveDialog):
         self.mirror_ticks.setToolTip("Origin's style: the opposite line "
                                      "ticked like this one.")
         form.addRow("", self.mirror_ticks)
+        if axis.which == "y2":
+            # The far side of the weight axis is the heat flow's axis, with
+            # its own line and ticks: nothing to mirror onto.
+            self.mirror.setVisible(False)
+            self.mirror_ticks.setVisible(False)
 
         self.grid = QCheckBox("Grid lines")
         self.grid.setToolTip("Lines across the plot at the numbered ticks.")
@@ -1480,7 +1531,11 @@ class AxisSettings(_LiveDialog):
         axis = self.obj
         if plot is None:
             return 0.0
-        lo, hi = plot.view_x() if axis.which == "x" else plot.view_y()
+        # Each axis its OWN range: the weight axis showed the heat flow's
+        # step (0.1 W/g where it draws 5 %), and unticking Automatic
+        # stored it (review F8).
+        lo, hi = {"x": plot.view_x, "y2": plot.view_y2}.get(
+            axis.which, plot.view_y)()
         return float(plot.tick_step(axis, lo, hi))
 
     def _show(self):
@@ -1535,7 +1590,7 @@ class NumberSettings(_LiveDialog):
     def __init__(self, parent, axis, doc, on_change=None):
         _LiveDialog.__init__(self, parent, axis, on_change)
         self.doc = doc
-        self.setWindowTitle("{} axis numbers".format(axis.which.upper()))
+        self.setWindowTitle(axis_title(axis, "numbers"))
         layout = QVBoxLayout(self)
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -1878,7 +1933,8 @@ class AnalysisSettings(_LiveDialog):
     """
 
     FIELDS = ("visible", "colour", "label", "label_size", "flush",
-              "show_interval", "shade", "number_format", "label_dy")
+              "show_interval", "construction", "shade", "number_format",
+              "label_dy")
     INDIVIDUAL = ("label",)
     GROUP_DISABLED = ("label", "model", "start", "end")
 
@@ -1934,6 +1990,23 @@ class AnalysisSettings(_LiveDialog):
                                  "curve.")
         form.addRow("", self.interval)
 
+        # The lines of an onset, endset or Tg, following the house style
+        # until chosen, like the alignment below. Only those have lines.
+        self.lines = StyleChoice(
+            style.LINES, analysis.construction,
+            lambda: style.LINES_TITLES.get(
+                style.inherited(self.doc, self.obj, "construction"), ""),
+            parent=self, titles=style.LINES_TITLES)
+        self.lines.setToolTip("Tangent construction, chords to the point, "
+                              "or none.")
+        form.addRow("Lines", self.lines)
+        # Why there are no tangents to draw, when there are none: one line.
+        self.lines_note = QLabel("")
+        self.lines_note.setWordWrap(True)
+        self.lines_note.setStyleSheet("color: #9a9a9a;")
+        self.lines_note.setVisible(False)
+        form.addRow("", self.lines_note)
+
         self.text_size = _style_number(self, analysis, "label_size")
         self.text_size.setToolTip("Label size, pt.")
         form.addRow("Label size", self.text_size)
@@ -1985,6 +2058,7 @@ class AnalysisSettings(_LiveDialog):
 
         self.visible.toggled.connect(self._apply)
         self.interval.toggled.connect(self._apply)
+        self.lines.changed.connect(self._apply)
         self.text_size.changed.connect(self._apply)
         self.flush.changed.connect(self._apply)
         self.label.textChanged.connect(self._apply)
@@ -2026,8 +2100,19 @@ class AnalysisSettings(_LiveDialog):
         self.results.setText("<br>".join(
             "{}: {}".format(html.escape(name), html.escape(text))
             for name, text in found) or "-")
+        self._show_lines()
         self._show_offset()
         self._show_preview()
+
+    def _show_lines(self):
+        """Lines only for an onset, endset or Tg; and, where tangents are
+        asked for and there are none to draw, why - in one line."""
+        analysis = self.obj
+        self.lines.setEnabled(analysis.marks_a_point)
+        self.lines.refresh()
+        note = measure.lines_note(analysis, self.doc)
+        self.lines_note.setText(note)
+        self.lines_note.setVisible(bool(note))
 
     def _show_preview(self):
         """The label as it will be drawn, and anything wrong with it."""
@@ -2136,6 +2221,7 @@ class AnalysisSettings(_LiveDialog):
         analysis = self.obj
         analysis.visible = bool(self.visible.isChecked())
         analysis.show_interval = bool(self.interval.isChecked())
+        analysis.construction = self.lines.value()
         analysis.label_size = self.text_size.value()
         analysis.flush = self.flush.value()
         analysis.label = self.label.text().strip() or None
@@ -2143,6 +2229,7 @@ class AnalysisSettings(_LiveDialog):
         if self.auto.isChecked():
             analysis.colour = "auto"
         self._live()
+        self._show_lines()
         self._show_preview()
 
 

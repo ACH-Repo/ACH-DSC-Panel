@@ -808,14 +808,72 @@ and Arial Rounded MT work; presets mostly.
   the tip is dragged, snapping onto a curve near it; a label's settings
   turn the arrow on or off. The driver writes `ax.annotate`.
 
+### Round 25 (2026-09-28): SDT, the reader comes home, tangents
+
+Started on the desktop (the weight curve on a second y axis, pushed
+unfinished as `4bc9426 "intermediary"`), finished on the laptop. See
+HANDOFF.md section 0 for the state of the working tree.
+
+* **ACH-DSC-Plotter is retired** (Christian: "we now have a much better DSC
+  and TGA plotter with this project"). The reader is the panel's own;
+  `tools/vendor.py` and the test that compared it with a sibling checkout
+  are gone - a test must not depend on the state of another folder, and
+  that one failed on whichever machine had the other repo out of step.
+  `docs/TRI-FORMAT.md` and `tests/test_reader.py` moved here. **The driver
+  export is frozen** as it is.
+* **SDT runs** (SDT650: heat flow AND weight): the weight is a dashed curve
+  in the scan's colour on a second y axis opposite the heat flow's, in % of
+  the sample mass or mg (F3 "Weight axis: ..."), with its own row under the
+  scan in the outliner, in the legend, the CSV, `M` (a third pair) and the
+  session. It follows `M` and `F` only, not the wheel. The heat flow of an
+  SDT run is Heat Flow / sample mass, as TRIOS's export has it.
+* **The reader reads every signal array** (TRI-FORMAT.md 3, 3b): one layout,
+  plain or with per-sample flags; the round-25 code had matched a byte
+  COUNT that fitted one run's length only, so most SDT files (CN-81, the
+  DESY isothermals) came out wrong. The same flags are why a DSC run's last
+  segment looked "partial" and why the indium ramp had "no heat flow": both
+  are recorded, in flagged arrays. The indium melt now comes from the `.tri`
+  alone, 28.56 J/g, pointing up. Flagged samples are NaN; trailing ones are
+  trimmed, leading ones kept (sample spans count from the segment start).
+* **Sample mass of an SDT run** is derived from Weight / Weight Change (the
+  file has no sample-size field), refused unless positive and constant, and
+  called "derived from the weight" wherever it is shown. Three DESY runs
+  record a negative weight: no mass, and the placeholders say so.
+* **Analysis records**: onset/endset cursors are at +86/+132 (the endset had
+  been read wrongly), TRIOS's construction is kept as its three (four for a
+  Tg) points, and the curve an analysis was made on (heat flow or weight)
+  is decoded.
+* **Tangent constructions**: onset, endset and Tg are drawn as TANGENTS -
+  TRIOS's own stored construction for a `.tri` analysis, the Python one for
+  an analysis made here, chords (the round-10 lines) for a `.txt` export's,
+  which has no points, with a note in its settings. Per analysis "Lines":
+  tangents / chords / none; house style "Lines" and "Tangent overshoot"
+  (6 pt past the crossing). Solid, in the axis colour. "Show interval
+  markers" is the dashes alone now; an older session with markers off opens
+  with Lines "none".
+* **The panel's endset was the onset** (the low cursor was taken as the flat
+  one for both), and a cooling onset took its baseline on the wrong side.
+  The flat cursor now goes by ACQUISITION order: the earlier for an onset,
+  the later for an endset. A saved endset reopens corrected (OJ-12: 94.83
+  -> 108.06 degC; TRIOS 108.02).
+* Also from the desktop: the curve decimation keeps each column's first,
+  highest, lowest and last sample in measured order (`_m4`: steep flanks
+  were staircases), a structure's box includes its labels, the Boombox
+  reticle is LCD green.
+
 ## Next
 
-Nothing is waiting. Open, and only if wanted:
-
-1. **Tangent constructions** drawn for onset/endset and Tg.
-2. **A preset as the user's default** (a preset goes onto one figure;
+1. **Finish round 25** if HANDOFF.md section 0 says it is unfinished: the
+   SDT UI findings, the review, the doc pass (README still mentions
+   vendoring).
+2. **Christian's open questions from round 25** (HANDOFF.md section 0): the
+   Python onset fit vs TRIOS's (1 K median), the label arrow vs the
+   tangents' crossing, the cooling Tg's sign, the Weight Corrected Heat Flow
+   fallback, CSV blanks.
+3. **Weight analyses**: onset/endset of a mass loss drawn on the weight
+   curve; DTG (the derivative); weight offsets for stacking.
+4. **A preset as the user's default** (a preset goes onto one figure;
    Settings holds the defaults).
-3. **SDT / TGA** - parked.
 
 ## Settled on 2026-09-23, with the files Christian supplied
 

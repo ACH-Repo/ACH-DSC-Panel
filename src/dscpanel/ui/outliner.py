@@ -293,15 +293,35 @@ class Outliner(QTreeWidget):
         return item
 
     def _add_weight_row(self, parent, weight):
-        """An SDT or TGA run's weight curve, against the second y axis."""
+        """An SDT or TGA run's weight curve, against the second y axis: what
+        stops it being drawn, in the alarm colour, like a scan's row; under
+        it the file's analyses made on the weight, listed and not drawn."""
         item = QTreeWidgetItem(parent)
         item.setText(0, "Weight")
         item.setData(0, Qt.UserRole, ("weight", id(weight)))
         item.setCheckState(0, Qt.Checked if weight.visible else Qt.Unchecked)
-        item.setText(1, "{} axis".format(
-            getattr(self.doc, "weight_unit", "%")))
-        item.setForeground(1, QBrush(_DIM))
+        doc = self.doc
+        unit = getattr(doc, "weight_unit", model.WEIGHT_PCT)
+        missing = (weight.scan.weight_missing_for(unit, doc.x_axis)
+                   if doc is not None else None)
+        if missing:
+            item.setText(1, "NO {}".format(missing.upper()))
+            item.setForeground(1, QBrush(_ALARM))
+        else:
+            item.setText(1, "{} axis".format(unit))
+            item.setForeground(1, QBrush(_DIM))
         item.setSelected(weight.selected)
+        for analysis in weight.scan.weight_analyses:
+            row = QTreeWidgetItem(item)
+            row.setText(0, analysis.summary())
+            row.setText(1, model.WEIGHT_ANALYSIS_NOTE)
+            row.setForeground(1, QBrush(_DIM))
+            # A key of its own shape, which `_object` knows nothing of: not
+            # an object to select, show or open (the two-shape trap).
+            row.setData(0, Qt.UserRole, ("weight_analysis", id(analysis)))
+            row.setFlags(Qt.ItemIsEnabled)
+            row.setToolTip(0, "Made in TRIOS on the weight curve. The "
+                           "panel does not draw analyses on the weight yet.")
         return item
 
     def _add_marker_row(self, parent, marker):

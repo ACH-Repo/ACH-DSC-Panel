@@ -1,14 +1,9 @@
-"""Rules about the repo itself: the name lives in one place, the reader is a
-copy of a known version, and generated files stay readable on a German
-Windows.
+"""Rules about the repo itself: the name lives in one place, the reader lives
+here, and generated files stay readable on a German Windows.
 """
 
 import os
 import re
-import subprocess
-import sys
-
-import pytest
 
 from dscpanel import branding, register
 
@@ -91,14 +86,14 @@ def test_generated_python_is_ascii():
     assert not bad, "em-dashes in: {}".format(bad)
 
 
-def test_the_vendored_reader_matches_its_source():
-    """`tools/vendor.py --check` is the drift alarm: the reader is a copy of
-    ACH-DSC-Plotter's, and a copy nobody checks is a fork."""
-    source = os.path.join(os.path.dirname(ROOT), "ACH-DSC-Plotter", "src",
-                          "achdsc")
-    if not os.path.isdir(source):
-        pytest.skip("ACH-DSC-Plotter is not checked out beside this repo")
-    result = subprocess.run(
-        [sys.executable, os.path.join(ROOT, "tools", "vendor.py"), "--check"],
-        capture_output=True, text=True)
-    assert result.returncode == 0, result.stdout + result.stderr
+def test_the_reader_lives_here():
+    """The reader is this repo's own since ACH-DSC-Plotter was retired
+    (2026-09-28). A test that compared it with a sibling checkout failed on
+    whichever machine had the other repo out of step - a test must not
+    depend on the state of another folder."""
+    for name in ("trios_io.py", "trios_analysis.py"):
+        with open(os.path.join(SRC, "core", name), "r",
+                  encoding="utf-8") as fh:
+            head = fh.read(300)
+        assert "VENDORED" not in head and " HERE" in head, name
+    assert not os.path.exists(os.path.join(ROOT, "tools", "vendor.py"))
