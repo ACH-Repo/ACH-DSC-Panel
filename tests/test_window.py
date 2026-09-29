@@ -233,7 +233,8 @@ def test_stack_then_align_then_undo(window):
     window.select_all(True)
     window.stack_selected()
     offsets = [s.offset for s in window.doc.scans]
-    assert offsets[1] > offsets[0]
+    # the outliner's top at the top of the stack (2026-09-29)
+    assert offsets[0] > offsets[1]
     window.align_selected()
     assert [s.offset for s in window.doc.scans] != offsets
     window.undo.undo()
@@ -4200,8 +4201,11 @@ def test_giving_a_label_to_a_scan_keeps_it_in_place_and_it_follows(window):
     assert label.scan is scan and label in window.doc.labels_for(scan)
     assert plot.artist_point(label) == pytest.approx(before)
     # the scan moves by 0.5: the label moves exactly as far as the curve
+    # (it hangs from the drawn curve, which a refresh moves)
+    assert label.attached
     curve_before = plot.y_to_px(0.0 + scan.offset)
     scan.offset = 0.8
+    plot.rebuild()
     moved = plot.y_to_px(0.0 + scan.offset) - curve_before
     assert plot.artist_point(label)[1] == pytest.approx(before[1] + moved)
     assert plot.artist_point(label)[0] == pytest.approx(before[0])
@@ -4209,8 +4213,10 @@ def test_giving_a_label_to_a_scan_keeps_it_in_place_and_it_follows(window):
     here = plot.artist_point(label)
     window.parent_labels([label], None)
     assert label.scan is None and label.parent_offset is None
+    assert not label.attached
     assert plot.artist_point(label) == pytest.approx(here)
     scan.offset = 0.0
+    plot.rebuild()
     assert plot.artist_point(label) == pytest.approx(here)   # free: stays
     # each was ONE step
     window.undo.undo()
@@ -4299,11 +4305,15 @@ def test_an_owned_label_survives_a_save_and_a_unit_change(window, tmp_path,
     reopened, _problems = session.load(
         str(path), lambda _p: model.Sample(sample.path, sample.data))
     again = reopened.labels[0]
-    assert again.scan is not None and again.follow() == pytest.approx(0.2)
-    # an old session (no parent_offset) stays where it was drawn
+    # it hangs from its curve: the same sample and distance come back
+    assert again.scan is not None and again.attached
+    assert tuple(again.at) == tuple(label.at)
+    assert (again.dx, again.dy) == pytest.approx((label.dx, label.dy))
+    # an old session (no parent_offset, not hung) stays where it was drawn
     import json
     state = json.loads(path.read_text(encoding="utf-8"))
     del state["labels"][0]["parent_offset"]
+    del state["labels"][0]["at"]
     path.write_text(json.dumps(state), encoding="utf-8")
     older, _problems = session.load(
         str(path), lambda _p: model.Sample(sample.path, sample.data))
@@ -4322,8 +4332,12 @@ def test_the_driver_places_an_owned_label_where_it_is_drawn(window):
     label.x, label.y = 100.0, 0.2
     window.parent_labels([label], scan)
     scan.offset = 0.5
+    plot.rebuild()
+    window.doc.label_hints = plot.label_hints()
     x, y, transform = export._placed(window.doc, label)
-    assert transform == "ax.transData" and y == pytest.approx(0.7)
+    # the driver puts it where the panel draws it: 0.5 up with its scan
+    assert transform == "ax.transData" and y == pytest.approx(0.7, abs=0.01)
+    assert x == pytest.approx(100.0, abs=0.5)
 
 
 def test_a_double_click_on_a_page_handle_asks_for_the_size(window):
@@ -4529,31 +4543,33 @@ def test_a_spread_paints_with_the_pointer_on_the_plot(window):
 
 def test_s_on_scans_spreads_them_evenly_about_zero(window):
     """Christian, round 24: S with only scans selected gives evenly spaced
-    offsets, y = 0 the neutral line."""
+    offsets. Since 2026-09-29 the LOWEST scan stays put and is the neutral
+    line, and the offsets decide the order (the outliner only breaks
+    ties)."""
     plot, doc = window.plot, window.doc
     first, second = doc.scans
     first.offset, second.offset = 1.0, 0.3
     window.refresh()
     plot.grab()
     doc.select_only([first, second])
-    plot._cursor = QPointF(300.0, plot.y_to_px(0.0) - 80.0)
+    plot._cursor = QPointF(300.0, plot.y_to_px(0.3) - 80.0)
     assert window.run_op("transform.scale")
     state = plot._scale
     assert state["mode"] == "spread"
-    # ordered by offset; the one nearest zero sits ON zero
-    assert state["scans"] == [second, first]
-    assert second.offset == 0.0
-    assert first.offset == pytest.approx(0.7)       # the old spacing
-    # twice as far from zero, twice the step
+    # top of the stack first, by offset; the lowest stays on its line
+    assert state["scans"] == [first, second]
+    assert second.offset == pytest.approx(0.3)
+    assert first.offset == pytest.approx(1.0)       # the old spacing
+    # twice as far from the line, twice the step
     plot._update_transform(QPointF(300.0, state["zero"] - 160.0))
-    assert first.offset == pytest.approx(1.4)
+    assert first.offset == pytest.approx(0.3 + 1.4)
     # a typed number is the step itself
     state["typed"] = "0.5"
     plot._update_transform()
-    assert (second.offset, first.offset) == (0.0, 0.5)
+    assert (second.offset, first.offset) == pytest.approx((0.3, 0.8))
     plot._finish_transform()
     assert plot._scale is None
-    assert (second.offset, first.offset) == (0.0, 0.5)
+    assert (second.offset, first.offset) == pytest.approx((0.3, 0.8))
     window.undo.undo()                              # one step
     assert (first.offset, second.offset) == (1.0, 0.3)
     # Esc puts them back; overlaid scans start from the tallest curve
@@ -4561,8 +4577,9 @@ def test_s_on_scans_spreads_them_evenly_about_zero(window):
     window.refresh()
     plot.grab()
     assert plot.start_scale()
-    assert plot._scale["step"] > 0 and first.offset == 0.0
-    assert second.offset == pytest.approx(plot._scale["step"])
+    # tied: the outliner's order, the first on top, the lowest stays at 0
+    assert plot._scale["step"] > 0 and second.offset == 0.0
+    assert first.offset == pytest.approx(plot._scale["step"])
     plot._finish_transform(cancel=True)
     assert (first.offset, second.offset) == (0.0, 0.0)
     # with an artist in the selection it is the ordinary S
@@ -4671,26 +4688,37 @@ def test_a_note_points_at_a_curve_and_follows_its_scan(window, tmp_path,
     plot.set_view_y(*plot.view_y())
     before_tip, before_text = plot.leader_tip(note), plot.artist_point(note)
     trace.scan.offset += 0.2
+    plot.rebuild()
     lift = plot.y_to_px(0.2) - plot.y_to_px(0.0)
     assert plot.leader_tip(note).y() == pytest.approx(before_tip.y() + lift)
     assert plot.artist_point(note)[1] == pytest.approx(before_text[1] + lift)
     trace.scan.offset -= 0.2
     window.refresh()
     plot.grab()
-    # selected, its tip is dragged by the ring - one undo step
+    # it hangs from its curve like an analysis label (2026-09-29): dragged
+    # by its text it slides ALONG the curve, the arrow straight down onto
+    # it, and the distance follows the hand - one undo step
+    assert note.attached and note.dx == 0.0
     doc.select_only([note])
     plot.grab()
     tip = plot.leader_tip(note)
-    start = plot.to_widget(tip)
-    end = plot.to_widget(QPointF(tip.x() + 60.0, tip.y() - 70.0))
-    old = list(note.leader)
+    box = plot.artist_box(note)
+    start = plot.to_widget(box.center())
+    end = plot.to_widget(QPointF(box.center().x() + 60.0,
+                                 box.center().y() - 30.0))
+    old = (tuple(note.at), note.dx, note.dy)
     plot.mousePressEvent(_press(plot, (start.x(), start.y())))
-    assert plot._leader_drag is not None
+    assert plot._leader_drag is None
     plot.mouseMoveEvent(_move(plot, (end.x(), end.y())))
     plot.mouseReleaseEvent(_release(plot, (end.x(), end.y())))
-    assert note.leader != old
+    moved = plot.leader_tip(note)
+    assert moved.x() == pytest.approx(tip.x() + 60.0, abs=3.0)
+    assert plot.artist_box(note).center().x() == pytest.approx(moved.x(),
+                                                               abs=1.0)
+    assert note.dy == pytest.approx(old[2] - 30.0 + (tip.y() - moved.y()),
+                                    abs=3.0)
     window.undo.undo()
-    assert note.leader == old
+    assert (tuple(note.at), note.dx, note.dy) == old
     # listed as a note; saved and read back; written as annotate
     window.refresh()
     rows = [item for item in window.outliner._items()

@@ -229,9 +229,43 @@ def number_format(analysis, doc):
     return style.value(doc, analysis, "number_format")
 
 
+#: An integration's peak temperature, where a label asks for it.
+_PEAK = re.compile(r"\{Tp\}")
+#: What "Tp shown" adds after an integration's own words.
+PEAK_TEMPLATE = "*T*_{p} = {Tp}"
+
+
+def peak_text(analysis, doc=None):
+    """An integration's peak temperature, written in the axes' temperature
+    unit with the house temperature format ("124 \u00b0C"), or "?"."""
+    from . import style
+    from .model import number
+    value = number(getattr(analysis, "fields", {}).get("Peak temperature"))
+    if value is None:
+        return "? " + natural_unit(TEMPERATURE, doc)
+    unit = getattr(doc, "x_unit", units.TEMP_C) if doc else units.TEMP_C
+    spec = (style.figure_value(doc, "temperature_format") if doc is not None
+            else style.preference("temperature_format"))
+    converted = float(units.from_celsius(value, unit))
+    return "{} {}".format(numbers.write(converted, spec, numbers.TEMPERATURE),
+                          units.TEMPERATURE_LABEL.get(unit, unit))
+
+
+def shows_peak(analysis, doc=None):
+    """True when an integration's label is to give its Tp as well."""
+    from . import style
+    if "Integration" not in getattr(analysis, "model_name", ""):
+        return False
+    return style.value(doc, analysis, "show_peak") == style.PEAK_ON
+
+
 def render(analysis, doc=None):
     """The label's text, with every `{}` filled in, and its problems."""
     template = template_of(analysis)
+    # Tp: where the label says `{Tp}`, else after it when asked for
+    # (Christian, 2026-09-29).
+    if shows_peak(analysis, doc) and not _PEAK.search(template):
+        template = template + ", " + PEAK_TEMPLATE
     value, quantity = result(analysis)
     spec = number_format(analysis, doc)
     problems = []
@@ -270,8 +304,11 @@ def render(analysis, doc=None):
         return text
 
     text = _PLACEHOLDER.sub(fill, template)
+    if _PEAK.search(text):
+        text = _PEAK.sub(lambda _m: peak_text(analysis, doc), text)
     if analysis.label is not None:
-        for match in _TYPED.finditer(_PLACEHOLDER.sub("", template)):
+        for match in _TYPED.finditer(
+                _PEAK.sub("", _PLACEHOLDER.sub("", template))):
             if canonical_unit(match.group(1)) in wanted:
                 problems.append(("typed", "'{}' is typed by hand, not the "
                                           "measurement; {{}} shows the "

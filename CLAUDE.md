@@ -54,13 +54,18 @@ going; this file is about how it is done here.
 | `core/labels.py` | what an analysis label says: templates, units, the rules |
 | `core/chem.py` | a SMILES as atoms and bonds to draw (RDKit, optional) |
 | `core/log.py` | the log file, the excepthook, the crash file |
-| `core/numbers.py` | how a number is written: the `%.3g` formats |
+| `core/numbers.py` | how a number is written: the `%.3g` formats; typed sums |
+| `core/dtg.py` | the DTG: the m% curve's derivative, its units and window |
+| `core/shades.py` | shades of one colour for a stack (the F3 gradient) |
 | `core/export.py` | CSV, the driver bridge, and the export warnings |
+| `core/profile.py` | what is particular to DSC/SDT data (one-press F, ...) |
 | `core/ops.py` | the operator registry (copied from MoloM, keep in step) |
 | `ui/plot.py` | the painted plot: view, gestures, picking, drawing |
 | `ui/window.py` | operators, menus, docks, drops, exports, undo |
 | `ui/settings.py` | Edit > Settings (`Ctrl+,`): the two-column house style page |
 | `ui/appearance.py` | the application palette, following the plot's theme |
+| `ui/colour.py` | the colour picker (wheel, dropper) and the gradient dialog |
+| `ui/numbox.py` | the number boxes that take a sum (`NumberBox`, `WholeBox`) |
 | `ui/outliner.py`, `ui/palette.py`, `ui/dialogs.py` | the rest of the UI |
 
 ## Traps already paid for
@@ -436,6 +441,41 @@ going; this file is about how it is done here.
 * **The figure's drawing theme is not always `doc.theme`**
   (`window.drawing_theme`): a page colour of the other family flips the
   ink. `refresh` sets it; the windows keep `doc.theme`.
+* **A fit margin is a SHARE OF THE AXIS** (round 27): left 0.1 is the
+  first tenth of the x axis empty. It was % of the data's range until
+  preferences version 2 / session version 6, which `style.convert_old_fit`
+  converts. Read both of an axis's through `PlotWidget.fit_pads`.
+* **The handling colours are not the ink** (`plot.ACCENTS`): the reticle,
+  band and selection follow the document's theme even when the page flips
+  the ink to the other family. `set_theme(drawing, accent=doc.theme)`.
+* **The y axis shows ONE quantity** (`Document.y_signal`): the heat flow,
+  or the DTG while one is shown. Never assume "not a mass" means heat flow:
+  `Scan.is_heat`, `is_mass`, `is_dtg`, and `doc.y_axis_unit()` for the y
+  axis's unit. A heat flow beside a DTG is MISSING (`axis_missing`).
+* **A decorator's page place is a fraction of the HOME frame** (round
+  27b): `rel_to_px` / `px_to_rel`, never `rect.left() + x * width`. At
+  home (the lock, else the fit: `PlotWidget.home`) that is the old
+  arithmetic; zoomed, decorators move with the data. `_home_frames`
+  must not be asked while a fit is being worked out (`_fitting`).
+* **A label on a curve is NOT placed by x and y** (`TextLabel.attached`:
+  `at`, `dx`, `dy`). Its curve point comes from the drawn TRACE, so an
+  offset set without a rebuild does not move it yet - go through the
+  undo stack or `rebuild()`. `_fields_of` is `("at", "dx", "dy")`.
+* **The OFFSETS order a stack; the outliner breaks ties** (2026-09-29):
+  S and "Stack evenly" keep the order the offsets have
+  (`PlotWidget.stack_order`), and only scans on the same offset go by the
+  outliner (`Document.outliner_key`: `doc.samples` as listed, a file's
+  curves in `model.SIGNAL_ROWS` order), its top on top. S keeps the
+  LOWEST scan where it is. The legend lists in the outliner's order.
+  Change it only through `set_sample_order` (it re-sorts `doc.scans`,
+  which labels in a session are matched by).
+* **A sample row is editable (F2) and may have a box**: `_item_changed`
+  tells a rename from a tick by comparing the text with `sample.name`
+  (`Sample.name` is the title, else the file name).
+* **`undo.CallCommand` applies itself when built**: calling the action
+  first as well runs it twice (closing a file lost its labels that way).
+* **Every colour pick goes through `colour.get_colour`** (modal, live,
+  Revert gives an invalid QColor); `QColorDialog` is no longer used.
 * **The driver export is FROZEN** (Christian, 2026-09-28). New features go
   into the panel's own drawing and PNG/SVG exports, not `DSC_Plotter.py`.
 

@@ -13,7 +13,7 @@ and the typed text is left alone while it is being typed.
 """
 
 from PySide6.QtCore import QLocale, QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QValidator
 from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QColorDialog,
                                QComboBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFontComboBox, QFormLayout,
@@ -37,29 +37,9 @@ from ..core import model as units_module
 from ..core import numbers
 from ..core import style
 from ..core import units
-
-
-class NumberBox(QDoubleSpinBox):
-    """A spin box that reads "1.5" and "1,5" alike, and commits on Enter."""
-
-    def __init__(self, parent=None):
-        QDoubleSpinBox.__init__(self, parent)
-        locale = QLocale(QLocale.C)
-        locale.setNumberOptions(QLocale.OmitGroupSeparator)
-        self.setLocale(locale)
-        self.setKeyboardTracking(False)
-
-    @staticmethod
-    def _normalise(text):
-        return str(text).strip().replace(",", ".")
-
-    def validate(self, text, pos):
-        state, _fixed, position = QDoubleSpinBox.validate(
-            self, self._normalise(text), pos)
-        return state, text, position
-
-    def valueFromText(self, text):
-        return QDoubleSpinBox.valueFromText(self, self._normalise(text))
+from .colour import MORE_COLOURS, PLOTTER_COLOURS
+from .colour import get_colour as pick_colour
+from .numbox import NumberBox, WholeBox
 
 
 class RangeDialog(QDialog):
@@ -156,11 +136,7 @@ class RangeDialog(QDialog):
 
     @staticmethod
     def _read(edit):
-        try:
-            value = float(edit.text().strip().replace(",", "."))
-        except ValueError:
-            return None
-        return value if value == value and abs(value) != float("inf") else None
+        return numbers.evaluate(edit.text())
 
     def values(self):
         """`(low, high)` in increasing order, or None if it is not a range."""
@@ -273,11 +249,8 @@ class PageSizeDialog(QDialog):
 
     @staticmethod
     def _read(edit):
-        try:
-            value = float(edit.text().strip().replace(",", "."))
-        except ValueError:
-            return None
-        return value if value == value and 0 < value < 1e4 else None
+        value = numbers.evaluate(edit.text())
+        return value if value is not None and 0 < value < 1e4 else None
 
     def unit(self):
         return self.unit_box.currentData()
@@ -807,6 +780,7 @@ class ArtistTransform(QWidget):
         self.at_x.setValue(float(artist.x))
         self.at_y.setValue(float(artist.y))
         form.addRow("x, y", row)
+        self._form, self._place_row = form, row
 
         self.anchor = QComboBox()
         for name in units_module.ANCHORS:
@@ -835,6 +809,16 @@ class ArtistTransform(QWidget):
         self.at_x.valueChanged.connect(self._apply)
         self.at_y.valueChanged.connect(self._apply)
         self.anchor.currentIndexChanged.connect(self._apply)
+
+    def hide_position(self, anchor_too=False):
+        """No page position to type: a label hanging from its curve is
+        placed by its point and distance instead."""
+        for widget in (self.space, self._place_row) + (
+                (self.anchor,) if anchor_too else ()):
+            label = self._form.labelForField(widget)
+            if label is not None:
+                label.setVisible(False)
+            widget.setVisible(False)
 
     def _space_changed(self, _index=0):
         """Convert the stored position so the artist does not jump."""
@@ -1107,12 +1091,22 @@ def _colour_button(parent, get_colour, set_colour):
         button.setStyleSheet(
             "background: {}; border: 1px solid #555;".format(colour.name()))
 
+    def live(name):
+        set_colour(name)
+        refresh()
+
     def pick():
-        colour = QColorDialog.getColor(QColor(get_colour()), parent,
-                                       "Pick a colour")
+        # Live: the figure follows the wheel. Revert puts the colour back,
+        # and a "Follow the theme" / "Same as scan" that was ticked.
+        auto = getattr(parent, "auto", None)
+        was_auto = auto is not None and auto.isChecked()
+        colour = pick_colour(QColor(get_colour()), parent, "Pick a colour",
+                             live=live)
         if colour.isValid():
             set_colour(colour.name())
-            refresh()
+        elif was_auto:
+            auto.setChecked(True)
+        refresh()
 
     button.clicked.connect(lambda _c=False: pick())
     refresh()
@@ -1123,7 +1117,7 @@ class ScanSettings(_LiveDialog):
     """Everything about one scan, plus its sample's molar mass."""
 
     FIELDS = ("colour", "label", "offset", "line_width", "keep",
-              "molar_mass_override")
+              "molar_mass_override", "dtg_window")
     INDIVIDUAL = ("label", "offset", "molar_mass_override")
     GROUP_DISABLED = ("label", "offset", "molar", "own_molar", "analyses")
 
@@ -1155,6 +1149,22 @@ class ScanSettings(_LiveDialog):
 
         self.line_width = _style_number(self, scan, "line_width")
         form.addRow("Line width", self.line_width)
+
+        # A DTG's smoothing: the window of the local slope, in kelvin of
+        # the ramp (`core/dtg.py`). Only a DTG has one.
+        self.dtg_window = NumberBox()
+        self.dtg_window.setDecimals(1)
+        self.dtg_window.setRange(0.0, 100.0)
+        self.dtg_window.setSingleStep(0.5)
+        self.dtg_window.setSuffix(" K")
+        self.dtg_window.setValue(float(getattr(scan, "dtg_window", 0.0)))
+        self.dtg_window.setToolTip("Smoothing window of the derivative, in "
+                                   "kelvin of the ramp. 0 is none.")
+        self.dtg_window.valueChanged.connect(lambda _v: self._apply())
+        if getattr(scan, "is_dtg", False):
+            form.addRow("Smoothing", self.dtg_window)
+        else:
+            self.dtg_window.setVisible(False)
 
         # The template's x_truncate: hide the ends by POSITION along the
         # curve, never by temperature (a segment doubles back at its start).
@@ -1312,6 +1322,8 @@ class ScanSettings(_LiveDialog):
         self._describe_cut()
         scan.molar_mass_override = (float(self.own_molar.value())
                                     if self.own_molar.value() > 0 else None)
+        if getattr(scan, "is_dtg", False):
+            scan.dtg_window = float(self.dtg_window.value())
         scan.sample.molar_mass = (float(self.molar.value())
                                   if self.molar.value() > 0 else None)
         scan._cache_key = None
@@ -1445,7 +1457,59 @@ class CaptionSettings(_LiveDialog):
         self._live()
 
 
-class AxisSettings(_LiveDialog):
+def axis_unit(doc, axis):
+    """The unit an axis's numbers are in, for its range boxes."""
+    if doc is None:
+        return ""
+    if axis.which == "x":
+        if doc.x_axis != units_module.AXIS_TEMPERATURE:
+            return "min"
+        return units.TEMPERATURE_LABEL.get(doc.x_unit, doc.x_unit)
+    if axis.which == "y2":
+        return doc.weight_unit
+    return doc.y_axis_unit()
+
+
+class _RangeRows(object):
+    """The Range and Locked rows of an axis's settings."""
+
+    def _show_range(self):
+        plot = _plot_of(self)
+        shown = plot is not None and self.obj.which in plot.shown_view_axes()
+        for widget in (self.low, self.high, self.locked):
+            widget.setEnabled(shown)
+            widget.blockSignals(True)
+        if shown:
+            lo, hi = plot.view_of(self.obj.which)
+            self.low.setValue(float(lo))
+            self.high.setValue(float(hi))
+            self.locked.setChecked(plot.lock_of(self.obj.which) is not None)
+        for widget in (self.low, self.high, self.locked):
+            widget.blockSignals(False)
+
+    def _typed_range(self):
+        window = _window_of(self)
+        lo, hi = float(self.low.value()), float(self.high.value())
+        ok = hi > lo and window is not None and window.set_axis_range(
+            self.obj, lo, hi)
+        for box in (self.low, self.high):
+            box.setStyleSheet("" if ok else "border: 1px solid #d04040;")
+        if ok:
+            self._show_range()
+
+    def _lock_toggled(self, on):
+        window = _window_of(self)
+        if window is None:
+            return
+        if on:
+            window.lock_axis(self.obj, float(self.low.value()),
+                             float(self.high.value()))
+        else:
+            window.lock_axis(self.obj, False)
+        self._show_range()
+
+
+class AxisSettings(_RangeRows, _LiveDialog):
     """The SPINE: its side, its ticks and their steps, the line opposite it,
     and the grid. Opened by double-clicking the axis line; its numbers
     (`NumberSettings`) and its caption (`CaptionSettings`) have their own
@@ -1468,6 +1532,35 @@ class AxisSettings(_LiveDialog):
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         layout.addLayout(form)
+
+        # The RANGE (Christian, 2026-09-29: "axis pop up menus must
+        # obviously allow you to set their min and max values"): what the
+        # axis shows now, typed back as one view step; locked, F returns to
+        # it. Through the window, never this dialog's snapshot.
+        self.low = NumberBox()
+        self.high = NumberBox()
+        unit = axis_unit(doc, axis)
+        for box in (self.low, self.high):
+            box.setDecimals(4)
+            box.setRange(-1e9, 1e9)
+            if unit:
+                box.setSuffix(" " + unit)
+        self.low.setToolTip("The axis's minimum. A sum works: 50-10.")
+        self.high.setToolTip("The axis's maximum.")
+        range_row = QWidget(self)
+        range_line = QHBoxLayout(range_row)
+        range_line.setContentsMargins(0, 0, 0, 0)
+        range_line.addWidget(self.low, 1)
+        range_line.addWidget(QLabel("to"), 0)
+        range_line.addWidget(self.high, 1)
+        form.addRow("Range", range_row)
+        self.locked = QCheckBox("Locked: F returns to this range")
+        self.locked.setToolTip("Unticked, F fits the data.")
+        form.addRow("", self.locked)
+        self._show_range()
+        self.low.valueChanged.connect(lambda _v: self._typed_range())
+        self.high.valueChanged.connect(lambda _v: self._typed_range())
+        self.locked.toggled.connect(self._lock_toggled)
 
         self.side = QComboBox()
         for side in (("bottom", "top") if axis.which == "x"
@@ -1514,7 +1607,7 @@ class AxisSettings(_LiveDialog):
         self.minor = QCheckBox("Minor ticks")
         self.minor.setToolTip("Unnumbered ticks between the numbered ones.")
         form.addRow("", self.minor)
-        self.minor_count = QSpinBox()
+        self.minor_count = WholeBox()
         self.minor_count.setRange(1, 20)
         self.minor_count.setToolTip("Minor intervals per major one: 5 puts "
                                     "four ticks between two numbers.")
@@ -1727,7 +1820,7 @@ class FigureSettings(_LiveDialog):
             box.setRange(0.1, 100.0)
         form.addRow("Aspect ratio", pair(self.aspect_w, self.aspect_h, ":"))
 
-        self.dpi = QSpinBox()
+        self.dpi = WholeBox()
         self.dpi.setRange(72, 2400)
         self.dpi.setSingleStep(50)
         self.dpi.setSuffix(" dpi")
@@ -1863,8 +1956,9 @@ class LabelSettings(_LiveDialog):
 
     FIELDS = ("text", "colour", "size", "bold", "x", "y", "space",
               "anchor", "rotation", "leader", "leader_from", "leader_colour",
-              "flush", "vline", "line_dashed")
-    INDIVIDUAL = ("text", "x", "y", "space", "leader", "vline")
+              "flush", "vline", "line_dashed", "at", "dx", "dy")
+    INDIVIDUAL = ("text", "x", "y", "space", "leader", "vline", "at", "dx",
+                  "dy")
     GROUP_DISABLED = ("text", "transform.space", "transform.at_x",
                       "transform.at_y")
 
@@ -1899,6 +1993,30 @@ class LabelSettings(_LiveDialog):
         self.transform = ArtistTransform(label, getattr(parent, "plot", None),
                                          on_change=self._live, parent=self)
         form.addRow("Place", self.transform)
+
+        # A label that belongs to a scan hangs from its curve (2026-09-29):
+        # where along it, and how far from it - an analysis label's rows.
+        self.hang_at = QLineEdit(self)
+        self.hang_at.setToolTip("The temperature on its curve it hangs "
+                                "from. 98 is in the axis unit; 98 F, 371 K "
+                                "convert.")
+        self.hang_dy = NumberBox()
+        self.hang_dx = NumberBox()
+        for box in (self.hang_dy, self.hang_dx):
+            box.setDecimals(1)
+            box.setRange(-2000.0, 2000.0)
+            box.setSuffix(" px")
+        self.hang_dy.setToolTip("How far above the curve (below: "
+                                "negative). Drag it up and down.")
+        self.hang_dx.setToolTip("How far to the right of its point.")
+        form.addRow("On the curve at", self.hang_at)
+        form.addRow("Distance", self.hang_dy)
+        form.addRow("Sideways", self.hang_dx)
+        self._hang_rows = (self.hang_at, self.hang_dy, self.hang_dx)
+        self._show_hang()
+        self.hang_at.editingFinished.connect(self._typed_hang_at)
+        self.hang_dy.valueChanged.connect(self._typed_hang)
+        self.hang_dx.valueChanged.connect(self._typed_hang)
 
         form.addRow("Colour", _colour_button(
             self, lambda: (label.colour if label.colour != "auto"
@@ -1951,6 +2069,12 @@ class LabelSettings(_LiveDialog):
         form.addRow("", self.leader_auto)
         self._note_rows = (tip, self.leader_from, self.arrow_colour,
                            self.leader_auto)
+        # On its curve a note's arrow drops straight onto its point: no
+        # point to type apart from where it hangs, no edge to leave from.
+        if label.attached:
+            for widget in (tip, self.leader_from):
+                form.labelForField(widget).setVisible(False)
+                widget.setVisible(False)
         self._show_tip()
 
         # A MARKER LINE's temperature, typed, and its style.
@@ -1985,6 +2109,62 @@ class LabelSettings(_LiveDialog):
         self.leader_auto.toggled.connect(self._apply)
         self.tip_x.editingFinished.connect(self._typed_tip)
         self.tip_y.editingFinished.connect(self._typed_tip)
+
+    def _show_hang(self):
+        """The rows of a label hanging from its curve, shown only then."""
+        label = self.obj
+        on = bool(getattr(label, "attached", False))
+        form = self.findChildren(QFormLayout)[0]
+        for widget in self._hang_rows:
+            visible = on and not (widget is self.hang_dx and label.leader)
+            widget.setVisible(visible)
+            caption = form.labelForField(widget)
+            if caption is not None:
+                caption.setVisible(visible)
+        if not on:
+            return
+        self.transform.hide_position(anchor_too=bool(label.leader))
+        plot = getattr(self.parent(), "plot", None)
+        celsius = plot.attached_celsius(label) if plot is not None else None
+        for widget in self._hang_rows:
+            widget.blockSignals(True)
+        if celsius is not None:
+            unit = getattr(self.doc, "x_unit", units.TEMP_C)
+            self.hang_at.setText("{} {}".format(
+                numbers.write(float(plot.to_axis(celsius)), "%.2f"),
+                units.TEMPERATURE_LABEL.get(unit, unit)))
+        self.hang_dy.setValue(-float(plot.label_dy(label))
+                              if plot is not None else 0.0)
+        self.hang_dx.setValue(float(label.dx or 0.0))
+        for widget in self._hang_rows:
+            widget.blockSignals(False)
+
+    def _typed_hang_at(self):
+        label = self.obj
+        plot = getattr(self.parent(), "plot", None)
+        if not label.attached or plot is None:
+            return
+        doc = self.doc
+        unit = getattr(doc, "x_unit", units.TEMP_C) if doc else units.TEMP_C
+        celsius = units.parse_temperature(self.hang_at.text(), unit)
+        at = (plot.attach_at_celsius(label, celsius)
+              if celsius is not None else None)
+        if at is None:
+            self.hang_at.setStyleSheet("border: 1px solid #d04040;")
+            return
+        self.hang_at.setStyleSheet("")
+        if tuple(at) != tuple(label.at):
+            label.at = tuple(at)
+            self._live()
+
+    def _typed_hang(self, _value=0.0):
+        label = self.obj
+        if not label.attached:
+            return
+        label.dy = -float(self.hang_dy.value())
+        if not label.leader:
+            label.dx = float(self.hang_dx.value())
+        self._live()
 
     def _typed_line(self):
         label = self.obj
@@ -2033,10 +2213,7 @@ class LabelSettings(_LiveDialog):
         doc = self.doc
         unit = getattr(doc, "x_unit", units.TEMP_C) if doc else units.TEMP_C
         celsius = units.parse_temperature(self.tip_x.text(), unit)
-        try:
-            height = float(self.tip_y.text().replace(",", "."))
-        except ValueError:
-            height = None
+        height = numbers.evaluate(self.tip_y.text())
         if celsius is None or height is None:
             box = self.tip_x if celsius is None else self.tip_y
             box.setStyleSheet("border: 1px solid #d04040;")
@@ -2094,7 +2271,9 @@ class AnalysisSettings(_LiveDialog):
     """
 
     FIELDS = ("visible", "colour", "label", "label_size", "flush",
-              "show_interval", "construction", "shade", "number_format",
+              "show_interval", "construction", "shade", "shading",
+              "show_peak",
+              "number_format",
               "unit", "label_dy")
     INDIVIDUAL = ("label",)
     GROUP_DISABLED = ("label", "model", "start", "end")
@@ -2160,6 +2339,41 @@ class AnalysisSettings(_LiveDialog):
         self.interval.setToolTip("Dashes at the interval ends, on the "
                                  "curve.")
         form.addRow("", self.interval)
+
+        # The shading of an integration, and whether it lets things show
+        # through. Only an integration is shaded.
+        self.shade = QCheckBox("Shade the area")
+        self.shade.setChecked(bool(analysis.shade))
+        self.shade.setToolTip("Fill the integrated area between the curve "
+                              "and its baseline.")
+        # Translucent, or opaque in the colour the translucent fill makes
+        # over the page; the house style's until chosen, like "Lines".
+        self.opaque = StyleChoice(
+            style.SHADINGS, getattr(analysis, "shading", None),
+            lambda: style.SHADING_TITLES.get(
+                style.inherited(self.doc, self.obj, "shading"), ""),
+            parent=self, titles=style.SHADING_TITLES)
+        self.opaque.setEnabled(bool(analysis.shade))
+        self.opaque.setToolTip("Opaque: the colour the translucent shading "
+                               "makes over the background, so nothing "
+                               "behind it shows through.")
+        integration = "Integration" in analysis.model_name
+        form.addRow("", self.shade)
+        form.addRow("Shading", self.opaque)
+        # Its peak temperature in the label as well (2026-09-29).
+        self.peak = StyleChoice(
+            style.PEAKS, getattr(analysis, "show_peak", None),
+            lambda: style.PEAK_TITLES.get(
+                style.inherited(self.doc, self.obj, "show_peak"), ""),
+            parent=self, titles=style.PEAK_TITLES)
+        self.peak.setToolTip("The peak temperature after the enthalpy: "
+                             "*T*_{p} = 124 \u00b0C. {Tp} in the label "
+                             "puts it anywhere.")
+        form.addRow("Peak (Tp)", self.peak)
+        for box in (self.shade, self.opaque, self.peak):
+            box.setVisible(integration)
+        form.labelForField(self.opaque).setVisible(integration)
+        form.labelForField(self.peak).setVisible(integration)
 
         # The lines of an onset, endset or Tg, following the house style
         # until chosen, like the alignment below. Only those have lines.
@@ -2241,6 +2455,9 @@ class AnalysisSettings(_LiveDialog):
 
         self.visible.toggled.connect(self._apply)
         self.interval.toggled.connect(self._apply)
+        self.shade.toggled.connect(self._apply)
+        self.opaque.changed.connect(self._apply)
+        self.peak.changed.connect(self._apply)
         self.lines.changed.connect(self._apply)
         self.text_size.changed.connect(self._apply)
         self.flush.changed.connect(self._apply)
@@ -2407,6 +2624,10 @@ class AnalysisSettings(_LiveDialog):
         analysis = self.obj
         analysis.visible = bool(self.visible.isChecked())
         analysis.show_interval = bool(self.interval.isChecked())
+        analysis.shade = bool(self.shade.isChecked())
+        analysis.shading = self.opaque.value()
+        analysis.show_peak = self.peak.value()
+        self.opaque.setEnabled(analysis.shade)
         analysis.construction = self.lines.value()
         analysis.label_size = self.text_size.value()
         analysis.flush = self.flush.value()
@@ -2884,24 +3105,6 @@ class ExportDialog(QDialog):
         if os.path.splitext(path)[1].lower() not in (".svg", ".png"):
             path += ".svg"
         return path, bool(self.colours.currentData())
-
-
-#: The DSC_Plotter template's line colours, in its order (`colors` in its
-#: driver): what the colour picker's basic colours start with.
-PLOTTER_COLOURS = ("#0000ff", "#008000", "#ff0000", "#ffa500", "#ff00ff",
-                   "#d2691e", "#00008b", "#005000", "#00ffff", "#008080",
-                   "#800080", "#8a2be2", "#808080", "#800000", "#9acd32",
-                   "#000000")
-#: And after them: the panel's own screen colours, Tableau's ten,
-#: Okabe and Ito's colour-blind-safe set, and greys.
-MORE_COLOURS = ("#6ea8ff", "#ffb04e", "#7fd08a", "#e07b7b", "#c79bef",
-                "#4fd0c8", "#d8d16a", "#f08ac0",
-                "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-                "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
-                "#e69f00", "#56b4e9", "#009e73", "#f0e442", "#0072b2",
-                "#d55e00", "#cc79a7",
-                "#ffffff", "#e0e0e0", "#c0c0c0", "#a0a0a0", "#606060",
-                "#404040", "#202020")
 
 
 def install_basic_colours():

@@ -107,7 +107,8 @@ def curves_csv(doc, path):
         if y is not None:
             columns.append(y)
             headers.append("{} {}/{}".format(
-                name, "Mass" if scan.is_mass else "HeatFlow",
+                name, "Mass" if scan.is_mass
+                else "DTG" if scan.is_dtg else "HeatFlow",
                 doc.unit_for(scan)))
     rows = max(len(c) for c in columns)
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
@@ -213,7 +214,7 @@ def driver_source(doc):
     y_dim = {units.UNIT_MW: "'Q'", units.UNIT_W_G: "'Qn'",
              units.UNIT_W_MOL: "'Qn'"}.get(doc.y_unit, "'Qn'")
     x_dim = "'T'" if doc.x_axis == model.AXIS_TEMPERATURE else "'t'"
-    heat = [s for s in doc.visible_scans() if not s.is_mass]
+    heat = [s for s in doc.visible_scans() if s.is_heat]
     for scan in heat:
         i = index[os.path.normcase(scan.sample.path)]
         lines.append("    add_line(ax, datas, ({}, {}), color='{}', x={},"
@@ -404,6 +405,14 @@ def _placed(doc, artist):
     # it was placed (`TextLabel.follow`); in axes fractions that is the
     # distance over the y range the figure is framed at.
     follow = artist.follow() if hasattr(artist, "follow") else 0.0
+    # A label hanging from its curve is placed where the panel draws it,
+    # in data units (`MainWindow` hands the places over as a hint).
+    hung = (getattr(doc, "label_hints", None) or {}).get(id(artist))
+    if hung is not None:
+        x = float(hung[0])
+        if doc.x_axis == model.AXIS_TEMPERATURE:
+            x = float(units.to_celsius(x, doc.x_unit))
+        return x, float(hung[1]), "ax.transData"
     if getattr(artist, "space", "relative") == model.SPACE_DATA:
         x = float(artist.x)
         if doc.x_axis == model.AXIS_TEMPERATURE:
@@ -450,6 +459,16 @@ def _legend_lines(doc):
     return out
 
 
+def _flush_ha(label):
+    """matplotlib's `ha` for a label's flush (the panel's `_flush_of`)."""
+    chosen = getattr(label, "flush", None)
+    if chosen in ("left", "right", "center"):
+        return chosen
+    anchor = str(getattr(label, "anchor", "center"))
+    return ("left" if "left" in anchor else
+            "right" if "right" in anchor else "center")
+
+
 def _label_lines(doc):
     """Each label the user added, as `ax.text`: text (markup as mathtext),
     place, anchor, size, weight, colour and rotation."""
@@ -459,6 +478,13 @@ def _label_lines(doc):
             continue
         x, y, transform = _placed(doc, label)
         ha, va = _ha_va(label.anchor)
+        hung = (getattr(doc, "label_hints", None) or {}).get(id(label))
+        tip = None
+        if hung is not None and len(hung) == 4:
+            # a note hanging from its curve: its flush edge over the point
+            tip = (hung[2], hung[3])
+            ha = _flush_ha(label)
+            va = "center"
         colour = label.colour
         if colour in (None, "", "auto"):
             colour = label.scan.colour if label.scan is not None else "#1a1a1a"
@@ -469,8 +495,10 @@ def _label_lines(doc):
             # as its scan has moved).
             out.append("    ax.annotate({!r}, xy=({:.6g}, {:.6g}), "
                        "xycoords='data',".format(
-                           mathtext(label.text), float(label.leader[0]),
-                           float(label.leader[1]) + label.follow()))
+                           mathtext(label.text),
+                           float(tip[0] if tip else label.leader[0]),
+                           float(tip[1] if tip else
+                                 label.leader[1] + label.follow())))
             out.append("                xytext=({:.4f}, {:.4f}), "
                        "textcoords={!r},".format(
                            x, y, "axes fraction"

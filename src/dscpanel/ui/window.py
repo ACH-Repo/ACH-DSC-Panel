@@ -22,13 +22,14 @@ import sys
 from PySide6.QtCore import QByteArray, QPoint, QPointF, QRectF, Qt
 from PySide6.QtGui import (QAction, QColor, QCursor, QImage, QKeySequence,
                            QPainter)
-from PySide6.QtWidgets import (QApplication, QColorDialog, QDialog,
+from PySide6.QtWidgets import (QApplication, QDialog,
                                QDockWidget, QFileDialog, QInputDialog, QLabel,
                                QMainWindow, QMenu, QMessageBox,
                                QStackedWidget, QTabWidget, QWidget)
 
 from .. import branding
-from ..core import (arrange, export, loader, measure, model, ops, presets,
+from ..core import (arrange, dtg, export, loader, measure, model, ops,
+                    presets,
                     session, style, undo, units)
 from ..core.log import LOGGER
 from ..core import figure as figure_module
@@ -40,6 +41,7 @@ from .dialogs import (AnalysisSettings, ArrowSettings, AxisSettings,
                       PresetSaveDialog, RangeDialog, SampleSettings,
                       ScanSettings, install_basic_colours)
 from . import appearance
+from . import colour as colour_module
 from .loading import Loader
 from .outliner import Outliner
 from .palette import MeasurePalette, OperatorPalette
@@ -163,6 +165,13 @@ class MainWindow(QMainWindow):
         # Label rows dropped on a scan (or the Decorators): parenting.
         self.outliner.parent_requested.connect(
             lambda labels, scan: self.parent_labels(labels, scan))
+        # A file's own box, its name (F2) and its place in the list.
+        self.outliner.file_toggled.connect(
+            lambda sample, on: self.show_sample(sample, on))
+        self.outliner.sample_renamed.connect(
+            lambda sample, name: self.rename_sample(sample, name))
+        self.outliner.samples_moved.connect(
+            lambda samples, gap: self.move_samples(samples, gap))
 
         self.ops = ops.OperatorRegistry()
         self._last_operator = ""
@@ -232,6 +241,8 @@ class MainWindow(QMainWindow):
         plot.transform_done.connect(self._transform_done)
         plot.measure_ready.connect(self._measure_ready)
         plot.view_committed.connect(self._view_committed)
+        plot.margin_done.connect(
+            lambda side, share: self.set_fit_margin(side, share))
         plot.selection_changed.connect(self._selection_changed)
         plot.activated.connect(self.edit_object)
         plot.page_size_asked.connect(self.ask_page_size)
@@ -385,13 +396,13 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def ask_background(self):
-        colour = QColorDialog.getColor(
+        colour = colour_module.get_colour(
             self.plot.page_colour(), self, "Background")
         if colour.isValid():
             self.set_background(colour.name())
 
     def refresh(self, keep_view=True):
-        plot_module.set_theme(self.drawing_theme())
+        plot_module.set_theme(self.drawing_theme(), accent=self.doc.theme)
         # The windows around the plot wear its theme too: the outliner, the
         # menus and the dialogs were light beside a dark plot.
         appearance.apply(self.doc.theme)
@@ -554,6 +565,162 @@ class MainWindow(QMainWindow):
     def _transform_done(self, changes, label):
         self.undo.set_props(changes, label)
 
+    # ------------------------------------------------ files in the outliner
+    def show_sample(self, sample, on):
+        """A file's box: all its curves on the figure shown or hidden, one
+        undo step."""
+        scans = [s for s in self.doc.scans if s.sample is sample
+                 and bool(s.visible) != bool(on)]
+        if not scans:
+            return
+        with self._room_for_axes("show" if on else "hide"):
+            self.undo.set_props([(s, "visible", bool(on)) for s in scans],
+                                "show {}".format(sample.name) if on
+                                else "hide {}".format(sample.name))
+
+    def rename_sample(self, sample, name):
+        """A file's name on the figure ("" or None: the file's own), one
+        undo step. Its curves' names, the legend and exports follow."""
+        title = str(name).strip() or None
+        if title == sample.file_name:
+            title = None
+        if title == sample.title:
+            self.outliner.refill()
+            return
+        self.undo.set_props([(sample, "title", title)], "rename a file")
+        self.refresh()
+
+    def move_samples(self, samples, gap):
+        """Files dragged to the gap before file number `gap` (the length:
+        the end), one undo step. The outliner's order is the stack's."""
+        doc = self.doc
+        block = [s for s in doc.samples if s in samples]
+        if not block:
+            return False
+        old = list(doc.samples)
+        rest = [s for s in old if s not in block]
+        before = sum(1 for s in old[:max(0, int(gap))] if s in block)
+        at = max(0, min(len(rest), int(gap) - before))
+        new = rest[:at] + block + rest[at:]
+        if new == old:
+            return False
+        self.undo.push(undo.CallCommand(
+            lambda: doc.set_sample_order(new),
+            lambda: doc.set_sample_order(old), "move files"))
+        self.refresh()
+        return True
+
+    def swappable(self):
+        """The two selected scans, when exactly two are, else None."""
+        scans = self.doc.selected_scans()
+        return tuple(scans) if len(scans) == 2 else None
+
+    def swap_selected(self):
+        """Swap the places of the two selected scans (F3, and a scan's menu
+        with exactly two selected): their offsets, and - of two files - the
+        files' places in the outliner, so S and "Stack evenly" keep the
+        swap. One undo step."""
+        pair = self.swappable()
+        if pair is None:
+            return False
+        a, b = pair
+        doc = self.doc
+        self.undo.begin_group("swap two scans")
+        try:
+            self.undo.set_props([(a, "offset", float(b.offset)),
+                                 (b, "offset", float(a.offset))], "swap")
+            if a.sample is not b.sample:
+                old = list(doc.samples)
+                new = list(old)
+                i, j = new.index(a.sample), new.index(b.sample)
+                new[i], new[j] = new[j], new[i]
+                self.undo.push(undo.CallCommand(
+                    lambda: doc.set_sample_order(new),
+                    lambda: doc.set_sample_order(old), "swap"))
+        finally:
+            self.undo.end_group()
+        self.refresh()
+        return True
+
+    def lock_framing(self, on=True):
+        """"Lock the current framing": every axis on show keeps the range
+        it shows now, and F returns there (Christian, 2026-09-29). Off, F
+        fits the data again. One undo step."""
+        plot = self.plot
+        plot.commit_view()
+        changes = []
+        for which in plot.shown_view_axes():
+            axis = self.doc.axes[which]
+            if on:
+                lo, hi = plot.view_of(which)
+                changes += [(axis, "lock", [float(lo), float(hi)]),
+                            (axis, "lock_context", plot.axis_context(which))]
+            else:
+                changes += [(axis, "lock", None),
+                            (axis, "lock_context", None)]
+        # Every axis, shown or not, loses its lock when unlocking.
+        if not on:
+            changes = [(a, name, None) for a in self.doc.axes.values()
+                       for name in ("lock", "lock_context")]
+        self.undo.set_props(changes, "lock framing" if on
+                            else "unlock framing")
+        plot.forget_fit()
+        self.refresh()
+
+    def lock_axis(self, axis, lo=None, hi=None):
+        """One axis's lock: at (lo, hi), at what it shows when those are
+        None, or off with `lo` False. One undo step."""
+        plot = self.plot
+        if lo is False:
+            changes = [(axis, "lock", None), (axis, "lock_context", None)]
+        else:
+            if lo is None or hi is None:
+                lo, hi = plot.view_of(axis.which)
+            if not hi > lo:
+                return False
+            changes = [(axis, "lock", [float(lo), float(hi)]),
+                       (axis, "lock_context", plot.axis_context(axis.which))]
+        self.undo.set_props(changes, "lock axis")
+        self.refresh()
+        return True
+
+    def set_axis_range(self, axis, lo, hi):
+        """An axis's minimum and maximum, typed in its settings: the view,
+        as one step - and the lock too, if that axis is locked."""
+        if not hi > lo:
+            return False
+        if self.plot.lock_of(axis.which):
+            self.undo.begin_group("axis range")
+            try:
+                self.lock_axis(axis, lo, hi)
+                self.plot.set_axis_view(axis.which, lo, hi)
+            finally:
+                self.undo.end_group()
+        else:
+            self.plot.set_axis_view(axis.which, lo, hi)
+        self.refresh()
+        return True
+
+    def set_fit_margin(self, side, share):
+        """A margin arrow let go or typed: this figure's fit margin on
+        `side` (a share of the axis) and that axis refitted, ONE undo
+        step. A locked axis is unlocked by it: the margin is a fit's."""
+        self.undo.begin_group("fit margin")
+        try:
+            self.undo.set_props([(self.doc.style, "fit_" + side,
+                                  float(share))], "fit margin")
+            for which in (("x",) if side in ("left", "right")
+                          else ("y", "y2")):
+                axis = self.doc.axes[which]
+                if axis.lock:
+                    self.undo.set_props([(axis, "lock", None),
+                                         (axis, "lock_context", None)],
+                                        "fit margin")
+            self.plot.fit_axis("x" if side in ("left", "right") else "y")
+        finally:
+            self.undo.end_group()
+        self.refresh()
+
     def _view_committed(self, before, after, label):
         """A zoom, a pan or a fit, as one undo step.
 
@@ -614,6 +781,11 @@ class MainWindow(QMainWindow):
           lambda c: c.close_step(), category="File", key="Ctrl+W",
           shortcut="Ctrl+W", aliases=("quit", "exit"))
 
+        r("edit.copy", "Copy the selected labels",
+          lambda c: c.copy_selected(), category="Edit", key="Ctrl+C",
+          shortcut="Ctrl+C",
+          enabled=lambda c: bool(c.copyable()),
+          aliases=("duplicate", "clipboard", "label", "note"))
         r("edit.paste", "Paste (a picture, a SMILES, text)",
           lambda c: c.paste(), category="Edit", key="Ctrl+V",
           shortcut="Ctrl+V",
@@ -737,7 +909,7 @@ class MainWindow(QMainWindow):
         r("object.remove", "Remove the selection",
           lambda c: c.remove_selected(), category="Object", key="Delete",
           shortcut="Del",
-          enabled=lambda c: bool(c.doc.selected_scans()
+          enabled=lambda c: bool(c.files_to_close() or c.doc.selected_scans()
                                  or [o for o in c.doc.selected()
                                      if isinstance(o, (model.Analysis,
                                                        model.TextLabel,
@@ -750,6 +922,15 @@ class MainWindow(QMainWindow):
         r("object.colour", "Colour for the selection...",
           lambda c: c.colour_selected(), category="Object",
           enabled=scans_selected)
+        r("arrange.swap", "Swap the places of the two selected scans",
+          lambda c: c.swap_selected(), category="Transform",
+          enabled=lambda c: c.swappable() is not None,
+          aliases=("swap", "flip", "exchange", "order", "reorder"))
+        r("object.colour_gradient", "Colour gradient on the selection...",
+          lambda c: c.colour_gradient(), category="Object",
+          enabled=lambda c: len(c.doc.selected_scans()) >= 2,
+          aliases=("shades", "tints", "lighter", "darker", "palette",
+                   "series"))
         r("analysis.show", "Show every analysis of the selected scans",
           lambda c: c.set_analyses(True), category="Object",
           enabled=lambda c: any(s.analysis_objects
@@ -764,6 +945,14 @@ class MainWindow(QMainWindow):
           shortcut="Shift+M", enabled=scans_selected,
           aliases=("M", "g/mol", "per mole"))
 
+        r("view.lock_framing", "Lock the current framing",
+          lambda c: c.lock_framing(True), category="View",
+          aliases=("freeze", "home", "reference", "F returns", "keep view",
+                   "limits"))
+        r("view.unlock_framing", "Unlock the framing (F fits the data)",
+          lambda c: c.lock_framing(False), category="View",
+          aliases=("unfreeze", "auto", "fit"),
+          enabled=lambda c: any(a.lock for a in c.doc.axes.values()))
         r("view.fit", "Fit the view", lambda c: c.plot.fit(),
           category="View", shortcut="F or Home", enabled=any_scan)
         # MestReNova's M: two numbers, typed straight through (Christian,
@@ -806,6 +995,20 @@ class MainWindow(QMainWindow):
           aliases=("tga", "sdt", "mass loss", "weight", "thermogravimetry",
                    "m%"),
           enabled=lambda c: c.has_weight())
+        # The DTG (Christian, 2026-09-29): the mass's derivative, on the y
+        # axis the heat flow otherwise has.
+        r("view.dtg", "Show or hide the DTG curves",
+          lambda c: c.toggle_signal(model.SIGNAL_DTG), category="View",
+          aliases=("dtg", "derivative", "tga", "mass loss rate",
+                   "thermogravimetry"),
+          enabled=lambda c: c.has_weight())
+        for unit, name in ((dtg.PER_DEGREE, "per_degree"),
+                           (dtg.PER_MINUTE, "per_minute")):
+            r("view.dtg_" + name, "DTG axis: {}".format(unit),
+              (lambda u: lambda c: c.set_dtg_unit(u))(unit),
+              category="View", aliases=("dtg", "derivative"),
+              enabled=(lambda u: lambda c: (c.doc.dtg_unit != u
+                                            and c.has_weight()))(unit))
         r("view.heat_flows", "Show or hide the heat flow curves",
           lambda c: c.toggle_signal(model.SIGNAL_HEAT), category="View",
           aliases=("sdt", "dsc", "heat flow"),
@@ -974,7 +1177,7 @@ class MainWindow(QMainWindow):
                    "file.session_save", "file.session_save_as", None,
                    "file.export_image", "file.export_csv",
                    "file.export_driver", None, "file.close")),
-        ("&Edit", ("edit.undo", "edit.redo", "edit.paste",
+        ("&Edit", ("edit.undo", "edit.redo", "edit.copy", "edit.paste",
                    "edit.paste_text", None,
                    "select.all",
                    "select.none", "select.invert", "select.same_sample",
@@ -1166,12 +1369,23 @@ class MainWindow(QMainWindow):
         elif isinstance(obj, model.Sample):
             act = menu.addAction("Sample settings for {}...".format(obj.name))
             act.triggered.connect(lambda _c=False: self.edit_sample(obj))
-            gone = menu.addAction("Remove {} from the plot".format(obj.name))
-            gone.triggered.connect(lambda _c=False: self.remove_sample(obj))
+            rename = menu.addAction("Rename\tF2")
+            rename.triggered.connect(
+                lambda _c=False: self.outliner.rename(obj))
+            if obj.scans:
+                gone = menu.addAction("Remove {} from the plot".format(
+                    obj.name))
+                gone.triggered.connect(
+                    lambda _c=False: self.remove_sample(obj))
+            # The file itself: a file with no curve on the figure could not
+            # be taken off it at all (Christian, 2026-09-29, CN-58).
+            shut = menu.addAction("Close {}\tDel".format(obj.name))
+            shut.triggered.connect(lambda _c=False: self.close_sample(obj))
         else:
             # Christian, 2026-09-29: no Open or Select-all here; the page's
             # colour, white and the theme's a click away.
-            for op_id in ("view.fit", "arrange.stack"):
+            for op_id in ("view.fit", "view.lock_framing",
+                          "view.unlock_framing", "arrange.stack"):
                 self._menu_op(menu, op_id)
             paper = menu.addMenu("Background")
             # Held by its parent's wrapper: a submenu fetched back through
@@ -1225,6 +1439,11 @@ class MainWindow(QMainWindow):
             here = menu.addAction("Mass at this temperature")
             here.triggered.connect(
                 lambda _c=False: self.mass_here(scan, at))
+        # Exactly two selected, this one of them: swap their places
+        # (Christian, 2026-09-29).
+        pair = self.swappable()
+        if pair and scan in pair:
+            self._menu_op(menu, "arrange.swap")
 
     def _menu_op(self, menu, op_id):
         op = self.ops.get(op_id)
@@ -1359,6 +1578,56 @@ class MainWindow(QMainWindow):
         self.remove_scans(list(sample.scans),
                           "remove {}".format(sample.name))
 
+    def files_to_close(self):
+        """The files whose rows are selected in the outliner while it has
+        the keyboard: what Delete closes."""
+        outliner = getattr(self, "outliner", None)
+        if outliner is None:
+            return []
+        focus = QApplication.focusWidget()
+        mine = focus is not None and (focus is outliner
+                                      or outliner.isAncestorOf(focus))
+        return outliner.selected_samples() if mine else []
+
+    def close_sample(self, sample):
+        """Close a file: its curves, their labels and the file itself, ONE
+        undo step that brings back the same objects."""
+        self.close_samples([sample])
+
+    def close_samples(self, samples):
+        """Close files (`close_sample`), all of them ONE undo step."""
+        doc = self.doc
+        samples = [s for s in samples if s in doc.samples]
+        if not samples:
+            return
+        order = sorted(samples, key=doc.samples.index)
+        at = [(sample, doc.samples.index(sample)) for sample in order]
+        places = [(scan, doc.scans.index(scan)) for sample in order
+                  for scan in sample.scans if scan in doc.scans]
+        owned = {}
+
+        def close():
+            for scan, _index in places:
+                owned[id(scan)] = doc.labels_of_removed(scan)
+            for sample in order:
+                doc.close_sample(sample)
+
+        def reopen():
+            for sample, index in at:
+                if sample not in doc.samples:
+                    doc.samples.insert(min(index, len(doc.samples)), sample)
+            for scan, index in sorted(places, key=lambda pair: pair[1]):
+                doc.insert_scan(scan, index)
+                for label in owned.get(id(scan), ()):
+                    if label not in doc.labels:
+                        doc.labels.append(label)
+
+        label = ("close {}".format(order[0].name) if len(order) == 1
+                 else "close {} files".format(len(order)))
+        # CallCommand closes them (it applies itself when built).
+        self.undo.push(undo.CallCommand(close, reopen, label))
+        self.refresh()
+
     def open_session(self, path=None):
         if path is None:
             path, _f = QFileDialog.getOpenFileName(
@@ -1391,6 +1660,12 @@ class MainWindow(QMainWindow):
             # The framing it was saved with: a y range narrowed to show a
             # peak's label came back fitted before round 17.
             self.plot.restore_view(doc.view)
+        # An older session's decorators keep their places in the view it
+        # was saved with, and its owned labels hang from their curves where
+        # they are drawn (2026-09-29) - before it counts as unchanged.
+        if getattr(doc, "loaded_version", session.VERSION) < 7:
+            self.plot.rehome()
+        self.plot.attach_all()
         self.mark_clean()
         return path
 
@@ -1609,6 +1884,7 @@ class MainWindow(QMainWindow):
             return None
         self.doc.view_x_hint = self.plot.view_x()
         self.doc.view_y_hint = self.plot.view_y()
+        self.doc.label_hints = self.plot.label_hints()
         self.doc.view_y2_hint = (self.plot.view_y2()
                                  if self.plot.y2_shown() else None)
         self.doc.marker_hint = self.marker_hint()
@@ -1677,6 +1953,9 @@ class MainWindow(QMainWindow):
         return list(groups.values())
 
     def stack_selected(self):
+        """"Stack evenly": in the order the offsets already have, ties in
+        the outliner's (its top at the top) - S's order - from the lowest
+        offset up."""
         scans = self.doc.selected_scans() or self.doc.visible_scans()
         changes = []
         for group in self._by_signal(scans):
@@ -1684,7 +1963,8 @@ class MainWindow(QMainWindow):
             if not step:
                 continue
             first = min((s.offset for s in group), default=0.0)
-            changes.extend(arrange.stack(group, step, first))
+            upward = self.plot.stack_order(group)[::-1]
+            changes.extend(arrange.stack(upward, step, first))
         if changes:
             self.undo.set_props(changes, "stack")
 
@@ -2238,7 +2518,7 @@ class MainWindow(QMainWindow):
         y = y2 = None
         if self.plot.heat_shown():
             y_lo, y_hi = self.plot.view_y()
-            y = (self.doc.y_unit, y_lo, y_hi)
+            y = (self.doc.y_axis_unit(), y_lo, y_hi)
         if self.plot.mass_shown():
             w_lo, w_hi = self.plot.view_y2()
             y2 = (self.doc.weight_unit, w_lo, w_hi)
@@ -2308,13 +2588,16 @@ class MainWindow(QMainWindow):
         rect = self.plot.plot_rect()
         cursor = at or self.plot._cursor
         if cursor is not None:
-            x = (cursor.x() - rect.left()) / max(1.0, rect.width())
-            y = (cursor.y() - rect.top()) / max(1.0, rect.height())
+            x, y = self.plot.px_to_rel(cursor.x(), cursor.y(), rect)
         else:
             x = y = 0.5
         label = model.TextLabel(self.doc._next_id(), text,
                                 min(0.98, max(0.02, x)),
                                 min(0.98, max(0.02, y)), scan)
+        if scan is not None:
+            hung = self.plot.attachment(label)
+            if hung is not None:
+                label.at, label.dx, label.dy = hung
         self.undo.push(undo.CallCommand(
             lambda: self.doc.labels.append(label),
             lambda: self.doc.remove_label(label),
@@ -2351,12 +2634,18 @@ class MainWindow(QMainWindow):
         above = tip.y() - 40.0 >= rect.top() + 20.0
         corner_x = tip.x()
         corner_y = tip.y() - 40.0 if above else tip.y() + 40.0
-        label = model.TextLabel(
-            self.doc._next_id(), text,
-            (corner_x - rect.left()) / max(1.0, rect.width()),
-            (corner_y - rect.top()) / max(1.0, rect.height()), scan)
+        fx, fy = plot.px_to_rel(corner_x, corner_y, rect)
+        label = model.TextLabel(self.doc._next_id(), text, fx, fy, scan)
         label.anchor = "bottom" if above else "top"
         label.leader = plot.leader_value(label, tip, rect)
+        if scan is not None:
+            # On a curve it hangs from it, straight above (or below) its
+            # point, like an analysis label (2026-09-29).
+            index = plot.sample_at(plot._trace_of(scan), tip, rect)
+            if index is not None:
+                label.at = ("i", int(index))
+                label.dx = 0.0
+                label.dy = plot.NOTE_DY if above else -plot.NOTE_DY
         self.undo.push(undo.CallCommand(
             lambda: self.doc.labels.append(label),
             lambda: self.doc.remove_label(label),
@@ -2411,12 +2700,21 @@ class MainWindow(QMainWindow):
         for label in labels:
             if not isinstance(label, model.TextLabel) or label.scan is scan:
                 continue
+            # Given to a scan, it hangs from the curve where it stands
+            # (2026-09-29); freed, it keeps its place on the page.
+            hung = (self.plot.attachment(label, scan)
+                    if scan is not None and label.vline is None else None)
             x, y, followed, leader = self.plot.placed_under(label, scan)
             changes += [(label, "scan", scan), (label, "parent_offset",
                                                 followed),
                         (label, "x", x), (label, "y", y)]
             if leader != label.leader:
                 changes.append((label, "leader", leader))
+            if hung is not None:
+                changes += [(label, "at", hung[0]), (label, "dx", hung[1]),
+                            (label, "dy", hung[2])]
+            elif label.at is not None:
+                changes.append((label, "at", None))
             moved += 1
         if not changes:
             return 0
@@ -2730,6 +3028,12 @@ class MainWindow(QMainWindow):
         selected analysis would be a surprise - and only a selection of scans
         removes scans.
         """
+        # A file's own row in the outliner, with the outliner in hand:
+        # Delete closes the file (Christian, 2026-09-29).
+        files = self.files_to_close()
+        if files:
+            self.close_samples(files)
+            return
         analyses = [o for o in self.doc.selected()
                     if isinstance(o, model.Analysis)]
         labels = [o for o in self.doc.selected()
@@ -2834,6 +3138,11 @@ class MainWindow(QMainWindow):
         from ..core import chem
         clipboard = QApplication.clipboard()
         mime = clipboard.mimeData()
+        if (not as_text and mime is not None
+                and mime.hasFormat(self.LABELS_MIME)):
+            made = self.paste_labels(bytes(mime.data(self.LABELS_MIME)))
+            if made:
+                return made
         if not as_text and mime is not None and mime.hasImage():
             return self.add_image(clipboard.image())
         if not as_text and mime is not None and mime.hasUrls():
@@ -2857,6 +3166,118 @@ class MainWindow(QMainWindow):
             return None
         self.ensure_figure()
         return self.add_label(text)
+
+    # --------------------------------------------- copying labels about
+    #: Labels on the clipboard: their look and their places, as JSON.
+    LABELS_MIME = "application/x-{}-labels".format(branding.EXE_NAME)
+
+    def copyable(self):
+        """The selected labels a Ctrl+C copies (marker lines are not)."""
+        return [o for o in self.doc.selected()
+                if isinstance(o, model.TextLabel) and o.vline is None]
+
+    def copy_selected(self):
+        """Ctrl+C: the selected labels onto the clipboard (Christian,
+        2026-09-29) - their text for any other program, and everything
+        about them for pasting here: look, and where each is drawn
+        relative to the first. Pasted they are FREE labels; one that
+        should belong to a curve is then given to it (Ctrl+P, or dropped
+        on it in the outliner)."""
+        import json
+        from PySide6.QtCore import QMimeData
+        labels = self.copyable()
+        if not labels:
+            return 0
+        plot = self.plot
+        rect = plot.plot_rect()
+        first = plot.artist_point(labels[0], rect)
+        entries = []
+        for label in labels:
+            px, py = plot.artist_point(label, rect)
+            box = plot.artist_box(label, rect)
+            tip = plot.leader_tip(label, rect) if label.leader else None
+            entries.append({
+                "text": label.text, "size": label.size, "bold": label.bold,
+                "colour": label.colour, "anchor": label.anchor,
+                "rotation": label.rotation, "flush": label.flush,
+                "leader_from": label.leader_from,
+                "leader_colour": label.leader_colour,
+                # the box's middle, and a note's tip, from the first label
+                "at": [box.center().x() - first[0],
+                       box.center().y() - first[1]],
+                "tip": (None if tip is None else
+                        [tip.x() - first[0], tip.y() - first[1]]),
+                "from": [px - first[0], py - first[1]]})
+        mime = QMimeData()
+        mime.setText("\n".join(label.text for label in labels))
+        mime.setData(self.LABELS_MIME,
+                     json.dumps({"labels": entries,
+                                 "first": [first[0], first[1]]}).encode(
+                                     "utf-8"))
+        QApplication.clipboard().setMimeData(mime)
+        self.note.setText("Copied {} label(s)".format(len(labels)))
+        return len(labels)
+
+    def paste_labels(self, data):
+        """Labels copied here, pasted as free labels: at the pointer when
+        it is on the plot, else a little down and right of where they were
+        copied from. One undo step; the new labels are selected."""
+        import json
+        try:
+            state = json.loads(bytes(data).decode("utf-8"))
+            entries = list(state["labels"])
+            first = state.get("first") or [0.0, 0.0]
+        except (ValueError, KeyError, TypeError):
+            return None
+        if not entries:
+            return None
+        self.ensure_figure()
+        plot = self.plot
+        rect = plot.plot_rect()
+        cursor = plot._cursor
+        if cursor is not None and rect.contains(cursor):
+            origin = (cursor.x(), cursor.y())
+        else:
+            origin = (float(first[0]) + 14.0, float(first[1]) + 14.0)
+        made = []
+        for entry in entries:
+            label = model.TextLabel(self.doc._next_id(),
+                                    str(entry.get("text", "")), 0.5, 0.5)
+            label.size = entry.get("size")
+            label.bold = bool(entry.get("bold", False))
+            label.colour = entry.get("colour") or "auto"
+            label.anchor = entry.get("anchor") or "center"
+            label.rotation = float(entry.get("rotation") or 0.0)
+            flush = entry.get("flush")
+            label.flush = flush if flush in ("left", "right",
+                                             "center") else None
+            start = entry.get("leader_from", "auto")
+            label.leader_from = start if start in model.ANCHORS else "auto"
+            label.leader_colour = entry.get("leader_colour") or "auto"
+            dx, dy = entry.get("from") or [0.0, 0.0]
+            plot.set_artist_point(label, origin[0] + float(dx),
+                                  origin[1] + float(dy), rect)
+            tip = entry.get("tip")
+            if tip is not None:
+                label.leader = plot.leader_value(label, QPointF(
+                    origin[0] + float(tip[0]), origin[1] + float(tip[1])),
+                    rect)
+            made.append(label)
+
+        def add():
+            for label in made:
+                if label not in self.doc.labels:
+                    self.doc.labels.append(label)
+            self.doc.select_only(made)
+
+        def take():
+            for label in made:
+                self.doc.remove_label(label)
+
+        self.undo.push(undo.CallCommand(add, take, "paste labels"))
+        self.refresh()
+        self.note.setText("Pasted {} label(s)".format(len(made)))
+        return made
 
     def missing_rdkit(self):
         """The pop-up for a SMILES pasted without RDKit (a method of its
@@ -2941,12 +3362,41 @@ class MainWindow(QMainWindow):
         scans = self.doc.selected_scans()
         if not scans:
             return
-        colour = QColorDialog.getColor(QColor(scans[0].colour), self,
-                                       "Colour for the selection")
+        colour = colour_module.get_colour(QColor(scans[0].colour), self,
+                                          "Colour for the selection")
         if not colour.isValid():
             return
         self.undo.set_props([(s, "colour", colour.name()) for s in scans],
                             "colour")
+
+    def gradient_dialog(self, scans=None):
+        """The shades dialog for `scans` (the selected ones), built and not
+        shown, so a test can drive it (`colour_gradient` shows it)."""
+        scans = list(scans or self.doc.selected_scans())
+        if len(scans) < 2:
+            return None
+        return colour_module.GradientDialog(scans, self,
+                                            on_change=self._live_change)
+
+    def colour_gradient(self):
+        """F3: shades of one colour on the selected curves, live, one undo
+        step when the dialog closes."""
+        dialog = self.gradient_dialog()
+        if dialog is None:
+            return None
+        dialog.finished.connect(
+            lambda _result, d=dialog: self._gradient_done(d))
+        self._dialogs = [d for d in getattr(self, "_dialogs", [])
+                         if d.isVisible()] + [dialog]
+        dialog.show()
+        dialog.raise_()
+        return dialog
+
+    def _gradient_done(self, dialog):
+        changes = dialog.changes()
+        if changes:
+            self.undo.set_props(changes, "colour gradient")
+        self._live_change()
 
     def ask_molar_mass(self, scans=None):
         scans = scans or self.doc.selected_scans()
@@ -2973,7 +3423,10 @@ class MainWindow(QMainWindow):
     def set_theme(self, name):
         """Switch the palette, and remember it on the document. The windows
         around the plot follow it (`ui/appearance.py`)."""
-        self.doc.theme = plot_module.set_theme(name)
+        if name in plot_module.THEMES:
+            self.doc.theme = name
+        # The page may still be of the other family (`drawing_theme`).
+        plot_module.set_theme(self.drawing_theme(), accent=self.doc.theme)
         appearance.apply(self.doc.theme)
         self.plot.invalidate()
         self.outliner.refill()             # its scan colours follow the theme
@@ -3031,6 +3484,20 @@ class MainWindow(QMainWindow):
         self.plot._view_y2 = None
         self.refresh()
 
+    def set_dtg_unit(self, unit):
+        """The DTG in %/degC or %/min, its scans' offsets carried across by
+        each segment's heating rate; the y axis is fitted again."""
+        if unit not in dtg.UNITS or unit == self.doc.dtg_unit:
+            return
+        changes = self.doc.set_dtg_unit(unit)
+        for scan in self.doc.scans:
+            scan._cache_key = None
+        if changes:
+            self.undo.set_props(changes, "DTG unit")
+        if self.doc.y_signal() == model.SIGNAL_DTG:
+            self.plot._view_y = None
+        self.refresh()
+
     def toggle_signal(self, signal):
         """One kind of curve on or off for every segment that has a curve
         on the figure: off when any of that kind is on, else on - made where
@@ -3045,7 +3512,8 @@ class MainWindow(QMainWindow):
         for scan in list(doc.scans):
             if not scan.visible or scan.signal == signal:
                 continue
-            if signal == model.SIGNAL_MASS and not scan.has_weight():
+            if (signal in (model.SIGNAL_MASS, model.SIGNAL_DTG)
+                    and not scan.has_weight()):
                 continue
             if (scan.sample, scan.seg) not in wanted:
                 wanted.append((scan.sample, scan.seg))

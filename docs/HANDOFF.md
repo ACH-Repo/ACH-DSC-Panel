@@ -5,7 +5,22 @@ Everything a new session needs to pick this up cold. Read this, then
 rules and the traps). `docs/OPERATORS.md` is generated from the code and is
 always current. `docs/TRI-FORMAT.md` is the binary format.
 
-## 0. LATEST: round 25, 2026-09-28 (laptop) - UNCOMMITTED, possibly unfinished
+## 0. LATEST: version 1.0.0, 2026-09-29 - committed, tagged v1.0.0
+
+Rounds 27 to 27c are in 1.0.0 (CHANGELOG.md; PLAN.md round 27). Not on
+PyPI (Christian: GitHub is enough for now). What comes next - IR, then
+PXRD, on a shared core - is `docs/FAMILY.md`.
+
+## 0a. Round 27, 2026-09-29
+
+Round 27 (PLAN.md): margin gizmos with fit margins as shares of the axis,
+the colour picker and sums in number boxes, the reticle's accent on a light
+page, opaque shading, the F3 colour gradient, DTG; then (27b) axis
+ranges and locked framing, decorators that move with the zoom, labels that
+hang from their curves, closing a file. 508 tests pass. Nothing of it is
+committed. Rounds 25-26 below are committed (`d9d9c0e`).
+
+## 0b. Round 25, 2026-09-28 (laptop)
 
 The repo is on GitHub (`ACH-Repo/ACH-DSC-Panel`, private, branch `main`).
 Christian works from a laptop and a desktop PC. `4bc9426 "intermediary"` was

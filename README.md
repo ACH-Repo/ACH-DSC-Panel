@@ -12,10 +12,15 @@ instruments with its own reader (it came from ACH-DSC-Plotter, retired on
 (`docs/TRI-FORMAT.md`, `tests/test_reader.py`).
 
 ```bash
-pip install -e C:\Users\<you>\Documents\Github\ACH-DSC-Panel
+pip install git+https://github.com/ACH-Repo/ACH-DSC-Panel.git@v1.0.0
 dsc-panel                    # or find "DSC-Panel" in the Start Menu
 dsc-panel my-sample.tri      # straight into a file
 ```
+
+The repository is private: pip asks for access to it (a GitHub login or
+token), as `git clone` would. From a checkout, `pip install -e <checkout>`
+installs it editable. Version 1.0.0 (2026-09-29); what it does is in
+`CHANGELOG.md`, where the family goes next in `docs/FAMILY.md`.
 
 ## What it does differently from a plotting script
 

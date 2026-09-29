@@ -22,6 +22,7 @@ Two decisions, both on the side of the number being honest:
 UI-free: plain strings and floats.
 """
 
+import ast
 import math
 import re
 
@@ -138,3 +139,54 @@ def _no_negative_zero(text):
                                             for c in stripped):
         return text.replace("-", "", 1)
     return text
+
+
+# ------------------------------------------------------------- typed sums
+#: What a typed sum may hold: numbers, the four operations, brackets. A
+#: comma is a decimal point, as everywhere a number is typed here.
+_SUM_CHARACTERS = re.compile(r"^[0-9.,+\-*/() 	]*$")
+
+
+def evaluate(text):
+    """A typed number or simple sum as a float: "255-20", "3*(1,5+2)",
+    "-4". None if it is not one (or divides by zero).
+
+    Christian, 2026-09-29: "just subtract 20 from 255 inside the box". Only
+    + - * / and brackets; walked from Python's parse tree, never `eval`.
+    """
+    text = str(text or "").strip()
+    if not text or not _SUM_CHARACTERS.match(text):
+        return None
+    try:
+        tree = ast.parse(text.replace(",", "."), mode="eval")
+        value = _sum_of(tree.body)
+    except (SyntaxError, ValueError, ZeroDivisionError, OverflowError,
+            RecursionError):
+        return None
+    if value is None or not math.isfinite(value):
+        return None
+    return float(value)
+
+
+def is_sum(text):
+    """True if `text` holds an operation, not just a number: "255-20" does,
+    "-4" and "1,5" do not."""
+    body = str(text or "").strip().lstrip("+-")
+    return any(c in body for c in "+-*/()")
+
+
+_OPERATIONS = {ast.Add: lambda a, b: a + b, ast.Sub: lambda a, b: a - b,
+               ast.Mult: lambda a, b: a * b, ast.Div: lambda a, b: a / b}
+
+
+def _sum_of(node):
+    if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+        return float(node.value)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op,
+                                                    (ast.USub, ast.UAdd)):
+        value = _sum_of(node.operand)
+        return -value if isinstance(node.op, ast.USub) else value
+    if isinstance(node, ast.BinOp) and type(node.op) in _OPERATIONS:
+        return _OPERATIONS[type(node.op)](_sum_of(node.left),
+                                          _sum_of(node.right))
+    raise ValueError("not a sum")

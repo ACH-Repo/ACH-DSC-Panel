@@ -19,6 +19,7 @@ the reader or a window and is testable with a stub.
 import json
 import os
 
+from . import dtg
 from . import figure as figure_module
 from . import labels
 from . import measure
@@ -32,7 +33,7 @@ FORMAT = "dscpanel-session"
 #: figure carries its own `style`, and analyses have a `flush`.
 #: 3: an axis's `label_gap` is measured from its NUMBERS (it was from the
 #: axis line for x and from the window's edge for y), None until chosen.
-VERSION = 5
+VERSION = 7
 
 
 def view_to_state(view):
@@ -126,9 +127,11 @@ def _analysis_state(analysis):
     state = {"key": analysis.key(), "visible": analysis.visible,
              "colour": analysis.colour, "label": analysis.label,
              "label_dy": analysis.label_dy, "shade": analysis.shade,
+             "shading": analysis.shading,
              "label_size": analysis.label_size, "flush": analysis.flush,
              "show_interval": analysis.show_interval,
              "construction": analysis.construction,
+             "show_peak": analysis.show_peak,
              "number_format": analysis.number_format,
              "unit": analysis.unit,
              "label_at": analysis.label_at, "z": analysis.z,
@@ -148,6 +151,10 @@ def _restore_analysis(analysis, saved, version):
     stored_dy = saved.get("label_dy", analysis.label_dy)
     analysis.label_dy = None if stored_dy is None else float(stored_dy)
     analysis.shade = bool(saved.get("shade", True))
+    shading = saved.get("shading")
+    analysis.shading = shading if shading in style.SHADINGS else None
+    peak = saved.get("show_peak")
+    analysis.show_peak = peak if peak in style.PEAKS else None
     analysis.label_size = _chosen(saved.get("label_size"), "analysis_size",
                                   version)
     flush = saved.get("flush")
@@ -194,6 +201,7 @@ def to_state(doc):
             "molar_mass": sample.molar_mass,
             "exo": sample.exo,
             "exo_source": sample.exo_source,
+            "title": sample.title,
         })
     scans = []
     for scan in doc.scans:
@@ -201,6 +209,7 @@ def to_state(doc):
             "path": scan.sample.path,
             "seg": scan.seg,
             "signal": scan.signal,
+            "dtg_window": scan.dtg_window if scan.is_dtg else None,
             "colour": scan.colour,
             "offset": scan.offset,
             "line_width": scan.line_width,
@@ -237,7 +246,10 @@ def to_state(doc):
                        "side": axis.side,
                        "show_numbers": axis.show_numbers,
                        "visible": axis.visible,
-                       "label_gap": axis.label_gap}
+                       "label_gap": axis.label_gap,
+                       "lock": (list(axis.lock) if axis.lock else None),
+                       "lock_context": (list(axis.lock_context)
+                                        if axis.lock_context else None)}
     labels = []
     for lb in doc.labels:
         labels.append({"text": lb.text, "x": lb.x, "y": lb.y,
@@ -248,6 +260,8 @@ def to_state(doc):
                        "scan": (None if lb.scan is None
                                 else [lb.scan.sample.path, lb.scan.seg]),
                        "parent_offset": lb.parent_offset,
+                       "at": (list(lb.at) if lb.at else None),
+                       "dx": lb.dx, "dy": lb.dy,
                        "leader": lb.leader,
                        "leader_from": lb.leader_from,
                        "leader_colour": lb.leader_colour,
@@ -279,6 +293,7 @@ def to_state(doc):
         "x_unit": doc.x_unit,
         "y_unit": doc.y_unit,
         "weight_unit": doc.weight_unit,
+        "dtg_unit": doc.dtg_unit,
         "theme": doc.theme,
         "background": doc.background,
         "offset_markers": bool(doc.offset_markers),
@@ -330,9 +345,16 @@ def load(path, read_sample):
         raise ValueError("not a {} file".format(FORMAT))
     doc = model.Document()
     version = int(state.get("version", 1) or 1)
+    #: Which version it was read from: before 7, a decorator's place was a
+    #: fraction of the VIEW, not of the home frame (`PlotWidget.rehome`).
+    doc.loaded_version = version
     problems = []
     by_path = {}
-    for key, raw in (state.get("style") or {}).items():
+    saved_style = dict(state.get("style") or {})
+    if version < 6:
+        # The fit margins were percent of the data's range until version 6.
+        style.convert_old_fit(saved_style)
+    for key, raw in saved_style.items():
         if key in style.BY_KEY and style.BY_KEY[key].figure:
             setattr(doc.style, key, style.BY_KEY[key].clean(raw))
     # A session keeps its OWN figure size; one saved before there was such
@@ -351,6 +373,8 @@ def load(path, read_sample):
         if entry.get("exo") in (units.EXO_DOWN, units.EXO_UP):
             sample.exo = entry["exo"]
             sample.exo_source = entry.get("exo_source", sample.exo_source)
+        title = entry.get("title")
+        sample.title = str(title) if title else None
         doc.samples.append(sample)
         by_path[os.path.normcase(sample.path)] = sample
     # Round 25 kept a scan's weight as a dashed extra on it; a weight shown
@@ -373,6 +397,9 @@ def load(path, read_sample):
                           or model.PALETTE[len(doc.scans) % len(model.PALETTE)],
                           signal)
         scan.offset = float(entry.get("offset", 0.0))
+        window = _number_or_none(entry.get("dtg_window"))
+        if window is not None and window >= 0:
+            scan.dtg_window = window
         scan.line_width = _chosen(entry.get("line_width"), "line_width",
                                   version)
         keep = entry.get("keep") or (0.0, 1.0)
@@ -481,6 +508,15 @@ def load(path, read_sample):
                                      else ("left", "right")):
             axis.side = "bottom" if which == "x" else "left"
         axis.tick_size = _chosen(saved.get("tick_size"), "tick_size", version)
+        lock = saved.get("lock")
+        try:
+            lock = [float(lock[0]), float(lock[1])] if lock else None
+        except (TypeError, ValueError, IndexError):
+            lock = None
+        axis.lock = lock if lock and lock[1] > lock[0] else None
+        context = saved.get("lock_context")
+        axis.lock_context = (list(context) if axis.lock and
+                             isinstance(context, list) else None)
     for saved in state.get("labels") or []:
         owner = None
         owned = saved.get("scan")
@@ -518,6 +554,15 @@ def load(path, read_sample):
         flush = saved.get("flush")
         label.flush = flush if flush in ("left", "right", "center") else None
         label.vline = _number_or_none(saved.get("vline"))
+        # Hanging from its curve (2026-09-29); an older one is attached
+        # where it is drawn once the session is on screen.
+        at = saved.get("at")
+        if (owner is not None and isinstance(at, (list, tuple))
+                and len(at) == 2 and at[0] == "i"
+                and _number_or_none(at[1]) is not None):
+            label.at = ("i", int(at[1]))
+            label.dx = float(_number_or_none(saved.get("dx")) or 0.0)
+            label.dy = _number_or_none(saved.get("dy"))
         label.line_dashed = bool(saved.get("line_dashed", True))
     for saved in state.get("structures") or []:
         if not saved.get("atoms"):
@@ -571,6 +616,8 @@ def load(path, read_sample):
     doc.y_unit = state.get("y_unit", doc.y_unit)
     if state.get("weight_unit") in model.WEIGHT_UNITS:
         doc.weight_unit = state["weight_unit"]
+    if state.get("dtg_unit") in dtg.UNITS:
+        doc.dtg_unit = state["dtg_unit"]
     doc.theme = state.get("theme", doc.theme)
     background = state.get("background")
     doc.background = (str(background) if isinstance(background, str)

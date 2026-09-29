@@ -26,8 +26,8 @@ label to that scan - parenting, round 23 - and onto the Decorators to free
 it again. The window does the work (`MainWindow.parent_labels`).
 """
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPalette, QPen
+from PySide6.QtCore import QPointF, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (QAbstractItemView, QHeaderView, QStyle,
                                QStyledItemDelegate, QTreeWidget,
                                QTreeWidgetItem)
@@ -69,11 +69,11 @@ class _Rows(QStyledItemDelegate):
 
 def _signals_of(sample, seg):
     """The curves one segment offers: its mass first where it recorded one
-    (an SDT run), then its heat flow."""
+    (an SDT run), then that mass's DTG, then its heat flow."""
     numdata = (sample.data or {}).get("numdata", [])
     step = numdata[seg] if seg < len(numdata) else {}
     if model._records_mass(step):
-        return (model.SIGNAL_MASS, model.SIGNAL_HEAT)
+        return model.SIGNAL_ROWS
     return (model.SIGNAL_HEAT,)
 
 
@@ -115,6 +115,12 @@ class Outliner(QTreeWidget):
     #: Label rows were dropped: (labels, the scan to give them to, or None
     #: to free them).
     parent_requested = Signal(object, object)
+    #: A file's own box: (sample, on) - all its curves shown or hidden.
+    file_toggled = Signal(object, bool)
+    #: A file renamed in place (F2): (sample, new name; "" for the file's).
+    sample_renamed = Signal(object, str)
+    #: File rows dragged to a gap: (samples, the index of the gap).
+    samples_moved = Signal(object, int)
 
     def __init__(self, parent=None):
         QTreeWidget.__init__(self, parent)
@@ -151,6 +157,11 @@ class Outliner(QTreeWidget):
         self.setDropIndicatorShown(False)
         #: The row a drag is over and would drop on, framed by `_Rows`.
         self._drop_item = None
+        #: Where dragged FILES would land: the index of the gap, drawn as a
+        #: thin line between two files (ORCA Workbench's Transform list).
+        self._drop_gap = None
+        # F2 renames a file in place; a double-click still opens settings.
+        self.setEditTriggers(QAbstractItemView.EditKeyPressed)
         self.itemChanged.connect(self._item_changed)
         self.itemSelectionChanged.connect(self._selection_changed)
         self.itemDoubleClicked.connect(self._double_clicked)
@@ -190,6 +201,21 @@ class Outliner(QTreeWidget):
                 if sample.sample_name != sample.name:
                     row.setToolTip(0, "Sample name in the file: {}".format(
                         sample.sample_name))
+                # Its own box shows and hides all its curves on the figure
+                # (ticked: all shown, half: some); a file with none has no
+                # box. Before 2026-09-29 the row had none, but Qt makes a
+                # row checkable by default, so a press there made an empty
+                # box that did nothing.
+                flags = row.flags() | Qt.ItemIsEditable
+                mine = [s for s in doc.scans if s.sample is sample]
+                if mine:
+                    shown = sum(1 for s in mine if s.visible)
+                    row.setCheckState(0, Qt.Checked if shown == len(mine)
+                                      else Qt.Unchecked if not shown
+                                      else Qt.PartiallyChecked)
+                else:
+                    flags &= ~Qt.ItemIsUserCheckable
+                row.setFlags(flags)
                 row.setText(1, self._sample_state(sample))
                 row.setData(0, Qt.UserRole, ("sample", id(sample)))
                 row.setFirstColumnSpanned(False)
@@ -237,9 +263,10 @@ class Outliner(QTreeWidget):
                 for column in (0, 1):
                     if item.text(column):
                         item.setToolTip(column, item.text(column))
-                # Only a label is dragged anywhere.
+                # Only a label (onto a scan) and a file (into another
+                # place in the list) are dragged.
                 key = self._key(item)
-                if not key or key[0] != "label":
+                if not key or key[0] not in ("label", "sample"):
                     item.setFlags(item.flags() & ~Qt.ItemIsDragEnabled)
         finally:
             self._filling = False
@@ -355,6 +382,8 @@ class Outliner(QTreeWidget):
         text = model.Scan(0, sample, seg, "#888888").short_program()
         if signal == model.SIGNAL_MASS:
             text += " mass"
+        elif signal == model.SIGNAL_DTG:
+            text += " DTG"
         item.setText(0, text)
         item.setData(0, Qt.UserRole, ("segment", id(sample), seg, signal))
         item.setCheckState(0, Qt.Unchecked)
@@ -475,8 +504,87 @@ class Outliner(QTreeWidget):
             self._drop_item = item
             self.viewport().update()
 
+    # ------------------------------------------------ dragging files around
+    def dragged_samples(self):
+        """The files among the selected rows, in the outliner's order."""
+        found = self.selected_samples()
+        if self.doc is not None:
+            found.sort(key=self.doc.samples.index)
+        return found
+
+    def _sample_rows(self):
+        return [self.topLevelItem(k) for k in range(self.topLevelItemCount())
+                if isinstance(self._object(self.topLevelItem(k)),
+                              model.Sample)]
+
+    def gap_at(self, y):
+        """The gap between files a drop at viewport `y` goes into: 0 above
+        the first file, n below the last - by which half of a file's block
+        (its row and everything open under it) the pointer is in."""
+        rows = self._sample_rows()
+        if not rows:
+            return None
+        tops = [self.visualItemRect(row).top() for row in rows]
+        ends = tops[1:] + [self._blocks_end(rows)]
+        for k, (top, end) in enumerate(zip(tops, ends)):
+            if y < top + (end - top) / 2.0:
+                return k
+        return len(rows)
+
+    def _blocks_end(self, rows):
+        """The bottom of the last file's block: the top of the line below
+        the files, or the last visible row of that file."""
+        last = rows[-1]
+        bottom = self.visualItemRect(last).bottom()
+        stack = [last]
+        while stack:
+            item = stack.pop()
+            if item.isExpanded():
+                for k in range(item.childCount()):
+                    child = item.child(k)
+                    bottom = max(bottom, self.visualItemRect(child).bottom())
+                    stack.append(child)
+        return bottom + 1
+
+    def gap_y(self, gap):
+        """Where the line for `gap` is drawn, in viewport pixels."""
+        rows = self._sample_rows()
+        if not rows or gap is None:
+            return None
+        if gap >= len(rows):
+            return self._blocks_end(rows)
+        return self.visualItemRect(rows[gap]).top()
+
+    def _mark_gap(self, gap):
+        if gap != self._drop_gap:
+            self._drop_gap = gap
+            self.viewport().update()
+
+    def paintEvent(self, ev):
+        QTreeWidget.paintEvent(self, ev)
+        y = self.gap_y(self._drop_gap) if self._drop_gap is not None else None
+        if y is None:
+            return
+        painter = QPainter(self.viewport())
+        try:
+            painter.setPen(QPen(self.palette().color(QPalette.Highlight), 2))
+            painter.drawLine(QPointF(0.0, y), QPointF(
+                float(self.viewport().width()), y))
+        finally:
+            painter.end()
+
+    def drop_samples_at(self, gap):
+        """Move the dragged files into `gap`. The window does it, after the
+        drop has finished (it rebuilds these rows)."""
+        samples = self.dragged_samples()
+        if not samples or gap is None:
+            return False
+        QTimer.singleShot(0, lambda: self.samples_moved.emit(samples, gap))
+        return True
+
     def dragEnterEvent(self, ev):
-        if ev.source() is self and self.dragged_labels():
+        if ev.source() is self and (self.dragged_labels()
+                                    or self.dragged_samples()):
             ev.setDropAction(Qt.CopyAction)
             ev.accept()
             return
@@ -486,6 +594,14 @@ class Outliner(QTreeWidget):
         # The base class scrolls near the edges; whether the drop is
         # allowed is decided here.
         QTreeWidget.dragMoveEvent(self, ev)
+        if ev.source() is self and self.dragged_samples() and \
+                not self.dragged_labels():
+            self._mark_drop(None)
+            self._mark_gap(self.gap_at(ev.position().y()))
+            ev.setDropAction(Qt.CopyAction)
+            ev.accept()
+            return
+        self._mark_gap(None)
         item = self.itemAt(ev.position().toPoint())
         ok, _scan = self.drop_target(item)
         if ev.source() is self and ok and self.dragged_labels():
@@ -498,12 +614,21 @@ class Outliner(QTreeWidget):
 
     def dragLeaveEvent(self, ev):
         self._mark_drop(None)
+        self._mark_gap(None)
         QTreeWidget.dragLeaveEvent(self, ev)
 
     def dropEvent(self, ev):
         """Never the base class's: it would move the rows themselves."""
         item = self.itemAt(ev.position().toPoint())
+        gap = self._drop_gap
         self._mark_drop(None)
+        self._mark_gap(None)
+        if (ev.source() is self and gap is not None
+                and not self.dragged_labels()
+                and self.drop_samples_at(gap)):
+            ev.setDropAction(Qt.CopyAction)
+            ev.accept()
+            return
         if ev.source() is self and self.drop_labels_on(item):
             ev.setDropAction(Qt.CopyAction)
             ev.accept()
@@ -603,6 +728,10 @@ class Outliner(QTreeWidget):
         if self._filling or column != 0:
             return
         wanted = item.checkState(0) == Qt.Checked
+        sample = self._object(item)
+        if isinstance(sample, model.Sample):
+            self._sample_changed(item, sample)
+            return
         segment = self._segment_of(item)
         if segment is not None:
             # An unticked segment becomes a scan when it is ticked. Ticking
@@ -619,6 +748,34 @@ class Outliner(QTreeWidget):
             QTimer.singleShot(0, lambda: self.visibility_changed.emit(
                 obj, wanted))
 
+    def _sample_changed(self, item, sample):
+        """A file's row changed: its name (F2) or its box."""
+        text = item.text(0).strip()
+        if text != sample.name:
+            name = "" if text in ("", sample.file_name) else text
+            QTimer.singleShot(0, lambda: self.sample_renamed.emit(sample,
+                                                                  name))
+            return
+        if not item.flags() & Qt.ItemIsUserCheckable:
+            return
+        mine = [s for s in self.doc.scans if s.sample is sample]
+        state = item.checkState(0)
+        if state == Qt.PartiallyChecked or not mine:
+            return
+        wanted = state == Qt.Checked
+        if any(bool(s.visible) != wanted for s in mine):
+            QTimer.singleShot(0, lambda: self.file_toggled.emit(sample,
+                                                                wanted))
+
+    def rename(self, sample):
+        """Start renaming a file in place (F2, or its menu)."""
+        for row in self._sample_rows():
+            if self._object(row) is sample:
+                self.setCurrentItem(row)
+                self.editItem(row, 0)
+                return row
+        return None
+
     def _selection_changed(self):
         if self._filling or self.doc is None:
             return
@@ -633,6 +790,15 @@ class Outliner(QTreeWidget):
                 chosen.extend(decorators(self.doc))
         self.doc.select_only(chosen)
         self.selection_picked.emit()
+
+    def selected_samples(self):
+        """The files whose OWN rows are selected (not a curve under one)."""
+        found = []
+        for item in self.selectedItems():
+            obj = self._object(item)
+            if isinstance(obj, model.Sample) and obj not in found:
+                found.append(obj)
+        return found
 
     def _double_clicked(self, item, _column):
         obj = self._object(item)

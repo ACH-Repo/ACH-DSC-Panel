@@ -160,9 +160,8 @@ def test_ctrl_l_puts_a_notes_left_edge_over_its_point(window):
     tip = plot.leader_tip(note, rect)
     box = plot.rotated_bounds(note, plot.artist_box(note, rect), rect)
     assert box.left() == pytest.approx(tip.x(), abs=1.0)
-    assert note.leader_from == "bottom left" and note.flush == "left"
-    assert plot.leader_start(note, box, tip).x() == pytest.approx(
-        tip.x(), abs=1.0)
+    # on its curve the flush alone places it; its arrow drops straight
+    assert note.attached and note.flush == "left"
     window.undo.undo()
     assert note.leader_from == "auto" and note.flush is None
 
@@ -214,6 +213,7 @@ def test_g_then_x_slides_a_note_along_its_curve(window):
     tip_before = plot.leader_tip(note, rect)
     text_before = plot.artist_point(note, rect)
     leader_before = list(note.leader)
+    at_before = tuple(note.at)
     doc.select_only([note])
     assert plot.start_grab([note])
     plot._move["axis"] = "x"
@@ -230,8 +230,11 @@ def test_g_then_x_slides_a_note_along_its_curve(window):
     assert text[0] - text_before[0] == pytest.approx(
         tip.x() - tip_before.x(), abs=1.0)
     plot._finish_move()
-    assert note.leader != leader_before
+    # on its curve the note slides by its sample (2026-09-29)
+    assert note.attached and tuple(note.at) != at_before
     window.undo.undo()
+    assert plot.leader_tip(note, rect).x() == pytest.approx(
+        tip_before.x(), abs=0.5)
     assert note.leader == pytest.approx(leader_before)
 
 
@@ -357,18 +360,24 @@ def test_a_right_click_marks_every_selected_mass_curve(qapp):
 
 
 def test_the_fit_margins_are_the_side_margins_of_his_scripts(window):
+    """A margin is the SHARE OF THE AXIS left empty (Christian,
+    2026-09-29): left 0.1 is the first tenth of the x axis."""
     plot, doc = window.plot, window.doc
+    doc.style.fit_left = doc.style.fit_right = 0.0
     lo, hi = plot.data_x()
-    doc.style.fit_left = 10.0
-    doc.style.fit_top = 20.0
+    doc.style.fit_left = 0.1
+    doc.style.fit_top = 0.2
     lo2, hi2 = plot.data_x()
-    span = hi - lo
-    assert lo2 == pytest.approx(lo - 0.1 * span)
+    assert (lo - lo2) / (hi2 - lo2) == pytest.approx(0.1)
     assert hi2 == pytest.approx(hi)
     y_lo, y_hi = plot._curves_y()
-    doc.style.fit_top = 6.0
+    doc.style.fit_top = 0.05
     base_lo, base_hi = plot._curves_y()
-    assert y_hi > base_hi and y_lo == pytest.approx(base_lo)
+    assert y_hi > base_hi
+    # Two margins that would leave the data no room are scaled down.
+    doc.style.fit_left = doc.style.fit_right = 0.9
+    a, b = plot.fit_pads("left", "right")
+    assert a + b == pytest.approx(0.95) and a == pytest.approx(b)
     from dscpanel.core import style
     keys = [s.key for s in style.SETTINGS]
     assert {"fit_left", "fit_right", "fit_bottom", "fit_top"} <= set(keys)

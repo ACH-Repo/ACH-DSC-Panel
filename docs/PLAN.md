@@ -935,6 +935,135 @@ requests of 2026-09-28 (docs/NEXT.md, now emptied):
   pop-up instead of becoming a text label: `chem.plausible_smiles` checks
   the grammar without RDKit (tokens, brackets, ring closures, two atoms).
 
+### Round 27 (2026-09-29): margin gizmos, a colour picker, DTG
+
+Christian's requests of 2026-09-29 (docs/NEXT.md, now emptied), with the
+choices he made before they were built:
+
+* **Margin gizmos**: an arrow per fit margin on the page's edge, shown
+  with the page's handles - left and top margins at the top-left (on the
+  top and left edges), right and bottom at the bottom-right - standing at
+  the line where the data begins. A drag shows that line dashed; letting go
+  sets the margin (`doc.style.fit_<side>`) and refits that axis, ONE undo
+  step (`window.set_fit_margin`: a group of the style change and the fit).
+  A click selects an arrow; a typed number (a sum works) and Enter then set
+  it, like G and a number. A value that cannot be drawn - negative, or
+  leaving the data less than 5 % beside the opposite margin
+  (`style.FIT_MOST`) - flashes the line red and changes nothing.
+  **The fit margins changed meaning** (his choice): a SHARE OF THE AXIS
+  left empty, typed as a fraction (left 0.1 is the first tenth of the x
+  axis), no longer % of the data's range. Built in: 0 / 0 / 0.05 / 0.05.
+  Old values convert (`style.convert_old_fit`): preferences version 2,
+  sessions version 6. Two margins summing past 0.95 are scaled down
+  together (`PlotWidget.fit_pads`).
+* **A colour picker of our own** (`ui/colour.py`, `get_colour`): a
+  hue/saturation wheel with WHITE at the centre, so a saturated colour
+  made paler is a move inwards (Qt's picker's bar went darker), a value
+  bar beside it, R/G/B and H/S/V boxes, hex, the plotter's colours, was /
+  now, and a dropper ("Pick from screen", Esc or the right button stops).
+  Live: the figure follows the wheel; closing keeps, Revert puts back.
+* **Sums in every number box** (`ui/numbox.py`, `numbers.evaluate`):
+  "255-20", "(3+4)*2", a comma is a decimal point; + - * / and brackets
+  only, from Python's parse tree, never `eval`. Also in typed
+  temperatures ("98+5 K"). Not in the hex field: a sum on a whole colour
+  does not say which channel it means.
+* **The reticle keeps the theme's accent on a light page**: a white page
+  on Boombox drew the light theme's amber reticle and orange selection.
+  The drawing-theme flip now changes the INK only; `plot.ACCENTS` (reticle,
+  band, selection) stay the document theme's, darkened for paper
+  (`set_theme(name, accent=...)`).
+* **Opaque shading** for an integration ("Opaque shading",
+  `Analysis.shade_opaque`, saved): the fill is the colour the translucent
+  one makes over the page (`plot.shade_fill`). The analysis window also
+  shows "Shade the area" now; `shade` had no checkbox before.
+* **A colour gradient** (F3 "Colour gradient on the selection...", two
+  scans or more): one colour, darkest and lightest as mixes towards black
+  and white (`core/shades.py`), darkest at the top of the stack unless
+  "Lightest at the top"; live, one undo step on closing.
+* **DTG** (PLAN Next 3, part): a scan of its own (`SIGNAL_DTG`), a row
+  under each SDT segment's mass in the outliner, F3 "Show or hide the DTG
+  curves". Worked out from the m% (`core/dtg.py`): the least-squares slope
+  against TIME in a window given in kelvin of the ramp (the scan's
+  "Smoothing", 2 K), per degree over the segment's fitted heating rate;
+  a loss is positive. %/degC or %/min ("DTG axis: ..."). It takes the y
+  axis the heat flow otherwise has (`Document.y_signal`); a heat flow shown
+  beside it is reported with no axis (`Document.axis_missing`), through
+  the same placeholder, blink and export warning as a missing molar mass.
+  No analyses on a DTG yet.
+* **Ctrl+Z reaching the plot** no longer starts the zoom modes (Z and P
+  with Ctrl/Alt/Meta are passed on). Not reproduced through the real
+  shortcut here; the hole is closed in case it was that.
+* From his testing the same day (round 27b):
+  - **Opaque shading is a house style too** ("Integration shading",
+    translucent / opaque; `Analysis.shading`, None follows it). The
+    tickbox was there, in an integration's own window; he looked in
+    Settings.
+  - **Tangents meet exactly**: "Tangent overshoot" is 0 built in (it was
+    6 pt, both lines ran past their crossing).
+  - **Min and max in an axis's settings** ("Range", typed, one view step)
+    and **"Lock the current framing"** (F3, the empty plot's menu; per
+    axis "Locked" in its settings): F and an unframed axis go to the
+    locked range instead of the fit (`PlotWidget.home`). A lock is kept
+    with its unit (`Axis.lock_context`) and not used in another. A margin
+    arrow unlocks its axis.
+  - **Decorators move with the data while zoomed** (all kinds, his
+    choice, "we will test this first"): a page place is a fraction of the
+    axes box AT HOME - the lock, else the fit (`rel_to_px`, `px_to_rel`);
+    zoomed they travel with the data and are cut at the axes; at home
+    they are where they were put. A session before version 7 stored
+    fractions of the view as shown: `rehome` converts them on opening.
+  - **Labels that belong to a curve hang from it like analysis labels**
+    ("can't they just behave like an analysis arrow plus its label?"): a
+    sample `at` and a distance `dx`, `dy` in figure units. A drag slides
+    along the curve and changes the distance; a note's arrow drops
+    straight onto the point, its text flush over it (Ctrl+L / R / M); a
+    curve name keeps its sideways distance. Settings: "On the curve at",
+    "Distance", "Sideways". Given to a scan (Ctrl+P, the outliner) a label
+    is hung where it stands; freed it keeps its place. The note arrow that
+    shot across the window when zoomed is gone with it. The driver export
+    gets their drawn places as a hint (`label_hints`).
+  - **Delete closes a file** whose row is selected in the outliner while
+    the outliner has the keyboard (several: one undo step); elsewhere
+    Delete removes curves as before.
+  - **F is one press**: every axis back to its home at once. The two-step
+    F (x, then y) is the PXRD window's and useless for DSC; it is a
+    DATA-TYPE default now, `core/profile.py` (`FIT_STAGED`), where a
+    sibling plotter for spectra sets it back.
+  - **The dependency is PySide6-Essentials**, not PySide6: everything the
+    panel and its tests import is in it (215 MB installed against 675 MB).
+  - **A file's own box in the outliner** shows and hides all its curves
+    (ticked: all shown, half: some, none: a file with no curve). It had
+    none before; Qt makes a row checkable by default, so a press there
+    made an empty box that did nothing, and a rebuild took it away.
+  - **Files are renamed** (F2 in place, or "Rename" on the row;
+    `Sample.title`, saved; its curves, the legend and exports follow) and
+    **dragged into order** (a line in the gap, ORCA Workbench's Transform
+    list; `window.move_samples`). **The outliner's order is the stack's**:
+    S spreads in it with the top file at the top (R during S turns it
+    over), "Stack evenly" likewise (it used to put the first file at the
+    bottom), the legend lists in it (`Document.in_outliner_order`,
+    `set_sample_order`). **Swap two** (F3, and a scan's menu with exactly
+    two selected): their offsets, and of two files the files' places too,
+    so the next S keeps the swap.
+  - **S keeps the order the offsets have** (Christian, 2026-09-29, taking
+    back the outliner order and the spread about zero as "the wrong
+    reaction to a problem caused by poor handling"): prearranging a little
+    chooses the order, and only ties go by the outliner (its top on top);
+    the LOWEST scan stays put and is the neutral line, the others step up
+    from it. R still turns the order over; "Stack evenly" orders the same
+    way (`PlotWidget.stack_order`).
+  - **Tp**: an integration's label can give its peak temperature after
+    the enthalpy ("Peak (Tp)" in its settings; house style "Integration
+    peak temperature", off built in); `{Tp}` in a label puts it anywhere.
+  - **Copy and paste labels** (Ctrl+C, Ctrl+V): pasted as FREE labels at
+    the pointer (else just down and right of the originals), in the same
+    arrangement, notes with their arrows; given to a curve afterwards
+    (Ctrl+P, the outliner). The text goes to the system clipboard too.
+  - **Version 1.0.0**, committed and tagged; not on PyPI.
+  - **A file with no curve can be closed** ("Close ..." on its row, one
+    undo step; `window.close_sample`): CN-58 in his figure could not be
+    taken off at all.
+
 ## Next
 
 1. **TGA as a first-class plot** (Christian, 2026-09-28, with his target
@@ -981,8 +1110,8 @@ requests of 2026-09-28 (docs/NEXT.md, now emptied):
    Python onset fit vs TRIOS's (1 K median), the label arrow vs the
    tangents' crossing, the cooling Tg's sign, the Weight Corrected Heat Flow
    fallback, CSV blanks.
-3. **Weight analyses**: onset/endset of a mass loss drawn on the weight
-   curve; DTG (the derivative); weight offsets for stacking.
+3. **Weight analyses**: a mass step between two temperatures, and the
+   residue. (Onsets on the weight, the DTG and weight offsets are done.)
 4. **A preset as the user's default** (a preset goes onto one figure;
    Settings holds the defaults).
 

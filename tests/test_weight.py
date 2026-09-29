@@ -485,7 +485,8 @@ def test_a_mass_scan_moves_stacks_and_converts_in_its_own_unit(qapp):
     plot._scale["typed"] = "10"
     plot._update_transform()
     plot._finish_transform()
-    assert sorted((first.offset, second.offset)) == [0.0, 10.0]
+    # tied: the outliner's first on top, the lowest stays where it was
+    assert (first.offset, second.offset) == (10.0, 0.0)
     moved = first if first.offset else second
     win.set_weight_unit(model.WEIGHT_MG)
     assert moved.offset == pytest.approx(2.0)

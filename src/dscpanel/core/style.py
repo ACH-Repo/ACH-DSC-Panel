@@ -67,6 +67,22 @@ LINES_TITLES = {
     LINES_NONE: "none",
 }
 
+#: How an integration's area is shaded (`Analysis.shading`, Christian,
+#: 2026-09-29): translucent, or opaque in the colour the translucent fill
+#: makes over the page, so nothing behind it shows through.
+SHADING_TRANSLUCENT = "translucent"
+SHADING_OPAQUE = "opaque"
+SHADINGS = (SHADING_TRANSLUCENT, SHADING_OPAQUE)
+SHADING_TITLES = {SHADING_TRANSLUCENT: "translucent",
+                  SHADING_OPAQUE: "opaque (as seen over the page)"}
+
+#: Whether an integration's label also gives its peak temperature, Tp
+#: (`Analysis.show_peak`, Christian, 2026-09-29).
+PEAK_OFF = "off"
+PEAK_ON = "on"
+PEAKS = (PEAK_OFF, PEAK_ON)
+PEAK_TITLES = {PEAK_OFF: "not shown", PEAK_ON: "shown after the enthalpy"}
+
 
 class Setting(object):
     """One row of the house style: a name, a built-in value and its limits."""
@@ -150,7 +166,16 @@ SETTINGS = (
     Setting("analysis_construction", "Onset, endset and Tg lines",
             LINES_TANGENTS, kind="choice", choices=LINES, titles=LINES_TITLES,
             note="Tangent construction, chords to the point, or none."),
-    Setting("tangent_overshoot", "Tangent overshoot", 6.0, low=0.0,
+    Setting("analysis_peak", "Integration peak temperature (Tp)", PEAK_OFF,
+            kind="choice", choices=PEAKS, titles=PEAK_TITLES,
+            note="Shown after the enthalpy: \u0394H = 141 J/g, "
+                 "Tp = 124 \u00b0C."),
+    Setting("analysis_shading", "Integration shading", SHADING_TRANSLUCENT,
+            kind="choice", choices=SHADINGS, titles=SHADING_TITLES,
+            note="Opaque: the colour the translucent fill makes over the "
+                 "page, with nothing showing through."),
+    # 0 built in (Christian, 2026-09-29: the tangents should meet exactly).
+    Setting("tangent_overshoot", "Tangent overshoot", 0.0, low=0.0,
             high=72.0, step=1.0, decimals=1, suffix=" pt",
             note="How far a tangent runs past its crossing."),
     Setting("caption_size", "Axis captions", 14.0, low=5.0, high=40.0,
@@ -187,20 +212,23 @@ SETTINGS = (
             note="%.0f whole percent; %.1f mg converts."),
     Setting("line_width", "Curve width", 1.0, low=0.2, high=8.0, step=0.2,
             decimals=2),
-    # How much room F leaves round the data on each side, as a share of its
-    # range - his scripts' `set_side_margins` (Christian, 2026-09-29).
-    Setting("fit_left", "Fit margin, left", 0.0, low=0.0, high=100.0,
-            step=1.0, decimals=0, suffix=" %",
-            note="Room F leaves left of the data, % of its range."),
-    Setting("fit_right", "Fit margin, right", 0.0, low=0.0, high=100.0,
-            step=1.0, decimals=0, suffix=" %",
-            note="Room F leaves right of the data, % of its range."),
-    Setting("fit_bottom", "Fit margin, bottom", 6.0, low=0.0, high=100.0,
-            step=1.0, decimals=0, suffix=" %",
-            note="Room F leaves below the curves, % of their range."),
-    Setting("fit_top", "Fit margin, top", 6.0, low=0.0, high=100.0,
-            step=1.0, decimals=0, suffix=" %",
-            note="Room F leaves above the curves, % of their range."),
+    # How much room F leaves round the data on each side - his scripts'
+    # `set_side_margins` (Christian, 2026-09-29) - as the SHARE OF THE AXIS
+    # left empty: left 0.1 is the first tenth of the x axis. The margin
+    # gizmos on the page edges set them for one figure.
+    Setting("fit_left", "Fit margin, left", 0.0, low=0.0, high=0.9,
+            step=0.01, decimals=3,
+            note="Share of the x axis left empty left of the data: "
+                 "0.1 is 10 %."),
+    Setting("fit_right", "Fit margin, right", 0.0, low=0.0, high=0.9,
+            step=0.01, decimals=3,
+            note="Share of the x axis left empty right of the data."),
+    Setting("fit_bottom", "Fit margin, bottom", 0.05, low=0.0, high=0.9,
+            step=0.01, decimals=3,
+            note="Share of the y axis left empty below the curves."),
+    Setting("fit_top", "Fit margin, top", 0.05, low=0.0, high=0.9,
+            step=0.01, decimals=3,
+            note="Share of the y axis left empty above the curves."),
     # How close a press must be to a curve or a label to act on it (mark an
     # interval, move the label) rather than start a box select. Christian
     # found 60 px grabbed a neighbouring scan where curves run close; 14 is
@@ -221,6 +249,8 @@ FIELDS = {
     ("analysis", "label_size"): "analysis_size",
     ("analysis", "flush"): "analysis_flush",
     ("analysis", "construction"): "analysis_construction",
+    ("analysis", "shading"): "analysis_shading",
+    ("analysis", "show_peak"): "analysis_peak",
     ("axis", "label_size"): "caption_size",
     ("axis", "tick_size"): "tick_size",
     ("axis", "label_gap"): "caption_gap",
@@ -270,6 +300,38 @@ _window_state = None
 PATH_OVERRIDE = None
 
 
+#: The fit margins, by side, and the side across from each.
+FIT_SIDES = ("left", "right", "bottom", "top")
+FIT_OPPOSITE = {"left": "right", "right": "left", "bottom": "top",
+                "top": "bottom"}
+#: Two opposite margins together leave at least this share for the data.
+FIT_MOST = 0.95
+#: What the margins were before they were shares of the axis: percent of
+#: the data's range, these built in.
+_OLD_FIT_PERCENT = {"left": 0.0, "right": 0.0, "bottom": 6.0, "top": 6.0}
+
+
+def convert_old_fit(entries):
+    """Fit margins written as PERCENT OF THE DATA's range (the house style
+    before 2026-09-29, preferences version 1 and sessions before version 6)
+    as shares of the axis, in place: p % on each side of a range D makes an
+    axis D (1 + (pa + pb) / 100) long, of which p / 100 D is empty."""
+    old = dict(_OLD_FIT_PERCENT)
+    present = []
+    for side in FIT_SIDES:
+        try:
+            raw = entries.get("fit_" + side)
+            if raw is not None:
+                old[side] = float(raw)
+                present.append(side)
+        except (TypeError, ValueError):
+            entries.pop("fit_" + side, None)
+    for side in present:
+        total = 1.0 + (old[side] + old[FIT_OPPOSITE[side]]) / 100.0
+        entries["fit_" + side] = round(old[side] / 100.0 / total, 4)
+    return entries
+
+
 def preferences_path():
     if PATH_OVERRIDE:
         return str(PATH_OVERRIDE)
@@ -298,10 +360,14 @@ def load_preferences(path=None):
         _figure_default = dict(stored["figure"])
     if isinstance(stored.get("window"), dict):
         set_window_state(stored["window"])
+    version = stored.get("version", 1)
     for section in ("style", "handling"):
         entries = stored.get(section)
         if not isinstance(entries, dict):
             continue
+        if section == "style" and not (isinstance(version, int)
+                                       and version >= 2):
+            entries = convert_old_fit(dict(entries))
         for key, raw in entries.items():
             setting = BY_KEY.get(key)
             cleaned = setting.clean(raw) if setting is not None else None
@@ -321,7 +387,7 @@ def save_preferences(path=None):
         os.makedirs(folder)
     changed = dict((key, value) for key, value in _preferences.items()
                    if value != BY_KEY[key].default)
-    state = {"format": "preferences", "version": 1,
+    state = {"format": "preferences", "version": 2,
              "style": dict((k, v) for k, v in changed.items()
                            if BY_KEY[k].figure),
              "handling": dict((k, v) for k, v in changed.items()

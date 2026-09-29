@@ -424,12 +424,16 @@ def test_an_onset_is_drawn_as_two_tangents_meeting_at_its_number(
     trace = _trace(window, scan)
     plot = window.plot
     rect = plot.plot_rect()
+    # built in, the tangents meet exactly (Christian, 2026-09-29)
     dashes, lines = plot.interval_marks(trace, onset, rect)
     assert len(dashes) == 2 and len(lines) == 2
+    assert _distance(lines[0][1], lines[1][0]) < 1e-9
+    window.doc.style.tangent_overshoot = 6.0
+    dashes, lines = plot.interval_marks(trace, onset, rect)
     p0, p1, p2 = _px(plot, scan, measure.tangent_points(onset), rect)
     (a0, b0), (a1, b1) = lines
     assert _distance(a0, p0) < 1e-9 and _distance(b1, p2) < 1e-9
-    # each runs past the crossing by the house style's 6 pt
+    # each runs past the crossing by the overshoot asked for, 6 pt
     over = 6.0 * plot_module.PT
     assert _distance(b0, p1) == pytest.approx(over)
     assert _distance(a1, p1) == pytest.approx(over)
@@ -470,6 +474,7 @@ def test_a_glass_transition_is_drawn_as_three_tangents(window):
     trace = _trace(window, scan)
     plot = window.plot
     rect = plot.plot_rect()
+    window.doc.style.tangent_overshoot = 6.0
     dashes, lines = plot.interval_marks(trace, tg, rect)
     assert len(dashes) == 2 and len(lines) == 3
     p0, p1, p2, p3 = _px(plot, scan, measure.tangent_points(tg), rect)
@@ -722,7 +727,7 @@ def test_the_settings_page_lists_the_lines_and_their_overshoot(window):
     page = SettingsDialog(window)
     assert page.default_value("analysis_construction") == \
         style.LINES_TANGENTS
-    assert page.default_value("tangent_overshoot") == pytest.approx(6.0)
+    assert page.default_value("tangent_overshoot") == pytest.approx(0.0)
     combo = page.defaults["analysis_construction"].combo
     assert [combo.itemText(i) for i in range(combo.count())] == [
         style.LINES_TITLES[c] for c in style.LINES]

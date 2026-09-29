@@ -31,6 +31,7 @@ import re
 
 import numpy as np
 
+from . import dtg as dtg_module
 from . import figure as figure_module
 from . import style
 from . import units
@@ -58,7 +59,15 @@ AXES = (AXIS_TEMPERATURE, AXIS_TIME)
 #: (`Document.axes["y2"]`) in `Document.weight_unit`.
 SIGNAL_HEAT = "heat flow"
 SIGNAL_MASS = "mass"
-SIGNALS = (SIGNAL_HEAT, SIGNAL_MASS)
+#: The derivative of the m% curve (Christian, 2026-09-29; `core/dtg.py`), a
+#: scan of its own like the mass. It is drawn on the y axis the heat flow
+#: otherwise has (`Document.y_signal`): while one is shown, that axis is the
+#: DTG's, and a heat flow shown beside it has no axis to be drawn on.
+SIGNAL_DTG = "dtg"
+SIGNALS = (SIGNAL_HEAT, SIGNAL_MASS, SIGNAL_DTG)
+#: The order of one segment's curves in the outliner, and so in a stack:
+#: the mass (the "meat" of an SDT run), its DTG, then the heat flow.
+SIGNAL_ROWS = (SIGNAL_MASS, SIGNAL_DTG, SIGNAL_HEAT)
 
 AXIS_LABEL = {
     AXIS_TEMPERATURE: "Temperature / °C",
@@ -169,10 +178,14 @@ class Sample(object):
         #: Anything the reader printed while reading this file.
         self.note = ""
         self.scans = []
+        #: The name the user gave it (F2 in the outliner, Christian,
+        #: 2026-09-29), or None for the file's own. Its curves' names, the
+        #: legend and exports follow it.
+        self.title = None
 
     @property
     def name(self):
-        return self.file_name
+        return self.title or self.file_name
 
     @property
     def mass_source(self):
@@ -317,6 +330,8 @@ class Scan(Obj):
         #: scan is. Fixed for its life; a segment's other curve is another
         #: scan.
         self.signal = signal if signal in SIGNALS else SIGNAL_HEAT
+        #: A DTG's smoothing window, in kelvin of the ramp (`core/dtg.py`).
+        self.dtg_window = dtg_module.WINDOW_K
         #: Vertical placement, in the unit the y axis is currently showing.
         #: Continuous, dragged with the mouse or typed after G - never a slot
         #: in a stacking order. Christian: DSC scans sit where they are put.
@@ -368,12 +383,21 @@ class Scan(Obj):
     def is_mass(self):
         return self.signal == SIGNAL_MASS
 
+    @property
+    def is_dtg(self):
+        return self.signal == SIGNAL_DTG
+
+    @property
+    def is_heat(self):
+        return self.signal == SIGNAL_HEAT
+
     def display_name(self):
         """What the label beside the curve says."""
         if self.label:
             return str(self.label)
         return "{} {}{}".format(self.sample.name, self.short_program(),
-                                " mass" if self.is_mass else "")
+                                " mass" if self.is_mass
+                                else " DTG" if self.is_dtg else "")
 
     def short_program(self):
         """"#3 heat 10 K/min" - the segment number, what it does, how fast.
@@ -573,6 +597,29 @@ class Scan(Obj):
             out.append((x[k1 - 1:], weight[k1 - 1:]))
         return out
 
+    def dtg_values(self, unit=dtg_module.PER_DEGREE):
+        """The DTG in `unit` (%/degC or %/min), one value per sample, from
+        the segment's m%; None when it cannot be worked out
+        (`dtg_missing_for`)."""
+        return dtg_module.dtg(self.time_min(), self.temperature(),
+                              self.weight_values(WEIGHT_PCT), unit,
+                              self.dtg_window)
+
+    def dtg_missing_for(self, unit, axis=None):
+        """What stops this scan's DTG being drawn in `unit`, or None."""
+        if not self.has_weight():
+            return "weight in this segment"
+        if self.weight_values(WEIGHT_PCT) is None:
+            return "sample mass"
+        if axis is not None and not _measured(self.x_values(axis)):
+            return "{} in this segment".format(axis.lower())
+        return dtg_module.missing(self.time_min(), self.temperature(),
+                                  self.weight_values(WEIGHT_PCT), unit)
+
+    def heating_rate(self):
+        """The segment's fitted heating rate, K/min, or None."""
+        return dtg_module.heating_rate(self.time_min(), self.temperature())
+
     def heat_flow_w(self):
         """Heat flow in WATTS, or None when that needs a mass there is not."""
         values, base = self.heat_flow()
@@ -599,6 +646,8 @@ class Scan(Obj):
         """
         if self.is_mass:
             return self.weight_missing_for(unit, axis)
+        if self.is_dtg:
+            return self.dtg_missing_for(unit, axis)
         values, base = self.heat_flow()
         # A column whose every sample is flagged (NaN) is no signal either:
         # a range made of it is NaN, and a NaN range made `_nice_step` raise
@@ -618,6 +667,8 @@ class Scan(Obj):
                 return 1.0
             mass = self.sample.mass_g
             return 100.0 / (float(mass) * 1000.0) if mass else None
+        if self.is_dtg:
+            return dtg_module.factor(unit, self.heating_rate())
         _values, base = self.heat_flow()
         if base is None:
             return None
@@ -634,7 +685,8 @@ class Scan(Obj):
         molar mass must be visible as such, not quietly plotted wrong.
         """
         key = (axis, unit, exo, self.offset, x_unit,
-               self.sample.mass_g, self.molar_mass, self.sample.exo)
+               self.sample.mass_g, self.molar_mass, self.sample.exo,
+               self.dtg_window if self.is_dtg else None)
         if self._cache_key == key:
             return self._cache
         x = self.x_values(axis)
@@ -642,6 +694,10 @@ class Scan(Obj):
             x = units.from_celsius(x, x_unit)
         if self.is_mass:
             values, base = self.weight_values(unit), unit
+        elif self.is_dtg:
+            values = (self.dtg_values(unit)
+                      if self.dtg_missing_for(unit) is None else None)
+            base = unit
         else:
             values, base = self.heat_flow()
         y = None
@@ -665,6 +721,16 @@ class Scan(Obj):
         unit."""
         if base is None:
             return None
+        if self.is_dtg:
+            # Never flipped by the exotherm's direction either; the unit is
+            # the one it was worked out in (`dtg_values`).
+            if base == unit:
+                return values + float(self.offset)
+            old = dtg_module.factor(base, self.heating_rate())
+            new = dtg_module.factor(unit, self.heating_rate())
+            if not old or not new:
+                return None
+            return values * (new / old) + float(self.offset)
         if self.is_mass:
             # A mass is never flipped by the exotherm's direction; `base`
             # is "%" or "mg", converted with the sample mass when it is not
@@ -746,7 +812,8 @@ class Scan(Obj):
         """
         if self._analyses is None:
             self._analyses = []
-            for entry in self.analyses():
+            # A DTG is worked out here; no analysis of the file is its.
+            for entry in ([] if self.is_dtg else self.analyses()):
                 attribution = entry.get("attribution") or "cached curve"
                 curve = _analysed_curve(entry, self.has_weight())
                 # A file's analysis goes to the scan of the curve it was
@@ -878,6 +945,14 @@ class Analysis(Obj):
         #: Shade the integrated area for a peak integration, as the template
         #: does. Meaningless for the other models, and ignored there.
         self.shade = True
+        #: `style.SHADINGS`: translucent, or opaque in the colour the
+        #: translucent fill makes over the page (Christian, 2026-09-29).
+        #: None follows the house style; read it through `style.value`.
+        self.shading = None
+        #: `style.PEAKS`: the peak temperature after an integration's
+        #: enthalpy in its label ("on"), or not; None follows the house
+        #: style. `{Tp}` in a label puts it anywhere (`core/labels.py`).
+        self.show_peak = None
         #: The dashes at the two ends of the interval, so the figure says
         #: which interval an analysis covers. The dashes only: the lines of
         #: an onset, endset or Tg are `construction`.
@@ -1114,6 +1189,13 @@ class Axis(Obj):
     def __init__(self, oid, which):
         Obj.__init__(self, oid, "{} axis".format(which.upper()))
         self.which = which               # "x", "y", or "y2" (the weight)
+        #: A LOCKED range (Christian, 2026-09-29: "Lock current framing"):
+        #: `[low, high]` that F and an unframed view return to instead of
+        #: the fit, or None. Kept with what it was measured in
+        #: (`lock_context`, `PlotWidget.axis_context`): a range in W/g says
+        #: nothing about an mW axis, and is then not used.
+        self.lock = None
+        self.lock_context = None
         #: None means "say what is on this axis", which follows the unit.
         self.label = None
         self.show_grid = False
@@ -1171,6 +1253,8 @@ class Axis(Obj):
         if self.which == "y2":
             return "*m*  /  {}".format(getattr(doc, "weight_unit",
                                                WEIGHT_PCT))
+        if doc.y_signal() == SIGNAL_DTG:
+            return "DTG  /  {}".format(doc.dtg_unit)
         return "Heat Flow  /  {}".format(doc.y_unit)
 
 
@@ -1230,15 +1314,34 @@ class TextLabel(Artist):
         self.vline = None
         #: The line dashed (his `ls='--'`) or solid.
         self.line_dashed = True
+        #: A label that belongs to a scan HANGS FROM ITS CURVE like an
+        #: analysis label (Christian, 2026-09-29: "can't they just behave
+        #: like an analysis arrow plus its label?"): `at` is the sample,
+        #: `("i", n)` in the segment's own numbering, and `dx`, `dy` are
+        #: figure units from that point to the label's anchor (up is
+        #: negative). A note's arrow drops straight onto the point, so its
+        #: `dx` is 0. None until attached (`PlotWidget.attach`): a label
+        #: from an older session is placed as it was until then.
+        self.at = None
+        self.dx = 0.0
+        self.dy = None
 
     @property
     def is_vline(self):
         return self.vline is not None
 
+    @property
+    def attached(self):
+        """True when it hangs from its scan's curve (`at`)."""
+        return (self.scan is not None and self.vline is None
+                and self.at is not None)
+
     def follow(self):
         """How far its scan has moved since the label was placed, in the
-        axis unit: 0.0 for a free label."""
-        if self.scan is None or self.parent_offset is None:
+        axis unit: 0.0 for a free label and for one hanging from its curve
+        (the curve carries it)."""
+        if (self.scan is None or self.parent_offset is None
+                or self.at is not None):
             return 0.0
         return float(self.scan.offset) - float(self.parent_offset)
 
@@ -1493,6 +1596,8 @@ class Document(object):
         self.axes["y2"].name = "Mass axis"
         #: What the mass axis shows: "%" of the sample mass, or "mg".
         self.weight_unit = WEIGHT_PCT
+        #: What a DTG is drawn in: %/degC or %/min (`core/dtg.py`).
+        self.dtg_unit = dtg_module.PER_DEGREE
         #: Captions the user has added. Free objects, not tied to a scan.
         self.labels = []
         #: Pictures pasted or dropped onto the figure (`ImageArtist`).
@@ -1680,14 +1785,63 @@ class Document(object):
     def visible_scans(self):
         return [s for s in self.scans if s.visible]
 
+    # ---------------------------------------------------------- the order
+    # The OUTLINER's order is the figure's (Christian, 2026-09-29): files
+    # top to bottom as listed (dragged into place), a file's curves in its
+    # row order. S and "Stack evenly" stack in it, the top of the list at
+    # the top of the stack; the legend lists in it.
+    def outliner_key(self, scan):
+        """Where `scan` stands in the outliner: file, segment, curve."""
+        sample = scan.sample
+        at = (self.samples.index(sample) if sample in self.samples
+              else len(self.samples))
+        row = (SIGNAL_ROWS.index(scan.signal) if scan.signal in SIGNAL_ROWS
+               else len(SIGNAL_ROWS))
+        return (at, int(scan.seg), row)
+
+    def in_outliner_order(self, scans):
+        """`scans`, top of the outliner first."""
+        return sorted(scans, key=self.outliner_key)
+
+    def set_sample_order(self, samples):
+        """The files in this order (all of them, each once), and the scans
+        with them, so the legend and everything else that lists them
+        agrees with the outliner."""
+        if sorted(map(id, samples)) != sorted(map(id, self.samples)):
+            raise ValueError("not an order of this figure's files")
+        self.samples = list(samples)
+        self.scans.sort(key=self.outliner_key)
+
     def unit_for(self, scan):
         """The unit a scan is drawn in: the mass axis's for a mass scan,
-        the heat flow axis's otherwise."""
-        return self.weight_unit if scan.is_mass else self.y_unit
+        the DTG's for a DTG, the heat flow axis's otherwise."""
+        if scan.is_mass:
+            return self.weight_unit
+        if getattr(scan, "is_dtg", False):
+            return self.dtg_unit
+        return self.y_unit
 
     def shows(self, signal):
         """True while a scan of `signal` is switched on."""
         return any(s.visible and s.signal == signal for s in self.scans)
+
+    def y_signal(self):
+        """What the y axis (`axes["y"]`) shows: the DTG while one is shown,
+        else the heat flow. One axis, one quantity: a heat flow shown
+        beside a DTG is reported as having no axis (`axis_missing`)."""
+        return SIGNAL_DTG if self.shows(SIGNAL_DTG) else SIGNAL_HEAT
+
+    def y_axis_unit(self):
+        """The unit of the y axis: the DTG's while it shows one."""
+        return (self.dtg_unit if self.y_signal() == SIGNAL_DTG
+                else self.y_unit)
+
+    def axis_missing(self, scan):
+        """What stops `scan` being drawn for want of an AXIS, or None: a
+        heat flow while the y axis is the DTG's."""
+        if scan.is_heat and self.y_signal() == SIGNAL_DTG:
+            return "axis (the y axis shows the DTG)"
+        return None
 
     def scans_missing(self, unit=None):
         """Scans that cannot be drawn in the current unit, and why.
@@ -1700,9 +1854,10 @@ class Document(object):
         for scan in self.scans:
             if not scan.visible:
                 continue
-            own = (self.weight_unit if scan.is_mass
-                   else (unit or self.y_unit))
-            missing = scan.missing_for(own, self.x_axis)
+            own = (unit or self.y_unit) if scan.is_heat else self.unit_for(
+                scan)
+            missing = (self.axis_missing(scan)
+                       or scan.missing_for(own, self.x_axis))
             if missing:
                 out.append((scan, missing))
         return out
@@ -1719,8 +1874,18 @@ class Document(object):
         if unit == self.y_unit:
             return []
         changes = self._convert_offsets(
-            [s for s in self.scans if not s.is_mass], self.y_unit, unit)
+            [s for s in self.scans if s.is_heat], self.y_unit, unit)
         self.y_unit = unit
+        return changes
+
+    def set_dtg_unit(self, unit):
+        """`set_unit` for a DTG (%/degC or %/min): the DTG scans' offsets
+        convert by each segment's heating rate."""
+        if unit not in dtg_module.UNITS or unit == self.dtg_unit:
+            return []
+        changes = self._convert_offsets(
+            [s for s in self.scans if s.is_dtg], self.dtg_unit, unit)
+        self.dtg_unit = unit
         return changes
 
     def set_weight_unit(self, unit):

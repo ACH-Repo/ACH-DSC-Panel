@@ -30,6 +30,7 @@ This file is GENERATED. After adding an operator, run:
 
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
+| Copy the selected labels | `Ctrl+C` | always |  |
 | Paste (a picture, a SMILES, text) | `Ctrl+V` | always |  |
 | Paste as a text label | `Ctrl+Shift+V` | always |  |
 | Undo | `Ctrl+Z` | there is something to undo | also walks back zoom, pan and fit, one gesture at a time |
@@ -66,6 +67,7 @@ This file is GENERATED. After adding an operator, run:
 | Align the selection to the active scan |  | two or more scans selected | closed-form fit to the first selected scan |
 | Reset the offsets of the selected scans | `R, with scans selected` | a selected scan has an offset, or a label or the legend is selected (then R rotates) |  |
 | Rotate the selection | `R, with a label or the legend selected` | a label or the legend is selected |  |
+| Swap the places of the two selected scans |  | always |  |
 
 ## Object
 
@@ -83,6 +85,7 @@ This file is GENERATED. After adding an operator, run:
 | Remove the selection | `Del` | a scan is selected |  |
 | Remove every scan of this file |  | always |  |
 | Colour for the selection... |  | a scan is selected |  |
+| Colour gradient on the selection... |  | always |  |
 | Show every analysis of the selected scans |  | always |  |
 | Hide every analysis of the selected scans |  | always |  |
 | Set the molar mass... | `Shift+M` | a scan is selected | there is no default M, so this is how W/mol happens |
@@ -103,6 +106,8 @@ This file is GENERATED. After adding an operator, run:
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
 | Fit the page to the window | `Alt+F` | always |  |
+| Lock the current framing |  | always |  |
+| Unlock the framing (F fits the data) |  | always |  |
 | Fit the view | `F or Home` | a scan is open |  |
 | Set the x range... | `M` | always |  |
 | X axis: temperature |  | the x axis is not temperature |  |
@@ -113,6 +118,9 @@ This file is GENERATED. After adding an operator, run:
 | Mass axis: % of the sample mass |  | always |  |
 | Mass axis: mg |  | always |  |
 | Show or hide the mass curves |  | always |  |
+| Show or hide the DTG curves |  | always |  |
+| DTG axis: %/°C |  | always |  |
+| DTG axis: %/min |  | always |  |
 | Show or hide the heat flow curves |  | always |  |
 | Theme: blender-default |  | always |  |
 | Theme: light |  | always |  |

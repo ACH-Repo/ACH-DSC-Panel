@@ -24,6 +24,8 @@ window does about it.
 
 import re
 
+from . import numbers
+
 #: The base every conversion starts from: heat flow in WATTS, as stored in the
 #: file. The reader also offers "Heat Flow (Normalized)" in W/g, which is the
 #: same number divided by the mass it also stores; going through watts keeps
@@ -193,9 +195,10 @@ def to_celsius(values, unit):
 
 
 #: A typed temperature: a number, and optionally its unit - C, F or K, with
-#: or without a degree sign or "deg", in any case. "98" is in `unit`.
+#: or without a degree sign or "deg", in any case. "98" is in `unit`. The
+#: number may be a sum: "98+5 K" (`numbers.evaluate`).
 _TYPED_TEMPERATURE = re.compile(
-    r"^\s*([-+]?(?:\d+(?:[.,]\d*)?|[.,]\d+))\s*"
+    r"^\s*([-+0-9.,*/() \t]*?[0-9.)])\s*"
     r"((?:\u00b0|deg)?\s*[cfk])?\s*$", re.I)
 
 
@@ -208,7 +211,9 @@ def parse_temperature(text, unit=TEMP_C):
     match = _TYPED_TEMPERATURE.match(str(text or ""))
     if not match:
         return None
-    value = float(match.group(1).replace(",", "."))
+    value = numbers.evaluate(match.group(1))
+    if value is None:
+        return None
     token = (match.group(2) or "").lower()
     for noise in ("\u00b0", "deg", " "):
         token = token.replace(noise, "")
