@@ -15,11 +15,17 @@ going; this file is about how it is done here.
    `dsc-panel` is written anywhere else outside prose. A rename is that
    module, the two entry points in `pyproject.toml`, and
    `register --clean-legacy`.
-3. **Never write a parser fixture from memory.** The reader is vendored from
-   ACH-DSC-Plotter and validated there against TRIOS exports. If a format
-   question comes up, ask Christian for a real file - he has them and will
-   provide one. `tests/conftest.py` builds a synthetic sample in the shape
-   the reader RETURNS, which is a different thing and is allowed.
+3. **Never write a parser fixture from memory.** The reader
+   (`core/trios_io.py`, `core/trios_analysis.py`) is this repo's OWN since
+   ACH-DSC-Plotter was retired (2026-09-28): fix it here, never "in the
+   Plotter", and there is no vendoring any more. `docs/TRI-FORMAT.md` is the
+   format; `tests/test_reader.py` compares every `.tri`/`.txt` pair on disk.
+   If a format question comes up, ask Christian for a real file - he has
+   them and will provide one. `tests/conftest.py` builds a synthetic sample
+   in the shape the reader RETURNS, which is a different thing and is
+   allowed. A test must never depend on the state of another repo's
+   checkout (the old vendor drift test failed on whichever machine had the
+   other repo out of step).
 4. **Nothing is normalised, and nothing is assumed.** No scaling a curve to
    its own maximum, no default molar mass, no silent sample mass. When a
    value is missing, the program says so where it would have been used - see
@@ -367,16 +373,76 @@ going; this file is about how it is done here.
   when a label changes hands; a unit change converts it for a note with a
   parent (a free one has no mass to convert by, like any data-space
   artist).
-* **A segment can record no heat flow at all** (the ramp of an indium
-  calibration run). `missing_for` reports a missing SIGNAL exactly like a
-  missing molar mass, so it reaches the placeholder, the blink and the export
-  warning without a second mechanism.
+* **A segment can lack a signal** (a TGA-only segment has no heat flow).
+  `missing_for` reports a missing SIGNAL exactly like a missing molar mass,
+  so it reaches the placeholder, the blink and the export warning without a
+  second mechanism. (The indium ramp that used to be the example turned out
+  to be recorded, in flagged arrays - round 25.)
+* **An array's length field is a LENGTH, never a signature** (round 25). A
+  signal is `<n> 01102101 <size = 4 + 4m> <m> <m u32 flags> 0100 <n> <n f32>`;
+  plain arrays have m = 0. The desktop's first SDT reader matched 8 fixed
+  bytes whose last 4 were one run's byte count, so only 33601-sample arrays
+  were read. Flags: 0 measured, 0x08000008 empty (NaN), 0x10 calculated by
+  TRIOS (never a signal). TRI-FORMAT.md sections 3 and 3b.
+* **Flagged samples are NaN** and some real runs have them at the START of
+  segment 1 (GQ equilibrate runs, CN-INDIUM-CHECK), every DSC run at the end
+  of its last segment. `_trim_empty_ends` trims the TAIL only, so sample
+  indices (spans, markers) still count from the segment start; anything that
+  reads data must be NaN-safe (`np.nanmin`, finite masks after slicing).
+* **An SDT run's sample mass is DERIVED** from Weight / Weight Change (the
+  file has no sample-size field), refused unless positive and constant, and
+  said to be derived wherever it is shown (`head['mass_source']`). A negative
+  recorded weight means NO mass, never an inverted curve.
+* **The flat cursor goes by ACQUISITION order** (round 25): the earlier
+  sample for an onset, the later for an endset, whatever the field names
+  say. The panel's endset used to BE its onset. In a TRIOS record the
+  onset/endset cursors are at +86/+132 and for an ENDSET the flat one is the
+  second, called "Onset cursor x" in TRIOS's export.
+* **A file analysis draws TRIOS's STORED construction** (`Analysis.
+  stored_construction`, three points, four for a Tg), a panel analysis the
+  Python one (`measure.tangent_points`), a `.txt` one chords. A construction
+  is placed through `Scan.axes_points`, the same arithmetic as the curve,
+  never a mapping of its own. `Analysis.fields["variable"]` says which curve
+  an analysis was made on; one on the WEIGHT is never drawn on the heat flow.
+* **A mass (m%) curve is a SCAN of its own** (`Scan.signal ==
+  SIGNAL_MASS`, 2026-09-28), drawn against `doc.axes["y2"]` in
+  `doc.weight_unit`. Anything placed at a scan's height maps through
+  `PlotWidget.sy_to_px(scan, ...)` / `px_to_sy`, an artist in data units
+  through `ay_to_px` (its parent scan's axis, else the MAIN one), a unit
+  through `doc.unit_for(scan)` - never the heat flow's `y_to_px` or
+  `doc.y_unit` alone. Gestures act on `main_axis()` ("y2" while a mass is
+  shown). An outliner segment key is FOUR parts, `("segment", id, seg,
+  signal)`. Arrangements (stack, distribute, align, S) work per signal.
+* **A one-cursor analysis stores its temperature as BOTH cursors**
+  ("Mass at temperature", `Measurement.needs == 1`): `cursors()`, `key()`
+  and the session's recompute then work unchanged; its settings show "At".
+* **A note's move carries its tip** (`_fields_of` is `("x", "y",
+  "leader")` for a note) and a marker line's its temperature (`("vline",
+  "x", "y")`), so an undo puts both back. A marker line's text stands ON
+  its line: `artist_point` / `set_artist_point` read and write `vline`,
+  never the label's own x.
+* **A typed number during G on an artist is a distance in the axes'
+  units** (x with X, else y on its axis), `PlotWidget._typed_px`.
+* **An unframed axis's range is KEPT** (`PlotWidget.kept_fit`,
+  2026-09-29), keyed by what the fit depends on besides placement
+  (`_fit_signature`: the curves on the axis, truncation, units, exo, fit
+  margins). F (`reset_view`, `fit`) and `rebuild(keep_view=False)` call
+  `forget_fit`. Setting an offset without a refresh and then fitting fits
+  the OLD traces - go through the undo stack or `refresh()` first.
+* **Build a menu, then show it**: `context_menu_for(obj)` builds, and
+  `_context_menu` execs. Patching `QMenu.exec` does NOT stop a real modal
+  menu here (the test hung until killed); a submenu is kept on its
+  parent's wrapper (`menu._paper`).
+* **The figure's drawing theme is not always `doc.theme`**
+  (`window.drawing_theme`): a page colour of the other family flips the
+  ink. `refresh` sets it; the windows keep `doc.theme`.
+* **The driver export is FROZEN** (Christian, 2026-09-28). New features go
+  into the panel's own drawing and PNG/SVG exports, not `DSC_Plotter.py`.
 
 ## Running it
 
 ```bash
-python -m pytest -q                  # about two seconds
-python tools/vendor.py --check       # is the vendored reader current?
+python -m pytest -q                  # about two minutes with the real files
 python -m dscpanel <file.tri>        # from a source checkout
 ```
 

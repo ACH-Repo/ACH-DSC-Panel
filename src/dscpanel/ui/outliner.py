@@ -67,6 +67,16 @@ class _Rows(QStyledItemDelegate):
         painter.restore()
 
 
+def _signals_of(sample, seg):
+    """The curves one segment offers: its mass first where it recorded one
+    (an SDT run), then its heat flow."""
+    numdata = (sample.data or {}).get("numdata", [])
+    step = numdata[seg] if seg < len(numdata) else {}
+    if model._records_mass(step):
+        return (model.SIGNAL_MASS, model.SIGNAL_HEAT)
+    return (model.SIGNAL_HEAT,)
+
+
 def first_line(text, limit=60):
     """A label's text as one row: its first line, and a mark if there is
     more (a label runs over several lines since round 20)."""
@@ -94,7 +104,7 @@ class Outliner(QTreeWidget):
     #: The user ticked or unticked something: (object, visible).
     visibility_changed = Signal(object, bool)
     #: A segment that was not on the plot was ticked: (sample, seg, on).
-    segment_toggled = Signal(object, int, bool)
+    segment_toggled = Signal(object, int, bool, str)
     selection_picked = Signal()
     activated_object = Signal(object)
     menu_for = Signal(object, object)          # object, global QPoint
@@ -177,6 +187,9 @@ class Outliner(QTreeWidget):
             for sample in doc.samples:
                 row = QTreeWidgetItem(self)
                 row.setText(0, sample.name)
+                if sample.sample_name != sample.name:
+                    row.setToolTip(0, "Sample name in the file: {}".format(
+                        sample.sample_name))
                 row.setText(1, self._sample_state(sample))
                 row.setData(0, Qt.UserRole, ("sample", id(sample)))
                 row.setFirstColumnSpanned(False)
@@ -189,14 +202,17 @@ class Outliner(QTreeWidget):
                 # A run holds seven, and comparing the second or third
                 # up-scan is routine, so the ones that are not shown yet have
                 # to be reachable - they are the unticked rows.
-                shown = {scan.seg: scan for scan in doc.scans
+                shown = {(scan.seg, scan.signal): scan for scan in doc.scans
                          if scan.sample is sample}
                 for seg in range(sample.segment_count()):
-                    scan = shown.get(seg)
-                    if scan is not None:
-                        self._add_scan(row, scan)
-                    else:
-                        self._add_segment(row, sample, seg)
+                    # An SDT segment is two curves, the mass first (the
+                    # "meat", Christian, 2026-09-28), each its own row.
+                    for signal in _signals_of(sample, seg):
+                        scan = shown.get((seg, signal))
+                        if scan is not None:
+                            self._add_scan(row, scan)
+                        else:
+                            self._add_segment(row, sample, seg, signal)
                 row.setExpanded(("sample", id(sample)) not in collapsed)
                 for k in range(row.childCount()):
                     child = row.child(k)
@@ -266,7 +282,7 @@ class Outliner(QTreeWidget):
                   else QColor(scan.colour))
         item.setForeground(0, QBrush(colour))
         state = []
-        missing = (scan.missing_for(self.doc.y_unit, self.doc.x_axis)
+        missing = (scan.missing_for(self.doc.unit_for(scan), self.doc.x_axis)
                    if self.doc else None)
         if missing:
             state.append("NO {}".format(missing.upper()))
@@ -288,40 +304,6 @@ class Outliner(QTreeWidget):
             self._add_label_row(item, label)
         if self.doc is not None and self.doc.offset_markers:
             self._add_marker_row(item, scan.marker)
-        if scan.has_weight():
-            self._add_weight_row(item, scan.weight)
-        return item
-
-    def _add_weight_row(self, parent, weight):
-        """An SDT or TGA run's weight curve, against the second y axis: what
-        stops it being drawn, in the alarm colour, like a scan's row; under
-        it the file's analyses made on the weight, listed and not drawn."""
-        item = QTreeWidgetItem(parent)
-        item.setText(0, "Weight")
-        item.setData(0, Qt.UserRole, ("weight", id(weight)))
-        item.setCheckState(0, Qt.Checked if weight.visible else Qt.Unchecked)
-        doc = self.doc
-        unit = getattr(doc, "weight_unit", model.WEIGHT_PCT)
-        missing = (weight.scan.weight_missing_for(unit, doc.x_axis)
-                   if doc is not None else None)
-        if missing:
-            item.setText(1, "NO {}".format(missing.upper()))
-            item.setForeground(1, QBrush(_ALARM))
-        else:
-            item.setText(1, "{} axis".format(unit))
-            item.setForeground(1, QBrush(_DIM))
-        item.setSelected(weight.selected)
-        for analysis in weight.scan.weight_analyses:
-            row = QTreeWidgetItem(item)
-            row.setText(0, analysis.summary())
-            row.setText(1, model.WEIGHT_ANALYSIS_NOTE)
-            row.setForeground(1, QBrush(_DIM))
-            # A key of its own shape, which `_object` knows nothing of: not
-            # an object to select, show or open (the two-shape trap).
-            row.setData(0, Qt.UserRole, ("weight_analysis", id(analysis)))
-            row.setFlags(Qt.ItemIsEnabled)
-            row.setToolTip(0, "Made in TRIOS on the weight curve. The "
-                           "panel does not draw analyses on the weight yet.")
         return item
 
     def _add_marker_row(self, parent, marker):
@@ -360,16 +342,21 @@ class Outliner(QTreeWidget):
             item.setForeground(1, QBrush(_DIM))
         return item
 
-    def _add_segment(self, parent, sample, seg):
-        """A segment of the file that is not being drawn: tick it to add it.
+    def _add_segment(self, parent, sample, seg, signal=model.SIGNAL_HEAT):
+        """A curve of the file that is not being drawn: tick it to add it.
 
         Named with the same `short_program` the drawn ones use, through a
         throwaway `Scan`, so "#3 heat 10 K/min" reads the same whether it is
-        on the plot or waiting to be put there.
+        on the plot or waiting to be put there; an SDT segment's mass says
+        "mass" after it. The key is FOUR parts, `("segment", id, seg,
+        signal)` (the two-shape trap in CLAUDE.md: `_segment_of` reads it).
         """
         item = QTreeWidgetItem(parent)
-        item.setText(0, model.Scan(0, sample, seg, "#888888").short_program())
-        item.setData(0, Qt.UserRole, ("segment", id(sample), seg))
+        text = model.Scan(0, sample, seg, "#888888").short_program()
+        if signal == model.SIGNAL_MASS:
+            text += " mass"
+        item.setText(0, text)
+        item.setData(0, Qt.UserRole, ("segment", id(sample), seg, signal))
         item.setCheckState(0, Qt.Unchecked)
         item.setForeground(0, QBrush(_DIM))
         item.setText(1, "not shown")
@@ -541,13 +528,14 @@ class Outliner(QTreeWidget):
         return item.data(0, Qt.UserRole)
 
     def _segment_of(self, item):
-        """`(sample, seg)` for an unticked segment row, else None."""
+        """`(sample, seg, signal)` for an unticked curve's row, else None."""
         key = self._key(item)
         if not key or key[0] != "segment" or self.doc is None:
             return None
+        signal = key[3] if len(key) > 3 else model.SIGNAL_HEAT
         for sample in self.doc.samples:
             if id(sample) == key[1]:
-                return sample, key[2]
+                return sample, key[2], signal
         return None
 
     def _object(self, item):
@@ -572,10 +560,6 @@ class Outliner(QTreeWidget):
             for scan in doc.scans:
                 if id(scan.marker) == ident:
                     return scan.marker
-        if kind == "weight":
-            for scan in doc.scans:
-                if id(scan.weight) == ident:
-                    return scan.weight
         if kind == "scan":
             for scan in doc.scans:
                 if id(scan) == ident:
@@ -624,9 +608,9 @@ class Outliner(QTreeWidget):
             # An unticked segment becomes a scan when it is ticked. Ticking
             # it back off goes through the scan row, not this one.
             if wanted:
-                sample, seg = segment
+                sample, seg, signal = segment
                 QTimer.singleShot(0, lambda: self.segment_toggled.emit(
-                    sample, seg, True))
+                    sample, seg, True, signal))
             return
         obj = self._object(item)
         if obj is None or not hasattr(obj, "visible"):

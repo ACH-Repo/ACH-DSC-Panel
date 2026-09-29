@@ -45,11 +45,16 @@ from . import units
 TEMPERATURE = "temperature"
 ENTHALPY = "enthalpy"
 HEAT_FLOW = "heat flow"
+#: An SDT run's m% at a temperature (round 26): "%" of the sample mass, or
+#: "mg" - which needs the sample mass unless the file recorded the mg.
+MASS = "mass"
 
 #: The template an analysis carries until somebody writes their own, by
 #: model. Checked in order: a glass transition's fields also carry an
 #: "Onset x".
 DEFAULTS = (
+    # Christian's figure writes the bare number: "99%".
+    ("Mass at", "{}"),
     ("Glass", "*T*_{g} = {}"),
     ("Endset", "*T*_{end} = {}"),
     ("Onset", "*T*_{on} = {}"),
@@ -78,11 +83,15 @@ _TEMPERATURE_UNITS = {
     _DEG + "F": units.TEMP_F, "degF": units.TEMP_F,
     "K": units.TEMP_K,
 }
+#: From percent of the sample mass: mg = % / 100 x the mass in mg, which is
+#: 10 x the mass in grams.
+_MASS_UNITS = {"%": (1.0, None), "mg": (10.0, "mass")}
 _BY_QUANTITY = {TEMPERATURE: _TEMPERATURE_UNITS, ENTHALPY: _ENTHALPY_UNITS,
-                HEAT_FLOW: _HEAT_FLOW_UNITS}
+                HEAT_FLOW: _HEAT_FLOW_UNITS, MASS: _MASS_UNITS}
 
 _ALL_UNITS = sorted(set(_ENTHALPY_UNITS) | set(_HEAT_FLOW_UNITS)
-                    | set(_TEMPERATURE_UNITS), key=len, reverse=True)
+                    | set(_TEMPERATURE_UNITS) | set(_MASS_UNITS),
+                    key=len, reverse=True)
 #: Other spellings of the temperature units, lower case.
 _ALIASES = {"c": _DEG + "C", "f": _DEG + "F", "k": "K",
             _DEG + "k": "K", "degk": "K"}
@@ -141,6 +150,8 @@ def quantity_of(model_name):
     if "Integration" in name:
         return ENTHALPY
     lowered = name.lower()
+    if lowered.startswith("mass at"):
+        return MASS
     if "height" in lowered or "change" in lowered:
         return HEAT_FLOW
     return TEMPERATURE
@@ -167,6 +178,8 @@ def result(analysis):
     quantity = quantity_of(name)
     if quantity == ENTHALPY:
         return number(fields.get("Enthalpy (normalized)")), quantity
+    if quantity == MASS:
+        return number(fields.get("Mass")), quantity
     if quantity == HEAT_FLOW:
         for key, text in fields.items():
             if key in ("Model", "Cursor x", "Cursor x1", "segment", "prog",
@@ -189,11 +202,22 @@ def result(analysis):
     return analysis.value(), quantity
 
 
+def units_of(quantity):
+    """The units a result of `quantity` can be shown in, in the order a
+    list offers them."""
+    return {TEMPERATURE: [_DEG + "C", "K", _DEG + "F"],
+            ENTHALPY: ["J/g", "kJ/mol", "J/mol", "kJ/g", "J", "mJ"],
+            HEAT_FLOW: ["W/g", "mW", "W/mol", "mW/mol", "W"],
+            MASS: ["%", "mg"]}.get(quantity, [])
+
+
 def natural_unit(quantity, doc):
     """The unit a value takes when the label names none: the axes'."""
     if quantity == TEMPERATURE:
         unit = getattr(doc, "x_unit", units.TEMP_C) if doc else units.TEMP_C
         return units.TEMPERATURE_LABEL.get(unit, _DEG + "C")
+    if quantity == MASS:
+        return getattr(doc, "weight_unit", "%") if doc else "%"
     y_unit = getattr(doc, "y_unit", units.UNIT_W_G) if doc else units.UNIT_W_G
     if quantity == ENTHALPY:
         return "kJ/mol" if y_unit == units.UNIT_W_MOL else "J/g"
@@ -223,7 +247,14 @@ def render(analysis, doc=None):
             problems.append(("unit", "'{}' is not a unit of {}: shown in {}"
                                      .format(format_unit, quantity, natural)))
         format_unit = None
-    default = format_unit or natural
+    # The analysis's own unit, chosen in its settings (Christian,
+    # 2026-09-28: "I do not see how J/mol or kJ/mol can be set").
+    own = canonical_unit(getattr(analysis, "unit", None))
+    if own is not None and own not in wanted:
+        problems.append(("unit", "'{}' is not a unit of {}: shown in {}"
+                                 .format(own, quantity, natural)))
+        own = None
+    default = own or format_unit or natural
     shown = []
 
     def fill(match):
@@ -251,6 +282,19 @@ def render(analysis, doc=None):
 
 def _in_unit(analysis, value, quantity, unit, spec, problems):
     """`value` (base unit) converted to `unit` and written, with the unit."""
+    if quantity == MASS:
+        # The milligrams the file recorded are used as they are: a run
+        # whose percentage has no known reference (a negative recorded
+        # weight) still has its mg (TRI-FORMAT.md section 3b).
+        from .model import number
+        if unit == "mg":
+            recorded = number(getattr(analysis, "fields", {}).get(
+                "Mass (mg)"))
+            if recorded is not None:
+                return "{} mg".format(numbers.write(recorded, spec,
+                                                    numbers.MASS))
+        if value is None:
+            return "? " + unit
     if value is None:
         return "? " + unit
     if quantity == TEMPERATURE:
@@ -275,7 +319,8 @@ def _in_unit(analysis, value, quantity, unit, spec, problems):
                                         "in {}".format(quantity, unit)))
             return "? " + unit
         factor *= float(mass)
-    return "{} {}".format(numbers.write(value * factor, spec, numbers.VALUE),
+    fallback = numbers.MASS if quantity == MASS else numbers.VALUE
+    return "{} {}".format(numbers.write(value * factor, spec, fallback),
                           unit)
 
 

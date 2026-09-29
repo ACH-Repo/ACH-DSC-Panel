@@ -19,7 +19,13 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QColorDialog,
                                QDoubleSpinBox, QFontComboBox, QFormLayout,
                                QHBoxLayout, QLabel, QLayout, QLineEdit,
                                QListWidget, QListWidgetItem, QPlainTextEdit,
-                               QPushButton, QSpinBox, QVBoxLayout, QWidget)
+                               QPushButton, QScrollArea, QSpinBox,
+                               QVBoxLayout, QWidget)
+
+#: How much of the screen's height a settings window may take before its
+#: rows scroll (Christian, 2026-09-28: an integration's settings ran off a
+#: T14s screen). Small ones never reach it.
+SCREEN_SHARE = 0.85
 
 import html
 import os
@@ -114,7 +120,7 @@ class RangeDialog(QDialog):
             y2_row = QHBoxLayout()
             self.y2_low_edit = QLineEdit(_number_text(y2_low), self)
             self.y2_high_edit = QLineEdit(_number_text(y2_high), self)
-            y2_row.addWidget(QLabel("weight", self))
+            y2_row.addWidget(QLabel("mass", self))
             for edit in (self.y2_low_edit, self.y2_high_edit):
                 edit.setAlignment(Qt.AlignRight)
                 edit.setMinimumWidth(80)
@@ -167,7 +173,7 @@ class RangeDialog(QDialog):
         return self._pair(self.y_low_edit, self.y_high_edit)
 
     def y2_values(self):
-        """The weight pair like `values`, or None."""
+        """The mass axis's pair like `values`, or None."""
         if self.y2_low_edit is None:
             return None
         return self._pair(self.y2_low_edit, self.y2_high_edit)
@@ -854,6 +860,18 @@ class ArtistTransform(QWidget):
             self.on_change()
 
 
+def screen_limit(widget):
+    """The tallest a settings window may be on the screen it is on, in
+    pixels, or None when there is no screen to ask."""
+    screen = widget.screen() if hasattr(widget, "screen") else None
+    if screen is None:
+        from PySide6.QtGui import QGuiApplication
+        screen = QGuiApplication.primaryScreen()
+    if screen is None:
+        return None
+    return int(screen.availableGeometry().height() * SCREEN_SHARE)
+
+
 class _LiveDialog(QDialog):
     """Common machinery: snapshot on open, restore on reject.
 
@@ -949,17 +967,65 @@ class _LiveDialog(QDialog):
     def fit(self):
         """Grow to what the rows need at this width. A wrapped label that
         is filled in after the window was sized - an analysis's results, a
-        problem under its label - was cut off."""
+        problem under its label - was cut off. Never past `SCREEN_SHARE` of
+        the screen's height: beyond that the rows scroll
+        (`_scroll_rows`)."""
         layout = self.layout()
         if layout is None:
+            return
+        if getattr(self, "_rows_area", None) is not None:
+            self._fit_scrolled()
             return
         layout.setSizeConstraint(QLayout.SetMinimumSize)
         layout.activate()
         needed = (layout.totalHeightForWidth(self.width())
                   if layout.hasHeightForWidth()
                   else self.sizeHint().height())
+        limit = screen_limit(self)
+        if limit is not None and needed > limit:
+            self._scroll_rows()
+            self._fit_scrolled()
+            return
         if needed > self.height():
             self.resize(self.width(), needed)
+
+    def _scroll_rows(self):
+        """Put the rows in a scroll area, keeping the buttons (the last
+        row, when it is a button box) below it, always in view."""
+        layout = self.layout()
+        buttons = None
+        last = layout.itemAt(layout.count() - 1) if layout.count() else None
+        if last is not None and isinstance(last.widget(), QDialogButtonBox):
+            buttons = last.widget()
+            layout.removeWidget(buttons)
+        inner = QWidget()
+        # Takes the layout, and its widgets, off this dialog.
+        inner.setLayout(layout)
+        area = QScrollArea(self)
+        area.setWidgetResizable(True)
+        area.setFrameShape(QScrollArea.NoFrame)
+        area.setWidget(inner)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(area, 1)
+        if buttons is not None:
+            row = QHBoxLayout()
+            row.setContentsMargins(9, 0, 9, 9)
+            row.addWidget(buttons)
+            outer.addLayout(row)
+        self._rows_area = area
+        self._rows_inner = inner
+        # `fit` had pinned this window's minimum to the rows' full height
+        # (SetMinimumSize on the layout now inside the area): let it go.
+        self.setMinimumSize(0, 0)
+
+    def _fit_scrolled(self):
+        limit = screen_limit(self) or 600
+        inner = self._rows_inner
+        needed = inner.sizeHint().height() + 60
+        bar = self._rows_area.verticalScrollBar().sizeHint().width()
+        width = max(self.width(), inner.sizeHint().width() + bar + 4)
+        self.resize(width, min(limit, needed))
 
     def reject(self):
         """Closed without OK - its X, Esc, Ctrl+W: KEEP what was changed.
@@ -1057,7 +1123,7 @@ class ScanSettings(_LiveDialog):
     """Everything about one scan, plus its sample's molar mass."""
 
     FIELDS = ("colour", "label", "offset", "line_width", "keep",
-              "molar_mass_override", "weight_visible", "weight_dashed")
+              "molar_mass_override")
     INDIVIDUAL = ("label", "offset", "molar_mass_override")
     GROUP_DISABLED = ("label", "offset", "molar", "own_molar", "analyses")
 
@@ -1089,26 +1155,6 @@ class ScanSettings(_LiveDialog):
 
         self.line_width = _style_number(self, scan, "line_width")
         form.addRow("Line width", self.line_width)
-
-        # An SDT or TGA run's weight, against the second y axis (round 25):
-        # shown or not, dashed or solid - for a group too.
-        self.weight_shown = self.weight_dashed = None
-        if scan.has_weight():
-            weight = QWidget(self)
-            weight_row = QHBoxLayout(weight)
-            weight_row.setContentsMargins(0, 0, 0, 0)
-            self.weight_shown = QCheckBox("Show")
-            self.weight_shown.setChecked(bool(scan.weight.visible))
-            self.weight_shown.setToolTip("Draw the weight against the "
-                                         "weight axis.")
-            self.weight_dashed = QCheckBox("Dashed")
-            self.weight_dashed.setChecked(bool(scan.weight.dashed))
-            self.weight_dashed.setToolTip("Dashed, to tell it from the heat "
-                                          "flow in the same colour.")
-            weight_row.addWidget(self.weight_shown)
-            weight_row.addWidget(self.weight_dashed)
-            weight_row.addStretch(1)
-            form.addRow("Weight curve", weight)
 
         # The template's x_truncate: hide the ends by POSITION along the
         # curve, never by temperature (a segment doubles back at its start).
@@ -1151,16 +1197,7 @@ class ScanSettings(_LiveDialog):
                                 else Qt.Unchecked)
             entry.setData(Qt.UserRole, analysis)
             self.analyses.addItem(entry)
-        # The file's analyses made on the WEIGHT: listed, never offered as
-        # heat-flow ones (review F5). No box, so nothing ticks one on.
-        for analysis in scan.weight_analyses:
-            entry = QListWidgetItem("{}   ({})".format(
-                analysis.summary(), units_module.WEIGHT_ANALYSIS_NOTE))
-            entry.setFlags(Qt.NoItemFlags)
-            entry.setToolTip("Made in TRIOS on the weight curve. The panel "
-                             "does not draw analyses on the weight yet.")
-            self.analyses.addItem(entry)
-        if not scan.analysis_objects and not scan.weight_analyses:
+        if not scan.analysis_objects:
             self.analyses.addItem("no analyses in the file for this scan")
             self.analyses.setEnabled(False)
         form.addRow("Analyses", self.analyses)
@@ -1206,9 +1243,6 @@ class ScanSettings(_LiveDialog):
         self.label.textChanged.connect(self._apply)
         for box in (self.offset, self.molar, self.own_molar):
             box.valueChanged.connect(self._apply)
-        for check in (self.weight_shown, self.weight_dashed):
-            if check is not None:
-                check.toggled.connect(self._apply)
         self.line_width.changed.connect(self._apply)
         self.cut_start.valueChanged.connect(self._apply)
         self.cut_end.valueChanged.connect(self._apply)
@@ -1275,9 +1309,6 @@ class ScanSettings(_LiveDialog):
         scan.line_width = self.line_width.value()
         scan.keep = (round(self.cut_start.value() / 100.0, 6),
                      round(1.0 - self.cut_end.value() / 100.0, 6))
-        if self.weight_shown is not None:
-            scan.weight_visible = self.weight_shown.isChecked()
-            scan.weight_dashed = self.weight_dashed.isChecked()
         self._describe_cut()
         scan.molar_mass_override = (float(self.own_molar.value())
                                     if self.own_molar.value() > 0 else None)
@@ -1346,9 +1377,9 @@ class SampleSettings(_LiveDialog):
 
 
 def axis_title(axis, part=""):
-    """"X axis", "Y axis numbers", "Weight axis caption": the windows of an
-    axis, the weight axis by its name rather than "Y2"."""
-    name = ("Weight axis" if axis.which == "y2"
+    """"X axis", "Y axis numbers", "Mass axis caption": the windows of an
+    axis, the mass axis by its name rather than "Y2"."""
+    name = ("Mass axis" if axis.which == "y2"
             else "{} axis".format(axis.which.upper()))
     return "{} {}".format(name, part) if part else name
 
@@ -1448,8 +1479,8 @@ class AxisSettings(_LiveDialog):
         if axis.which == "y2":
             # Always opposite the heat flow's axis: that one decides.
             self.side.setEnabled(False)
-            self.side.setToolTip("Opposite the heat flow's axis; move that "
-                                 "one to move this.")
+            self.side.setToolTip("The main side: the heat flow axis's Side. "
+                                 "With both drawn, heat flow goes opposite.")
 
         self.inward = QCheckBox("Ticks point inward")
         self.inward.setChecked(bool(axis.ticks_inward))
@@ -1498,10 +1529,10 @@ class AxisSettings(_LiveDialog):
                                      "ticked like this one.")
         form.addRow("", self.mirror_ticks)
         if axis.which == "y2":
-            # The far side of the weight axis is the heat flow's axis, with
-            # its own line and ticks: nothing to mirror onto.
-            self.mirror.setVisible(False)
-            self.mirror_ticks.setVisible(False)
+            # The mass axis alone closes the box like any y axis; with the
+            # heat flow's drawn too, the far side is that axis's own.
+            self.mirror.setToolTip("While it is the only y axis: the line "
+                                   "on the other side, closing the box.")
 
         self.grid = QCheckBox("Grid lines")
         self.grid.setToolTip("Lines across the plot at the numbered ticks.")
@@ -1831,8 +1862,9 @@ class LabelSettings(_LiveDialog):
     """A caption the user placed: its text, size and colour."""
 
     FIELDS = ("text", "colour", "size", "bold", "x", "y", "space",
-              "anchor", "rotation", "leader")
-    INDIVIDUAL = ("text", "x", "y", "space", "leader")
+              "anchor", "rotation", "leader", "leader_from", "leader_colour",
+              "flush", "vline", "line_dashed")
+    INDIVIDUAL = ("text", "x", "y", "space", "leader", "vline")
     GROUP_DISABLED = ("text", "transform.space", "transform.at_x",
                       "transform.at_y")
 
@@ -1883,6 +1915,64 @@ class LabelSettings(_LiveDialog):
                                "a curve it snaps onto it.")
         form.addRow("", self.leader)
 
+        # The point it names, typed (Christian, 2026-09-28: only the text's
+        # place could be set, not the point being annotated).
+        tip = QWidget(self)
+        row = QHBoxLayout(tip)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.tip_x = QLineEdit(self)
+        self.tip_x.setToolTip("The temperature it points at. 98 is in the "
+                              "axis unit; 98 F, 371 K convert.")
+        self.tip_y = QLineEdit(self)
+        self.tip_y.setToolTip("The height it points at, in its axis's "
+                              "unit.")
+        self.tip_unit = QLabel("", self)
+        row.addWidget(self.tip_x)
+        row.addWidget(QLabel("at", self))
+        row.addWidget(self.tip_y)
+        row.addWidget(self.tip_unit)
+        form.addRow("Points at", tip)
+        self.leader_from = QComboBox()
+        self.leader_from.addItem("Nearest edge", "auto")
+        for name in units_module.ANCHORS:
+            self.leader_from.addItem(name, name)
+        self.leader_from.setCurrentIndex(max(0, self.leader_from.findData(
+            label.leader_from)))
+        self.leader_from.setToolTip("Where on the text the arrow starts.")
+        form.addRow("Arrow from", self.leader_from)
+        self.arrow_colour = _colour_button(
+            self, lambda: (label.leader_colour
+                           if label.leader_colour not in (None, "", "auto")
+                           else (label.colour if label.colour != "auto"
+                                 else "#cccccc")), self._set_leader_colour)
+        form.addRow("Arrow colour", self.arrow_colour)
+        self.leader_auto = QCheckBox("Same as text")
+        self.leader_auto.setChecked(label.leader_colour in (None, "", "auto"))
+        form.addRow("", self.leader_auto)
+        self._note_rows = (tip, self.leader_from, self.arrow_colour,
+                           self.leader_auto)
+        self._show_tip()
+
+        # A MARKER LINE's temperature, typed, and its style.
+        self.line_at = QLineEdit(self)
+        self.line_at.setToolTip("Where the line stands. 98 is in the axis "
+                                "unit; 98 F, 371 K convert.")
+        self.line_dashed = QCheckBox("Dashed")
+        self.line_dashed.setChecked(bool(label.line_dashed))
+        line = QWidget(self)
+        line_row = QHBoxLayout(line)
+        line_row.setContentsMargins(0, 0, 0, 0)
+        line_row.addWidget(self.line_at)
+        line_row.addWidget(self.line_dashed)
+        form.addRow("Line at", line)
+        form.labelForField(line).setVisible(label.is_vline)
+        line.setVisible(label.is_vline)
+        if label.is_vline and plot is not None:
+            self.line_at.setText("{:.4g}".format(float(plot.to_axis(
+                label.vline))))
+        self.line_at.editingFinished.connect(self._typed_line)
+        self.line_dashed.toggled.connect(self._apply)
+
         buttons = self._buttons()
         layout.addWidget(buttons)
 
@@ -1891,6 +1981,72 @@ class LabelSettings(_LiveDialog):
         self.bold.toggled.connect(self._apply)
         self.auto.toggled.connect(self._apply)
         self.leader.toggled.connect(self._leader_toggled)
+        self.leader_from.currentIndexChanged.connect(self._apply)
+        self.leader_auto.toggled.connect(self._apply)
+        self.tip_x.editingFinished.connect(self._typed_tip)
+        self.tip_y.editingFinished.connect(self._typed_tip)
+
+    def _typed_line(self):
+        label = self.obj
+        if not label.is_vline:
+            return
+        doc = self.doc
+        unit = getattr(doc, "x_unit", units.TEMP_C) if doc else units.TEMP_C
+        celsius = units.parse_temperature(self.line_at.text(), unit)
+        if celsius is None:
+            self.line_at.setStyleSheet("border: 1px solid #d04040;")
+            return
+        self.line_at.setStyleSheet("")
+        if abs(float(celsius) - float(label.vline)) > 1e-9:
+            label.vline = float(celsius)
+            self._live()
+
+    def _set_leader_colour(self, name):
+        self.obj.leader_colour = name
+        self.leader_auto.setChecked(False)
+        self._live()
+
+    def _show_tip(self):
+        """The point a note names, in the axes' units; the note rows only
+        while it is a note."""
+        label = self.obj
+        plot = getattr(self.parent(), "plot", None)
+        on = bool(label.leader)
+        for widget in self._note_rows:
+            widget.setEnabled(on)
+        if not on or plot is None:
+            self.tip_x.setText("")
+            self.tip_y.setText("")
+            return
+        self.tip_x.setText("{:.4g}".format(float(plot.to_axis(
+            label.leader[0]))))
+        self.tip_y.setText("{:.5g}".format(float(label.leader[1])
+                                           + label.follow()))
+        self.tip_unit.setText(plot._typed_unit(label, "y"))
+
+    def _typed_tip(self):
+        """The point typed: a temperature in any unit, a height in the
+        axis's."""
+        label = self.obj
+        if not label.leader:
+            return
+        doc = self.doc
+        unit = getattr(doc, "x_unit", units.TEMP_C) if doc else units.TEMP_C
+        celsius = units.parse_temperature(self.tip_x.text(), unit)
+        try:
+            height = float(self.tip_y.text().replace(",", "."))
+        except ValueError:
+            height = None
+        if celsius is None or height is None:
+            box = self.tip_x if celsius is None else self.tip_y
+            box.setStyleSheet("border: 1px solid #d04040;")
+            return
+        self.tip_x.setStyleSheet("")
+        self.tip_y.setStyleSheet("")
+        new = [float(celsius), float(height) - label.follow()]
+        if new != list(label.leader):
+            label.leader = new
+            self._live()
 
     def _set_colour(self, name):
         self.obj.colour = name
@@ -1909,8 +2065,9 @@ class LabelSettings(_LiveDialog):
             rect = plot.plot_rect()
             box = plot.rotated_bounds(label, plot.artist_box(label, rect),
                                       rect)
-            tip = QPointF(box.left() - 30.0, box.bottom() + 30.0)
+            tip = QPointF(box.center().x(), box.bottom() + 36.0)
             label.leader = plot.leader_value(label, tip, rect)
+        self._show_tip()
         self._live()
 
     def _apply(self, *_args):
@@ -1920,6 +2077,10 @@ class LabelSettings(_LiveDialog):
         label.bold = bool(self.bold.isChecked())
         if self.auto.isChecked():
             label.colour = "auto"
+        label.leader_from = self.leader_from.currentData() or "auto"
+        if self.leader_auto.isChecked():
+            label.leader_colour = "auto"
+        label.line_dashed = bool(self.line_dashed.isChecked())
         self._live()
 
 
@@ -1934,7 +2095,7 @@ class AnalysisSettings(_LiveDialog):
 
     FIELDS = ("visible", "colour", "label", "label_size", "flush",
               "show_interval", "construction", "shade", "number_format",
-              "label_dy")
+              "unit", "label_dy")
     INDIVIDUAL = ("label",)
     GROUP_DISABLED = ("label", "model", "start", "end")
 
@@ -1947,7 +2108,8 @@ class AnalysisSettings(_LiveDialog):
         layout.addLayout(form)
 
         self.model = QComboBox()
-        for entry in measure.MODELS:
+        # The models of ITS curve: a heat flow's, or a mass's.
+        for entry in measure.models_for(analysis.scan):
             self.model.addItem(entry.title, entry.name)
         if self.model.findData(analysis.model_name) < 0:
             self.model.addItem(analysis.model_name, analysis.model_name)
@@ -1969,6 +2131,15 @@ class AnalysisSettings(_LiveDialog):
             box.editingFinished.connect(self._typed_interval)
         form.addRow("Start", self.start)
         form.addRow("End", self.end)
+        entry = measure.by_name(analysis.model_name)
+        #: One temperature (a mass at a temperature) or an interval.
+        self.one_cursor = bool(entry is not None and entry.needs == 1)
+        if self.one_cursor:
+            form.labelForField(self.start).setText("At")
+            self.start.setToolTip("The temperature. 98 is in the axis unit; "
+                                  "98 F, 371 K, 98 C convert.")
+            form.labelForField(self.end).setVisible(False)
+            self.end.setVisible(False)
 
         self.results = QLabel("")
         self.results.setWordWrap(True)
@@ -2033,6 +2204,18 @@ class AnalysisSettings(_LiveDialog):
         self.number_format = _style_text(self, analysis, "number_format")
         form.addRow("Number format", self.number_format)
 
+        # Which unit the number is in: the axes' until chosen. A per-mole
+        # one needs the molar mass, and says so rather than guessing.
+        self.unit = QComboBox()
+        self.unit.addItem("As the axes", None)
+        for name in labels.units_of(analysis.quantity):
+            self.unit.addItem(name, name)
+        found = self.unit.findData(analysis.unit)
+        self.unit.setCurrentIndex(found if found >= 0 else 0)
+        self.unit.setToolTip("The unit of the number. kJ/mol and J/mol need "
+                             "the molar mass.")
+        form.addRow("Unit", self.unit)
+
         self.preview = QLabel("")
         self.preview.setWordWrap(True)
         self.preview.setToolTip("The label as drawn.")
@@ -2063,6 +2246,7 @@ class AnalysisSettings(_LiveDialog):
         self.flush.changed.connect(self._apply)
         self.label.textChanged.connect(self._apply)
         self.number_format.changed.connect(self._apply)
+        self.unit.currentIndexChanged.connect(self._apply)
         self.auto.toggled.connect(self._apply)
         self.model.currentIndexChanged.connect(self._model_chosen)
         self.arrow_offset.valueChanged.connect(self._typed_offset)
@@ -2145,7 +2329,9 @@ class AnalysisSettings(_LiveDialog):
         if len(cursors) != 2:
             return
         typed = []
-        for box, old in ((self.start, cursors[0]), (self.end, cursors[1])):
+        boxes = ((self.start, self.start) if self.one_cursor
+                 else (self.start, self.end))
+        for box in boxes:
             value = units.parse_temperature(box.text(), self._unit())
             if value is None:
                 box.setStyleSheet("border: 1px solid #d04040;")
@@ -2226,6 +2412,7 @@ class AnalysisSettings(_LiveDialog):
         analysis.flush = self.flush.value()
         analysis.label = self.label.text().strip() or None
         analysis.number_format = self.number_format.value()
+        analysis.unit = self.unit.currentData()
         if self.auto.isChecked():
             analysis.colour = "auto"
         self._live()

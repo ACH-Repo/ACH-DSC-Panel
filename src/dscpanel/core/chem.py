@@ -33,6 +33,42 @@ def available():
     return True
 
 
+#: One SMILES token: a bracket atom, a two-letter halogen, an organic-
+#: subset atom (aromatic in lower case), a bond, a branch, a ring closure.
+_TOKEN = re.compile(r"\[[^\[\]]+\]|Br|Cl|[BCNOPSFI]|[bcnops]|\*"
+                    r"|[-=#$:/\\.]|[()]|%\d\d|\d")
+_ATOM = re.compile(r"\[[^\[\]]+\]|Br|Cl|[BCNOPSFI]|[bcnops]|\*")
+
+
+def plausible_smiles(text):
+    """True when `text` reads as a SMILES of two atoms or more, WITHOUT
+    RDKit: every character belongs to a token of the grammar, brackets and
+    branches balance, and every ring-closure number is opened and closed.
+    Not proof - RDKit alone parses it - but enough to tell "O=C(O)CCCCC(O)=O"
+    from a word, which is what the program must know to say RDKit is
+    missing (Christian, 2026-09-28: pasting one "failed silently")."""
+    text = str(text or "").strip()
+    if not text or "\n" in text or not _SMILES.match(text):
+        return False
+    tokens = _TOKEN.findall(text)
+    if "".join(tokens) != text:
+        return False
+    depth, rings, atoms = 0, {}, 0
+    for token in tokens:
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth -= 1
+            if depth < 0:
+                return False
+        elif token.isdigit() or token.startswith("%"):
+            rings[token] = rings.get(token, 0) + 1
+        elif _ATOM.fullmatch(token):
+            atoms += 1
+    return (depth == 0 and atoms >= 2
+            and all(count % 2 == 0 for count in rings.values()))
+
+
 def looks_like_smiles(text):
     """True when `text` is one line that parses as a molecule of at least
     two atoms. A single atom ("C", "N") is far more likely a letter somebody

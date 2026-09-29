@@ -856,16 +856,127 @@ HANDOFF.md section 0 for the state of the working tree.
   The flat cursor now goes by ACQUISITION order: the earlier for an onset,
   the later for an endset. A saved endset reopens corrected (OJ-12: 94.83
   -> 108.06 degC; TRIOS 108.02).
+* **S on scans crashed the program** whenever the pointer was on the plot
+  (since round 24): the overlay drew a line to "the centre of the pivots",
+  a spread has none, and the ZeroDivisionError mid-paint left Qt with an
+  unfinished painter - an access violation, not a logged error. Fixed, and
+  `paintEvent` now always ends its painter, so a painting error stays an
+  error.
+* **The outliner shows the FILE name** (Christian): runs saved as `x.tri`,
+  `x(1).tri` share TRIOS's sample name, which is now the row's tooltip. A
+  scan's default label follows (file name + segment).
+* **Redraws were slower** after the NaN safety (every range query scanned
+  every sample for NaN, ~50 times a redraw): spans are cached per rebuild.
+  24 curves / 227k samples: 297 ms -> 111 ms (round 21: 267 ms). Drawing
+  already keeps at most 4 points per pixel column; what is left is building
+  the polylines in Python.
+* **Stage 3 (SDT UI findings) is finished** - see
+  `stage3_progress.md` (outside the repo) for the per-finding log - but the
+  weight-as-a-second-axis DESIGN is under review: Christian, 2026-09-28,
+  "TGA data needs to be independently visualisable, even in such a way that
+  there isn't even a heat flow y-axis anymore", with m% analyses. See Next.
 * Also from the desktop: the curve decimation keeps each column's first,
   highest, lowest and last sample in measured order (`_m4`: steep flanks
   were staircases), a structure's box includes its labels, the Boombox
   reticle is LCD green.
 
+### Round 26 (2026-09-29): TGA scans, and the requests in NEXT.md
+
+The TGA work is PLAN "Next" 1 below (steps 1-3 done there). From Christian's
+requests of 2026-09-28 (docs/NEXT.md, now emptied):
+
+* **The unit of an analysis's number** ("I do not see how J/mol or kJ/mol
+  can be set"): a "Unit" choice in its settings (`Analysis.unit`, None =
+  the axes'), J/g, kJ/mol, J/mol, kJ/g, J, mJ for an integration, the
+  temperatures for an onset, % and mg for a mass. Per mole needs the molar
+  mass and shows "?" with NO MOLAR MASS without it; a unit written after
+  `{}` in the label still wins. Saved.
+* **Settings windows scroll** on a small screen: never taller than 85 % of
+  the screen (`dialogs.SCREEN_SHARE`); past that the rows scroll and the
+  buttons stay below them. Small windows are untouched.
+* **A typed number moves a decorator**: G, then a number, is a distance in
+  the AXES' units - along x with X (the axis's temperature unit), else up
+  in its y unit (a parented label: its scan's). It used to be ignored.
+* **Notes**: a new one stands straight above its point, arrow pointing
+  down; Ctrl+L / R / M put that edge of its text over the point (as they
+  do for an analysis label; Ctrl+M, not Ctrl+C, which is Copy in every
+  text field) and line plain labels' lines up; its settings type the point
+  ("Points at": a temperature in any unit, a height in its axis's unit),
+  choose where the arrow leaves the text ("Arrow from": nearest edge or one
+  of the nine points) and give the arrow its own colour; G, then X, slides
+  a note that belongs to a scan ALONG its curve, tip and text together
+  (`PlotWidget._slide_note`), one undo step with the tip.
+* From his testing on 2026-09-29:
+  - **The fit is KEPT** ("no matter what you do, the plot is
+    automatically rescaled without even pressing F"; a lengthened analysis
+    arrow rescaled y): an unframed axis's fit is worked out once
+    (`PlotWidget.kept_fit`) and again only by F, or when the set of curves
+    on that axis changes (shown, hidden, a unit, a truncation) - never
+    because something moved. A moved scan keeps the frame until F.
+  - **Fit margins per side** (his `set_side_margins`): house style "Fit
+    margin" left / right / bottom / top, % of the data's range (0 / 0 / 6
+    / 6 built in; per figure, and the user's default).
+  - **A new y axis gets room on an exact figure**: the heat flow's joining
+    an SDT run's mass on the right grew nothing, and its caption sat on its
+    numbers; the side's margin now grows to fit, in the same undo step as
+    showing the curve (`_room_for_axes`); only a newly drawn axis's side,
+    only grown.
+  - **S on mass curves** spreads about the level of the curve that stays
+    put where y = 0 is off the axis (an m% axis runs 80-100 %).
+  - **Right-click "Mass at this temperature"** marks every selected mass
+    curve at that temperature.
+  - **The empty plot's menu**: Fit, Stack evenly, a marker line, and
+    Background - White, the theme's, or any colour (`Document.
+    background`, saved; exports use it). A light page on a dark theme is
+    drawn with the light theme's ink, and the reverse
+    (`window.drawing_theme`). Open and Select everything are gone from it.
+* **RDKit is a dependency** (pyproject) - an install with `--no-deps` still
+  needs `pip install rdkit` - and a SMILES pasted without it says so in a
+  pop-up instead of becoming a text label: `chem.plausible_smiles` checks
+  the grammar without RDKit (tokens, brackets, ring closures, two atoms).
+
 ## Next
 
-1. **Finish round 25** if HANDOFF.md section 0 says it is unfinished: the
-   SDT UI findings, the review, the doc pass (README still mentions
-   vendoring).
+1. **TGA as a first-class plot** (Christian, 2026-09-28, with his target
+   script: stacked m% curves, "mass at temperature" arrows with the value
+   above, a dashed vertical marker with a rotated label, a structure).
+   Agreed with him, in this order:
+   1. DONE - **the m% curve is a scan of its own** (`Scan.signal`,
+      `SIGNAL_MASS`): its own tick in the outliner (an SDT segment is two
+      rows, mass first), offset (in % or mg), colour, label, G, S, legend,
+      parented labels, sessions (`"signal"`; a round-25 session's weight
+      opens as a mass scan), CSV ("Mass/%"). An SDT file OPENS WITH ITS
+      MASS ONLY. The round-25 `WeightCurve` is gone.
+   2. DONE - **the axes follow what is shown**: a mass alone is one y axis
+      (m%) on the main side and there is no heat flow axis; both shown, the
+      mass keeps the main (left) side and the heat flow goes right. The
+      wheel, pinch, pans and zoom band work on the main axis; the other
+      follows M and F. F makes room for labels on either axis.
+   3. DONE - **Mass-at-temperature markers** (his `add_annot`): an
+      analysis "Mass at temperature" on a mass scan (`measure.mass_at`,
+      one cursor stored as both), the m% of the first measured sample at
+      or past the temperature, offset not in it, "99 %" above the point
+      on a leader arrow in the curve's colour. F3 "Mass at temperatures..."
+      (typed, axis unit, ", " / ";" / space separated - a bare comma is a
+      decimal point) on the selected mass curves or all shown, one undo
+      step; right-click a mass curve "Mass at this temperature". House
+      style "Masses" `%.0f`. mg uses the recorded mg where the file has
+      them (a run with no usable sample mass still labels its mg). The
+      analysis window shows "At" instead of Start/End; the model list of a
+      mass curve offers only its models (`measure.models_for`).
+   4. DONE - **m% onsets**: TRIOS's own onsets made on the weight are the
+      mass scan's and draw their stored construction in % on its curve
+      (`measure._BASE_OF` "Weight Change" -> %); Onset and Endset are
+      offered on a mass curve and measured on its mass (`_series`,
+      `series_unit`). A construction in % is never drawn on heat-flow axes,
+      nor one in W/g on a mass's.
+   5. DONE - **A marker line** (his `mark_peak`): a label with `vline` (a
+      temperature in degC): a dashed vertical line across the axes, the
+      text upright on it on a background box; sideways moves the line, up
+      and down slides the text; picked anywhere along the line; "Line at"
+      (typed, any unit) and "Dashed" in its settings. F3 "Add a marker
+      line...", or right-click the plot beside the curves (not a curve's
+      menu, which stays at four entries).
 2. **Christian's open questions from round 25** (HANDOFF.md section 0): the
    Python onset fit vs TRIOS's (1 K median), the label arrow vs the
    tangents' crossing, the cooling Tg's sign, the Weight Corrected Heat Flow

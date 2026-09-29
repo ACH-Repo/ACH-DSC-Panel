@@ -50,6 +50,16 @@ WEIGHT_MG = "mg"
 WEIGHT_UNITS = (WEIGHT_PCT, WEIGHT_MG)
 AXES = (AXIS_TEMPERATURE, AXIS_TIME)
 
+#: What a scan draws of its segment. An SDT run records a heat flow AND a
+#: mass, and each is a scan of its own (Christian, 2026-09-28: "TGA data
+#: needs to be independently visualisable, even in such a way that there
+#: isn't even a heat flow y-axis anymore"): its own tick, offset, colour,
+#: label and analyses. A mass scan is drawn against the mass axis
+#: (`Document.axes["y2"]`) in `Document.weight_unit`.
+SIGNAL_HEAT = "heat flow"
+SIGNAL_MASS = "mass"
+SIGNALS = (SIGNAL_HEAT, SIGNAL_MASS)
+
 AXIS_LABEL = {
     AXIS_TEMPERATURE: "Temperature / °C",
     AXIS_TIME: "Time / min",
@@ -108,7 +118,7 @@ class Obj(object):
 
 #: The drawing order of each kind while nobody has chosen one: curves at
 #: the bottom, then what is drawn on them, then the figure's furniture.
-KIND_Z = {"scan": 0.0, "weight": 5.0, "analysis": 10.0,
+KIND_Z = {"scan": 0.0, "analysis": 10.0,
           "offset_marker": 20.0,
           "arrow": 30.0, "legend": 40.0, "image": 45.0, "molecule": 46.0,
           "label": 50.0}
@@ -135,9 +145,14 @@ class Sample(object):
         self.data = data
         _trim_empty_ends(data)
         head = (data or {}).get("head", {}) or {}
+        #: The file's own name, without the extension: what the outliner and
+        #: a scan's default label say (Christian, 2026-09-28). Runs of one
+        #: sample saved as "x.tri", "x(1).tri" share their sample name.
+        self.file_name = os.path.splitext(os.path.basename(path))[0]
+        #: The sample name TRIOS stored in the file (shown as a tooltip).
         self.sample_name = (head.get("samplename")
                             or head.get("Filename")
-                            or os.path.splitext(os.path.basename(path))[0])
+                            or self.file_name)
         self.instrument = head.get("instrumenttype", "")
         self.run_date = head.get("rundate", "")
         self.mass_g = _mass_g(head)
@@ -157,7 +172,7 @@ class Sample(object):
 
     @property
     def name(self):
-        return self.sample_name
+        return self.file_name
 
     @property
     def mass_source(self):
@@ -293,11 +308,15 @@ class Scan(Obj):
 
     kind = "scan"
 
-    def __init__(self, oid, sample, seg, colour):
+    def __init__(self, oid, sample, seg, colour, signal=SIGNAL_HEAT):
         Obj.__init__(self, oid, "")
         self.sample = sample
         self.seg = int(seg)
         self.colour = str(colour)
+        #: `SIGNAL_HEAT` or `SIGNAL_MASS`: which of the segment's curves this
+        #: scan is. Fixed for its life; a segment's other curve is another
+        #: scan.
+        self.signal = signal if signal in SIGNALS else SIGNAL_HEAT
         #: Vertical placement, in the unit the y axis is currently showing.
         #: Continuous, dragged with the mouse or typed after G - never a slot
         #: in a stacking order. Christian: DSC scans sit where they are put.
@@ -320,17 +339,11 @@ class Scan(Obj):
         #: The analyses drawn on this scan, as objects. Built from the file
         #: the first time they are asked for; see `analysis_objects`.
         self._analyses = None
-        #: The file's analyses made on the weight (`weight_analyses`), built
-        #: with `_analyses`.
-        self._weight_analyses = []
         #: Grams per mole for THIS scan, overriding the sample's.
         self.molar_mass_override = None
         #: Its y-offset marker (the template's `add_yoffset_markers`), drawn
         #: while the figure's markers are switched on.
         self.marker = OffsetMarker(oid, self)
-        #: Its weight curve, against the second y axis, when the segment
-        #: recorded a weight (an SDT or TGA run).
-        self.weight = WeightCurve(oid, self)
         self._cache_key = None
         self._cache = None
 
@@ -351,11 +364,16 @@ class Scan(Obj):
         return (self.molar_mass_override
                 if self.molar_mass_override else self.sample.molar_mass)
 
+    @property
+    def is_mass(self):
+        return self.signal == SIGNAL_MASS
+
     def display_name(self):
         """What the label beside the curve says."""
         if self.label:
             return str(self.label)
-        return "{} {}".format(self.sample.name, self.short_program())
+        return "{} {}{}".format(self.sample.name, self.short_program(),
+                                " mass" if self.is_mass else "")
 
     def short_program(self):
         """"#3 heat 10 K/min" - the segment number, what it does, how fast.
@@ -555,24 +573,6 @@ class Scan(Obj):
             out.append((x[k1 - 1:], weight[k1 - 1:]))
         return out
 
-    # The weight curve's two switches, as the scan's settings edit them: a
-    # dialog mirrors and snapshots attributes of the object it is on.
-    @property
-    def weight_visible(self):
-        return bool(self.weight.visible)
-
-    @weight_visible.setter
-    def weight_visible(self, value):
-        self.weight.visible = bool(value)
-
-    @property
-    def weight_dashed(self):
-        return bool(self.weight.dashed)
-
-    @weight_dashed.setter
-    def weight_dashed(self, value):
-        self.weight.dashed = bool(value)
-
     def heat_flow_w(self):
         """Heat flow in WATTS, or None when that needs a mass there is not."""
         values, base = self.heat_flow()
@@ -593,8 +593,12 @@ class Scan(Obj):
         Reports a missing SIGNAL as readily as a missing number, so a segment
         the instrument recorded without a heat flow is flagged in the plot the
         same way a scan waiting for its molar mass is - rather than quietly
-        being absent, which is the one outcome that misleads.
+        being absent, which is the one outcome that misleads. `unit` is the
+        scan's own axis's (`Document.unit_for`): a mass scan's is "%" or
+        "mg".
         """
+        if self.is_mass:
+            return self.weight_missing_for(unit, axis)
         values, base = self.heat_flow()
         # A column whose every sample is flagged (NaN) is no signal either:
         # a range made of it is NaN, and a NaN range made `_nice_step` raise
@@ -606,6 +610,14 @@ class Scan(Obj):
         return units.missing(unit, base, self.sample.mass_g, self.molar_mass)
 
     def factor(self, unit):
+        """What one unit of the stored signal is in `unit`, or None - what
+        an offset converts by when the axis changes unit. A mass scan's base
+        is the milligram: "%" is 100 / the sample mass."""
+        if self.is_mass:
+            if unit == WEIGHT_MG:
+                return 1.0
+            mass = self.sample.mass_g
+            return 100.0 / (float(mass) * 1000.0) if mass else None
         _values, base = self.heat_flow()
         if base is None:
             return None
@@ -628,7 +640,10 @@ class Scan(Obj):
         x = self.x_values(axis)
         if x is not None and axis == AXIS_TEMPERATURE:
             x = units.from_celsius(x, x_unit)
-        values, base = self.heat_flow()
+        if self.is_mass:
+            values, base = self.weight_values(unit), unit
+        else:
+            values, base = self.heat_flow()
         y = None
         if _measured(x) and _measured(values):
             y = self._on_axes(values, base, unit, exo)
@@ -650,6 +665,18 @@ class Scan(Obj):
         unit."""
         if base is None:
             return None
+        if self.is_mass:
+            # A mass is never flipped by the exotherm's direction; `base`
+            # is "%" or "mg", converted with the sample mass when it is not
+            # the axis's.
+            if base == unit:
+                return values + float(self.offset)
+            mass = self.sample.mass_g
+            if not mass:
+                return None
+            mg = float(mass) * 1000.0
+            scale = mg / 100.0 if base == WEIGHT_PCT else 100.0 / mg
+            return values * scale + float(self.offset)
         scale = units.factor(unit, base, self.sample.mass_g,
                              self.molar_mass)[0]
         if scale is None:
@@ -719,35 +746,25 @@ class Scan(Obj):
         """
         if self._analyses is None:
             self._analyses = []
-            self._weight_analyses = []
             for entry in self.analyses():
                 attribution = entry.get("attribution") or "cached curve"
                 curve = _analysed_curve(entry, self.has_weight())
+                # A file's analysis goes to the scan of the curve it was
+                # made on: an SDT run's onsets of mass loss are the MASS
+                # scan's, never drawn at the heat flow (review F5).
+                if curve == "weight" and not self.is_mass:
+                    continue
+                if curve != "weight" and self.is_mass:
+                    continue
                 if curve is None:
                     # A run with a heat flow AND a weight, and the file does
-                    # not say which this was made on: offered, never as
-                    # certain (dashed, with a question mark).
+                    # not say which this was made on: offered on the heat
+                    # flow, never as certain (dashed, a question mark).
                     attribution = CURVE_NOT_STATED
-                analysis = Analysis(
+                self._analyses.append(Analysis(
                     id(entry) % 1000000, self, entry.get("Model", "analysis"),
-                    entry, source="file", attribution=attribution)
-                if curve == "weight":
-                    self._weight_analyses.append(analysis)
-                else:
-                    self._analyses.append(analysis)
+                    entry, source="file", attribution=attribution))
         return self._analyses
-
-    @property
-    def weight_analyses(self):
-        """The file's analyses made on the WEIGHT curve (an SDT run's onsets
-        of mass loss): kept apart from `analysis_objects`, so they are never
-        offered, shown or drawn as heat-flow analyses. Their numbers are
-        temperatures on the weight curve, and drawing them at the heat flow
-        was what round 25 did (review F5, 2026-09-28). The panel does not
-        draw them yet; the outliner and the scan's settings list them."""
-        if self._analyses is None:
-            self.analysis_objects
-        return self._weight_analyses
 
     def visible_analyses(self):
         return [a for a in self.analysis_objects if a.visible]
@@ -761,11 +778,6 @@ CURVE_NOT_STATED = "curve not stated"
 #: What the reader's `variable` calls the weight (TRIOS's Weight (%) is the
 #: reader's "Weight Change").
 WEIGHT_VARIABLES = ("Weight Change", "Weight")
-
-#: How a file's analysis made on the weight is listed (`Scan.
-#: weight_analyses`): in the outliner and the scan's settings, with no box.
-WEIGHT_ANALYSIS_NOTE = "on the weight, not drawn"
-
 
 def _analysed_curve(entry, has_weight):
     """"weight", "heat flow", or None when a run with both does not say.
@@ -870,6 +882,10 @@ class Analysis(Obj):
         #: which interval an analysis covers. The dashes only: the lines of
         #: an onset, endset or Tg are `construction`.
         self.show_interval = True
+        #: The unit its number is shown in, or None for the axes' (J/g on a
+        #: W/g axis, kJ/mol on a W/mol one). A unit written after `{}` in
+        #: the label still wins (`labels.render`).
+        self.unit = None
         #: The lines of an onset, endset or glass transition
         #: (`marks_a_point`): "tangents" (the tangent construction, TRIOS's
         #: own for a `.tri`'s analysis, see `measure.tangent_points`),
@@ -1153,8 +1169,8 @@ class Axis(Obj):
             return "*T*  /  {}".format(units.TEMPERATURE_LABEL.get(
                 getattr(doc, "x_unit", units.TEMP_C), "°C"))
         if self.which == "y2":
-            return "Weight  /  {}".format(getattr(doc, "weight_unit",
-                                                  WEIGHT_PCT))
+            return "*m*  /  {}".format(getattr(doc, "weight_unit",
+                                               WEIGHT_PCT))
         return "Heat Flow  /  {}".format(doc.y_unit)
 
 
@@ -1198,6 +1214,26 @@ class TextLabel(Artist):
         #: for a plain label. With a parent it follows the scan like the
         #: text does (stored at `parent_offset`).
         self.leader = None
+        #: Where on the text's box the arrow starts: "auto" (the edge
+        #: nearest the point) or one of `ANCHORS` (Christian, 2026-09-28).
+        self.leader_from = "auto"
+        #: The arrow's own colour, or "auto" for the text's.
+        self.leader_colour = "auto"
+        #: How its lines line up: "left", "right", "center", or None for by
+        #: the side of its anchor. Ctrl+L / R / M set it.
+        self.flush = None
+        #: A MARKER LINE (Christian, 2026-09-28, his `mark_peak`): the
+        #: temperature, in degC, of a vertical line across the axes that
+        #: this label sits on, turned upright on a background box - or None
+        #: for an ordinary label. Its `y` is still its place along the
+        #: line; its `x` follows the line.
+        self.vline = None
+        #: The line dashed (his `ls='--'`) or solid.
+        self.line_dashed = True
+
+    @property
+    def is_vline(self):
+        return self.vline is not None
 
     def follow(self):
         """How far its scan has moved since the label was placed, in the
@@ -1242,21 +1278,16 @@ class Legend(Artist):
         self.line_width = None
 
     def entries(self, doc):
-        """`[(scan or weight curve, text), ...]` for what is drawn.
+        """`[(scan, text), ...]` for the scans that are drawn, heat flow
+        and mass alike.
 
         A scan's own label wins over its program name, which is what makes
         the legend say "second heating" when that is what the curve was
-        renamed to. A scan's weight curve follows it, "(weight)" (round 25),
-        when it is DRAWN: a weight that cannot be (`weight_missing_for`) has
-        no line to stand for, and says so on the plot instead.
+        renamed to. A scan that cannot be drawn has no line to stand for
+        and says so on the plot instead.
         """
-        out = []
-        for scan in doc.visible_scans():
-            out.append((scan, scan.display_name()))
-            if scan.weight.visible and doc.weight_drawn(scan):
-                out.append((scan.weight,
-                            "{} (weight)".format(scan.display_name())))
-        return out
+        return [(scan, scan.display_name()) for scan in doc.visible_scans()
+                if not scan.missing_for(doc.unit_for(scan), doc.x_axis)]
 
 
 class OffsetMarker(Obj):
@@ -1291,20 +1322,6 @@ class OffsetMarker(Obj):
         #: How the offset is written, or None for the house style's (one
         #: decimal and a sign, as the template writes it).
         self.number_format = None
-
-
-class WeightCurve(Obj):
-    """A scan's WEIGHT, drawn against the second y axis: the TGA half of an
-    SDT run (Christian, round 25). One per scan, like its offset marker; a
-    scan whose segment recorded no weight has one that is never drawn.
-    Drawn in the scan's colour, dashed unless asked otherwise."""
-
-    kind = "weight"
-
-    def __init__(self, oid, scan):
-        Obj.__init__(self, oid, "Weight")
-        self.scan = scan
-        self.dashed = True
 
 
 class ImageArtist(Artist):
@@ -1469,13 +1486,12 @@ class Document(object):
         self.axes = {"x": Axis(self._next_id(), "x"),
                      "y": Axis(self._next_id(), "y"),
                      "y2": Axis(self._next_id(), "y2")}
-        # The weight axis: on the side opposite the heat flow, and no line
-        # of its own on the far side - that side is the heat flow's.
-        self.axes["y2"].name = "Weight axis"
-        self.axes["y2"].side = "right"
-        self.axes["y2"].mirror = False
-        self.axes["y2"].mirror_ticks = False
-        #: What the weight axis shows: "%" of the sample mass, or "mg".
+        # The mass axis of SDT/TGA runs. It takes the MAIN side (the heat
+        # flow axis's `side`) whenever a mass scan is drawn, and the heat
+        # flow, if drawn too, goes to the other (Christian, 2026-09-28: "m%
+        # left"). Its settings are otherwise its own.
+        self.axes["y2"].name = "Mass axis"
+        #: What the mass axis shows: "%" of the sample mass, or "mg".
         self.weight_unit = WEIGHT_PCT
         #: Captions the user has added. Free objects, not tied to a scan.
         self.labels = []
@@ -1495,6 +1511,10 @@ class Document(object):
         #: "blender-default" is the dark screen theme; "light" is the one
         #: every export uses whatever this says.
         self.theme = "blender-default"
+        #: The page's colour, or None for the theme's (Christian,
+        #: 2026-09-29: white and the theme's one click away). The ink
+        #: follows it: a light page is drawn with the light theme's.
+        self.background = None
         #: This figure's own sizes and alignments, between an object's and
         #: the user's defaults. Saved with the session; see `core/style.py`.
         self.style = style.FigureStyle()
@@ -1525,8 +1545,7 @@ class Document(object):
         """Everything selectable, in draw order (later is on top)."""
         markers = ([scan.marker for scan in self.scans]
                    if self.offset_markers else [])
-        weights = [scan.weight for scan in self.scans if scan.has_weight()]
-        return (list(self.scans) + weights + self.analyses() + markers
+        return (list(self.scans) + self.analyses() + markers
                 + list(self.labels) + list(self.images)
                 + list(self.structures)
                 + list(self.axes.values()) + [self.arrow, self.legend])
@@ -1578,8 +1597,11 @@ class Document(object):
                   else segments)
         made = []
         for seg in chosen:
+            # A segment is its number (the heat flow) or (number, signal).
+            seg, signal = (seg if isinstance(seg, tuple)
+                           else (seg, SIGNAL_HEAT))
             scan = Scan(self._next_id(), sample,
-                        seg, PALETTE[len(self.scans) % len(PALETTE)])
+                        seg, PALETTE[len(self.scans) % len(PALETTE)], signal)
             sample.scans.append(scan)
             self.scans.append(scan)
             made.append(scan)
@@ -1658,37 +1680,29 @@ class Document(object):
     def visible_scans(self):
         return [s for s in self.scans if s.visible]
 
+    def unit_for(self, scan):
+        """The unit a scan is drawn in: the mass axis's for a mass scan,
+        the heat flow axis's otherwise."""
+        return self.weight_unit if scan.is_mass else self.y_unit
+
+    def shows(self, signal):
+        """True while a scan of `signal` is switched on."""
+        return any(s.visible and s.signal == signal for s in self.scans)
+
     def scans_missing(self, unit=None):
         """Scans that cannot be drawn in the current unit, and why.
 
         `[(scan, "molar mass"), ...]`. The window blinks these, the outliner
         marks them, and an export refuses to go out quietly with one in it.
+        `unit` replaces the heat flow's unit (a mass scan keeps its own).
         """
-        unit = unit or self.y_unit
         out = []
         for scan in self.scans:
             if not scan.visible:
                 continue
-            missing = scan.missing_for(unit, self.x_axis)
-            if missing:
-                out.append((scan, missing))
-        return out
-
-    def weight_drawn(self, scan):
-        """True when `scan`'s weight can be drawn on this figure's axes -
-        whether or not it is switched on."""
-        return scan.weight_missing_for(self.weight_unit, self.x_axis) is None
-
-    def weights_missing(self):
-        """`scans_missing` for the weight curves: `[(scan, reason), ...]`
-        for every weight SWITCHED ON, on a shown scan that recorded one,
-        that cannot be drawn in the weight axis's unit."""
-        out = []
-        for scan in self.scans:
-            if not (scan.visible and scan.weight.visible
-                    and scan.has_weight()):
-                continue
-            missing = scan.weight_missing_for(self.weight_unit, self.x_axis)
+            own = (self.weight_unit if scan.is_mass
+                   else (unit or self.y_unit))
+            missing = scan.missing_for(own, self.x_axis)
             if missing:
                 out.append((scan, missing))
         return out
@@ -1704,20 +1718,42 @@ class Document(object):
         """
         if unit == self.y_unit:
             return []
+        changes = self._convert_offsets(
+            [s for s in self.scans if not s.is_mass], self.y_unit, unit)
+        self.y_unit = unit
+        return changes
+
+    def set_weight_unit(self, unit):
+        """`set_unit` for the mass axis ("%" or "mg"): the mass scans'
+        offsets and their labels' records convert by the sample mass."""
+        if unit not in WEIGHT_UNITS or unit == self.weight_unit:
+            return []
+        changes = self._convert_offsets(
+            [s for s in self.scans if s.is_mass], self.weight_unit, unit)
+        self.weight_unit = unit
+        return changes
+
+    def _convert_offsets(self, scans, before, after):
+        """The changes that carry `scans`' offsets, and the offsets and
+        note tips of the labels that belong to them, from unit `before` to
+        `after`."""
         changes = []
-        for scan in self.scans:
-            old = scan.factor(self.y_unit)
-            new = scan.factor(unit)
+        chosen = set(id(s) for s in scans)
+        for scan in scans:
+            old = scan.factor(before)
+            new = scan.factor(after)
             if old and new and scan.offset:
                 changes.append((scan, "offset",
                                 units.convert_offset(old, new, scan.offset)))
         # A label's record of its scan's offset is in the same unit, and
         # converts with it, or every owned label would jump on a unit change.
         for label in self.labels:
-            if label.scan is None or not label.parent_offset:
+            if label.scan is None or id(label.scan) not in chosen:
                 continue
-            old = label.scan.factor(self.y_unit)
-            new = label.scan.factor(unit)
+            if not label.parent_offset:
+                continue
+            old = label.scan.factor(before)
+            new = label.scan.factor(after)
             if old and new:
                 changes.append((label, "parent_offset", units.convert_offset(
                     old, new, label.parent_offset)))
@@ -1725,15 +1761,16 @@ class Document(object):
         # converts with it. (A free note's point has no sample mass to
         # convert by, like any artist placed in data units.)
         for label in self.labels:
-            if label.scan is None or not label.leader:
+            if label.scan is None or id(label.scan) not in chosen:
                 continue
-            old = label.scan.factor(self.y_unit)
-            new = label.scan.factor(unit)
+            if not label.leader:
+                continue
+            old = label.scan.factor(before)
+            new = label.scan.factor(after)
             if old and new:
                 changes.append((label, "leader", [
                     label.leader[0],
                     units.convert_offset(old, new, label.leader[1])]))
-        self.y_unit = unit
         return changes
 
 
@@ -1748,9 +1785,21 @@ def default_segments(sample, file_count=1):
     should be the default".
 
     Everything else is one tick away in the outliner, which lists every
-    segment of every open file.
+    segment of every open file. An SDT run opens with the MASS of its first
+    heating (Christian, 2026-09-28: the heat flow of SDT data "is usually
+    just the bonus, the m% data is the meat").
     """
-    return [first_upscan(sample)]
+    seg = first_upscan(sample)
+    numdata = (sample.data or {}).get("numdata", [])
+    if seg < len(numdata) and _records_mass(numdata[seg]):
+        return [(seg, SIGNAL_MASS)]
+    return [seg]
+
+
+def _records_mass(step):
+    """True when a segment recorded a weight (either column)."""
+    dims = step.get("dims") or []
+    return "Weight" in dims or "Weight Change" in dims
 
 
 def first_upscan(sample):

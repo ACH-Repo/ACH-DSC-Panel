@@ -6,9 +6,10 @@ mark an interval on a curve to analyse it, and hand the result to a figure: a
 PNG or SVG, a CSV, or a `DSC_Plotter.py` script that redraws it in matplotlib.
 
 It is the ergonomics of the PXRD window in ACH-MoloM, rebuilt for calorimetry.
-The reader is ACH-DSC-Plotter's, vendored in (`tools/vendor.py`), so the
-binary format is decoded by the code that was validated against TRIOS exports
-value by value.
+It reads TRIOS `.tri` files and `.txt` exports from DSC and SDT (TGA + DSC)
+instruments with its own reader (it came from ACH-DSC-Plotter, retired on
+2026-09-28), validated against TRIOS's exports value by value
+(`docs/TRI-FORMAT.md`, `tests/test_reader.py`).
 
 ```bash
 pip install -e C:\Users\<you>\Documents\Github\ACH-DSC-Panel
@@ -247,11 +248,11 @@ src/dscpanel/
   branding.py        every place the program says its own name
   register.py        Start Menu entry, aliases, and the manifest of both
   core/              UI-free: model, units, arranging, undo, session, export
-    trios_io.py      VENDORED reader (see tools/vendor.py)
-    trios_analysis.py  VENDORED analyses
+    trios_io.py      the TRIOS reader (docs/TRI-FORMAT.md)
+    trios_analysis.py  the TRIOS analyses, recomputed
   ui/                the painted plot, the outliner, the F3 palette, dialogs
-tools/vendor.py      copies the reader in from ACH-DSC-Plotter
 docs/PLAN.md         what is built, what is next, what is still undecided
+docs/TRI-FORMAT.md   the binary .tri format, and how it was decoded
 docs/OPERATORS.md    every operator, its key and when it lights up
 ```
 
@@ -259,7 +260,6 @@ docs/OPERATORS.md    every operator, its key and when it lights up
 
 ```bash
 python -m pytest -q
-python tools/vendor.py --check     # has the vendored reader gone stale?
 ```
 
 Measurements are not committed. The tests that need a real `.tri` look for

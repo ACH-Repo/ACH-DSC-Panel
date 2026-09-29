@@ -2336,6 +2336,9 @@ def _box_of(plot, boxes, obj):
 def test_y_offset_markers_are_objects_against_the_axis(window):
     doc = window.doc
     doc.scans[1].offset = 0.5
+    # Moving a scan keeps the frame (2026-09-29): F makes room for it.
+    window.refresh()
+    window.plot.fit()
     plain = window.plot.grab().toImage()
     window.run_op("figure.offset_markers")
     assert doc.offset_markers
@@ -4496,6 +4499,32 @@ def test_figure_text_is_laid_out_without_hinting(window):
     from PySide6.QtGui import QFont
     assert (window.plot.figure_font().hintingPreference()
             == QFont.PreferNoHinting)
+
+
+def test_a_spread_paints_with_the_pointer_on_the_plot(window):
+    """S on scans with the pointer inside the axes killed the program (an
+    access violation, 2026-09-28): the overlay drew a line to "the centre of
+    the pivots", a spread has none, and the ZeroDivisionError left Qt with
+    a half-used painter. The overlay must paint, and a paint must survive
+    an error in it."""
+    from PySide6.QtGui import QImage, QPainter
+    plot, doc = window.plot, window.doc
+    first, second = doc.scans
+    window.refresh()
+    plot.grab()
+    doc.select_only([first, second])
+    plot._cursor = QPointF(plot.plot_rect().center())
+    assert window.run_op("transform.scale")
+    assert plot._scale["mode"] == "spread"
+    image = QImage(800, 600, QImage.Format_ARGB32)
+    painter = QPainter(image)
+    try:
+        plot._paint_scale(painter)                  # raised before the fix
+    finally:
+        painter.end()
+    plot.grab()                                     # the whole paint, live
+    plot._finish_transform(cancel=True)
+    assert plot._scale is None
 
 
 def test_s_on_scans_spreads_them_evenly_about_zero(window):

@@ -68,6 +68,22 @@ class FigureTab(object):
                 else "untitled")
 
 
+def parse_temperatures(text, unit):
+    """Typed temperatures in degC, or None when any is not one. Separated
+    by ", ", ";" or a space before the next number: a comma with no space
+    is a decimal point ("261,5")."""
+    import re as _re
+    parts = [p for p in _re.split(r"\s*;\s*|,\s+|\s+(?=[-+]?\d)",
+                                   str(text).strip()) if p.strip()]
+    out = []
+    for part in parts:
+        value = units.parse_temperature(part, unit)
+        if value is None:
+            return None
+        out.append(float(value))
+    return out or None
+
+
 class MainWindow(QMainWindow):
     """The figures as tabs, the outliner, and every operator.
 
@@ -348,8 +364,34 @@ class MainWindow(QMainWindow):
         return max(640, width), max(420, height)
 
     # --------------------------------------------------------------- refresh
+    def drawing_theme(self):
+        """The theme the FIGURE is drawn in: the document's, unless its
+        page colour is light on a dark theme (or dark on the light one) -
+        then the other family's, so the ink reads on the paper."""
+        theme = self.doc.theme
+        if not self.doc.background:
+            return theme
+        light_page = QColor(self.doc.background).lightnessF() > 0.6
+        if light_page and theme != plot_module.THEME_LIGHT:
+            return plot_module.THEME_LIGHT
+        if not light_page and theme == plot_module.THEME_LIGHT:
+            return plot_module.THEME_DARK
+        return theme
+
+    def set_background(self, colour):
+        """The page's colour (None: the theme's), one undo step."""
+        self.undo.set_props([(self.doc, "background", colour or None)],
+                            "background")
+        self.refresh()
+
+    def ask_background(self):
+        colour = QColorDialog.getColor(
+            self.plot.page_colour(), self, "Background")
+        if colour.isValid():
+            self.set_background(colour.name())
+
     def refresh(self, keep_view=True):
-        plot_module.set_theme(self.doc.theme)
+        plot_module.set_theme(self.drawing_theme())
         # The windows around the plot wear its theme too: the outliner, the
         # menus and the dialogs were light beside a dark plot.
         appearance.apply(self.doc.theme)
@@ -460,8 +502,54 @@ class MainWindow(QMainWindow):
         self.plot.update()
 
     def _set_visible(self, obj, visible):
-        self.undo.set_props([(obj, "visible", bool(visible))],
-                            "show" if visible else "hide")
+        with self._room_for_axes("show" if visible else "hide"):
+            self.undo.set_props([(obj, "visible", bool(visible))],
+                                "show" if visible else "hide")
+
+    @contextlib.contextmanager
+    def _room_for_axes(self, label):
+        """Around anything that may SHOW a curve: a y axis that appears on
+        a side of an EXACT figure whose margin cannot hold it (the heat
+        flow's, joining an SDT run's mass on the right - Christian,
+        2026-09-29) gets that margin grown to fit, in the same undo step.
+        Only a newly drawn axis's side, and only ever grown: a margin set
+        small on purpose stays, and says so (`overflow`)."""
+        plot = self.plot
+        before = {plot.axis_side(a) for a in plot.shown_y_axes()}
+        # Inside a group already open (an outliner sweep) it joins that one:
+        # closing it here would end the sweep's single step early.
+        opened = getattr(self.undo, "_group", None) is None
+        if opened:
+            self.undo.begin_group(label)
+        try:
+            yield
+            self._grow_margins(before)
+        finally:
+            if opened:
+                self.undo.end_group()
+
+    def _grow_margins(self, sides_before):
+        layout = self.doc.figure
+        plot = self.plot
+        if plot.layout_mode() != figure_module.MODE_SIZE:
+            return []
+        new = ({plot.axis_side(a) for a in plot.shown_y_axes()}
+               - set(sides_before))
+        per = (figure_module.PER_INCH[layout.unit]
+               / figure_module.DESIGN_DPI)
+        changes = []
+        for side, needed, have in plot.overflow():
+            if side not in new or needed <= have:
+                continue
+            value = math.ceil(needed * per / 0.05 - 1e-9) * 0.05
+            changes.append((layout, "margin_" + side, round(value, 4)))
+        if changes:
+            self.undo.set_props(changes, "room for the axis")
+            plot.fit_page()
+            self.note.setText("{} margin grown to fit its axis".format(
+                " and ".join(c[1][len("margin_"):] for c in changes)
+                .capitalize()))
+        return changes
 
     def _transform_done(self, changes, label):
         self.undo.set_props(changes, label)
@@ -702,20 +790,32 @@ class MainWindow(QMainWindow):
               "Y axis: {}".format(unit),
               (lambda u: lambda c: c.set_unit(u))(unit), category="View",
               enabled=(lambda u: lambda c: c.doc.y_unit != u)(unit))
-        # SDT and TGA runs (round 25): the weight on the second y axis.
+        # SDT and TGA runs: a segment's mass is a scan of its own, on the
+        # mass axis (Christian, 2026-09-28).
         for unit, words in ((model.WEIGHT_PCT, "% of the sample mass"),
                             (model.WEIGHT_MG, "mg")):
             r("view.weight_" + ("percent" if unit == model.WEIGHT_PCT
                                 else "mg"),
-              "Weight axis: {}".format(words),
+              "Mass axis: {}".format(words),
               (lambda u: lambda c: c.set_weight_unit(u))(unit),
               category="View", aliases=("tga", "sdt", "mass", "weight"),
               enabled=(lambda u: lambda c: (c.doc.weight_unit != u
                                             and c.has_weight()))(unit))
-        r("view.weights", "Show or hide the weight curves",
-          lambda c: c.toggle_weights(), category="View",
-          aliases=("tga", "sdt", "mass loss", "weight", "thermogravimetry"),
+        r("view.weights", "Show or hide the mass curves",
+          lambda c: c.toggle_signal(model.SIGNAL_MASS), category="View",
+          aliases=("tga", "sdt", "mass loss", "weight", "thermogravimetry",
+                   "m%"),
           enabled=lambda c: c.has_weight())
+        r("view.heat_flows", "Show or hide the heat flow curves",
+          lambda c: c.toggle_signal(model.SIGNAL_HEAT), category="View",
+          aliases=("sdt", "dsc", "heat flow"),
+          enabled=lambda c: c.has_weight())
+        # Christian's `add_annot`: the m% at chosen temperatures, on every
+        # selected mass curve (or every one shown) at once.
+        r("analysis.mass_at", "Mass at temperatures...",
+          lambda c: c.ask_mass_temperatures(), category="Analyse",
+          aliases=("m%", "mass", "tga", "weight", "annotate", "residue"),
+          enabled=lambda c: bool(c.mass_targets()))
         for theme in (plot_module.THEME_DARK, plot_module.THEME_LIGHT,
                       plot_module.THEME_BOOMBOX):
             r("view.theme_" + theme.replace("-", "_"),
@@ -759,13 +859,14 @@ class MainWindow(QMainWindow):
           aliases=("key", "which colour is which"))
         # The template's `flush` for analysis labels, on keys: which edge of
         # the text sits on its arrow.
-        flushable = lambda c: bool(c.flush_targets())
+        flushable = lambda c: bool(c.flush_targets()) or any(
+            isinstance(o, model.TextLabel) for o in c.doc.selected())
         for side, key, words in (
                 (style.FLUSH_LEFT, "Ctrl+L", "left"),
                 (style.FLUSH_RIGHT, "Ctrl+R", "right"),
                 (style.FLUSH_CENTER, "Ctrl+M", "centred")):
             r("analysis.flush_" + side,
-              "Align analysis labels {}".format(words),
+              "Align labels {}".format(words),
               (lambda f: lambda c: c.set_flush(f))(side), category="Object",
               key=key, shortcut=key, enabled=flushable,
               aliases=("flush", "alignment", "justify", words))
@@ -774,6 +875,11 @@ class MainWindow(QMainWindow):
         r("label.add", "Add a label...", lambda c: c.add_label(),
           category="Object", key="Ctrl+T", shortcut="Ctrl+T",
           aliases=("text", "caption", "annotate", "title"))
+        r("label.vline", "Add a marker line...", lambda c: c.add_marker_line(),
+          category="Object",
+          shortcut="or right-click the plot",
+          aliases=("vertical line", "axvline", "mark", "melting point",
+                   "line", "marker line", "tm"))
         r("label.note", "Add a note with an arrow...",
           lambda c: c.add_note(), category="Object", key="Ctrl+Shift+T",
           shortcut="Ctrl+Shift+T, or right-click a curve",
@@ -1016,6 +1122,13 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------- the menus
     def _context_menu(self, obj, pos):
+        menu = self.context_menu_for(obj)
+        if not menu.isEmpty():
+            menu.exec(pos if isinstance(pos, QPoint) else QPoint(pos))
+
+    def context_menu_for(self, obj):
+        """The right-click menu for `obj` (None: the empty plot), BUILT and
+        not shown - a modal `exec` in a test hangs rather than fails."""
         menu = QMenu(self)
         if isinstance(obj, model.Scan):
             self._scan_menu(menu, obj)
@@ -1056,19 +1169,37 @@ class MainWindow(QMainWindow):
             gone = menu.addAction("Remove {} from the plot".format(obj.name))
             gone.triggered.connect(lambda _c=False: self.remove_sample(obj))
         else:
-            for op_id in ("file.open", "view.fit", "select.all",
-                          "arrange.stack"):
+            # Christian, 2026-09-29: no Open or Select-all here; the page's
+            # colour, white and the theme's a click away.
+            for op_id in ("view.fit", "arrange.stack"):
                 self._menu_op(menu, op_id)
+            paper = menu.addMenu("Background")
+            # Held by its parent's wrapper: a submenu fetched back through
+            # a temporary one can already be deleted (CLAUDE.md).
+            menu._paper = paper
+            white = paper.addAction("White")
+            white.triggered.connect(
+                lambda _c=False: self.set_background("#ffffff"))
+            themed = paper.addAction("The theme's")
+            themed.triggered.connect(lambda _c=False: self.set_background(None))
+            other = paper.addAction("Other colour...")
+            other.triggered.connect(lambda _c=False: self.ask_background())
+            if self.doc.x_axis == model.AXIS_TEMPERATURE:
+                at = (QPointF(self.plot._cursor)
+                      if self.plot._cursor is not None else None)
+                line = menu.addAction("Add a marker line here...")
+                line.triggered.connect(
+                    lambda _c=False: self.add_marker_line(at=at))
         if obj is not None and hasattr(obj, "z") and self.layered_selected():
             menu.addSeparator()
             for op_id in ("order.front", "order.forward", "order.backward",
                           "order.back"):
                 self._menu_op(menu, op_id)
-        if not menu.isEmpty():
-            menu.exec(pos if isinstance(pos, QPoint) else QPoint(pos))
+        return menu
 
     def _scan_menu(self, menu, scan):
-        """Four entries, and only these.
+        """Four entries, and only these (a mass curve: a fifth, its mass at
+        the temperature clicked).
 
         Everything else a right-click used to offer is in the outliner, the
         menus or F3 already, and Christian's report was blunt: the menu that
@@ -1088,6 +1219,12 @@ class MainWindow(QMainWindow):
               else None)
         note = menu.addAction("Add a note with an arrow here...")
         note.triggered.connect(lambda _c=False: self.add_note(at=at))
+        # A mass curve's one more (Christian, 2026-09-28); a marker line is
+        # a temperature's, not a curve's: right-click the plot beside it.
+        if scan.is_mass and at is not None:
+            here = menu.addAction("Mass at this temperature")
+            here.triggered.connect(
+                lambda _c=False: self.mass_here(scan, at))
 
     def _menu_op(self, menu, op_id):
         op = self.ops.get(op_id)
@@ -1156,17 +1293,28 @@ class MainWindow(QMainWindow):
         self.note.setText("Could not read {}: {}".format(
             os.path.basename(path), message))
 
-    def toggle_segment(self, sample, seg, on=True):
-        """Put one segment of an open file on the plot, or take it off.
+    def toggle_segment(self, sample, seg, on=True,
+                       signal=model.SIGNAL_HEAT):
+        """Put one curve of an open file on the plot, or take it off: a
+        segment's heat flow, or (an SDT run) its mass.
 
         Undoable, like everything else: the scan object is kept by the
         command, so an undo puts back the same one with its colour and its
         offset rather than a fresh copy.
         """
-        existing = [s for s in sample.scans if s.seg == seg]
-        if on and not existing:
+        with self._room_for_axes("show" if on else "hide"):
+            self._toggle_segment(sample, seg, on, signal)
+
+    def _toggle_segment(self, sample, seg, on, signal):
+        existing = [s for s in sample.scans
+                    if s.seg == seg and s.signal == signal]
+        if on and existing and not all(s.visible for s in existing):
+            self.undo.set_props([(s, "visible", True) for s in existing
+                                 if not s.visible], "show")
+        elif on and not existing:
             colour = model.PALETTE[len(self.doc.scans) % len(model.PALETTE)]
-            scan = model.Scan(self.doc._next_id(), sample, seg, colour)
+            scan = model.Scan(self.doc._next_id(), sample, seg, colour,
+                              signal)
             self.undo.push(undo.CallCommand(
                 lambda: self.doc.insert_scan(scan),
                 lambda: self.doc.detach_scan(scan),
@@ -1349,7 +1497,8 @@ class MainWindow(QMainWindow):
         painter.scale(scale, scale)
         try:
             with paper_palette(self.plot, light), self.unselected():
-                image.fill(QColor(plot_module._BG) if not light
+                image.fill(QColor(self.doc.background) if self.doc.background
+                           else QColor(plot_module._BG) if not light
                            else QColor(255, 255, 255))
                 self.plot.paint_into(painter, columns=width_px)
                 self._stamp(painter, warnings)
@@ -1387,7 +1536,9 @@ class MainWindow(QMainWindow):
         try:
             with paper_palette(self.plot, light), self.unselected():
                 painter.fillRect(QRectF(0.0, 0.0, canvas_w, canvas_h),
-                                 QColor(255, 255, 255) if light
+                                 QColor(self.doc.background)
+                                 if self.doc.background
+                                 else QColor(255, 255, 255) if light
                                  else QColor(plot_module._BG))
                 self.plot.paint_into(painter, columns=int(canvas_w * 4))
                 self._stamp(painter, warnings)
@@ -1505,8 +1656,8 @@ class MainWindow(QMainWindow):
     def _curve_of(self, scan):
         # The KEPT part: a truncated start-up hook must not steer a stack or
         # an alignment any more than it steers the fit.
-        return scan.kept_curve(self.doc.x_axis, self.doc.y_unit,
-                          self.doc.exo, self.doc.x_unit)
+        return scan.kept_curve(self.doc.x_axis, self.doc.unit_for(scan),
+                               self.doc.exo, self.doc.x_unit)
 
     def spreadable(self):
         """S spreads the selection when it is scans and nothing else, two
@@ -1516,26 +1667,45 @@ class MainWindow(QMainWindow):
                      and s.visible]) >= 2
                 and all(isinstance(o, model.Scan) for o in chosen))
 
+    @staticmethod
+    def _by_signal(scans):
+        """`scans` in groups of one signal each (heat flows, masses), in
+        order: an arrangement is worked out in ONE axis's unit."""
+        groups = {}
+        for scan in scans:
+            groups.setdefault(scan.signal, []).append(scan)
+        return list(groups.values())
+
     def stack_selected(self):
         scans = self.doc.selected_scans() or self.doc.visible_scans()
-        step = arrange.suggested_step(scans, self._curve_of)
-        if not step:
-            return
-        first = min((s.offset for s in scans), default=0.0)
-        self.undo.set_props(arrange.stack(scans, step, first), "stack")
+        changes = []
+        for group in self._by_signal(scans):
+            step = arrange.suggested_step(group, self._curve_of)
+            if not step:
+                continue
+            first = min((s.offset for s in group), default=0.0)
+            changes.extend(arrange.stack(group, step, first))
+        if changes:
+            self.undo.set_props(changes, "stack")
 
     def distribute_selected(self):
-        self.undo.set_props(arrange.distribute(self.doc.selected_scans()),
-                            "distribute")
+        changes = []
+        for group in self._by_signal(self.doc.selected_scans()):
+            changes.extend(arrange.distribute(group))
+        self.undo.set_props(changes, "distribute")
 
     def align_selected(self):
         scans = self.doc.selected_scans()
+        # The ACTIVE scan is the first selected one, which is the one the
+        # eye starts on and the one the outliner lists first; the others of
+        # its axis align to it.
         if len(scans) < 2:
             return
-        # The ACTIVE scan is the first selected one, which is the one the
-        # eye starts on and the one the outliner lists first.
+        same = [s for s in scans[1:] if s.signal == scans[0].signal]
+        if not same:
+            return
         self.undo.set_props(
-            arrange.align_to(scans[0], scans[1:], self._curve_of), "align")
+            arrange.align_to(scans[0], same, self._curve_of), "align")
 
     def reset_offsets(self):
         """The selected scans back on zero - only those. With nothing
@@ -1594,7 +1764,6 @@ class MainWindow(QMainWindow):
         F9)."""
         doc = self.doc
         objs = (list(doc.scans)
-                + [s.weight for s in doc.scans if s.has_weight()]
                 + doc.analyses()
                 + ([s.marker for s in doc.scans] if doc.offset_markers
                    else [])
@@ -1667,12 +1836,9 @@ class MainWindow(QMainWindow):
             obj = chosen[0] if chosen else None
         if isinstance(obj, model.Sample):
             return self.edit_sample(obj)
-        if isinstance(obj, model.WeightCurve):
-            # A weight curve is its scan's: the scan's settings hold it.
-            obj = obj.scan
         group = self.settings_group(obj)
         if isinstance(obj, model.Scan):
-            dialog = ScanSettings(self, obj, self.doc.y_unit,
+            dialog = ScanSettings(self, obj, self.doc.unit_for(obj),
                                   on_change=self._live_change)
         elif isinstance(obj, model.Axis):
             # Three windows (Christian, round 18): the SPINE opens the
@@ -1731,6 +1897,9 @@ class MainWindow(QMainWindow):
             # interval is not a chance to change what is being measured, and
             # being asked again every time is the annoyance.
             return self.remeasure(editing, x0, x1, span)
+        # `ask_analysis` keeps its two arguments (tests stand in for it);
+        # which curve it is for, it reads here.
+        self._analysis_scan = scan
         chosen = self.ask_analysis(x0, x1)
         if not chosen:
             if measuring.get("gesture"):
@@ -1760,6 +1929,86 @@ class MainWindow(QMainWindow):
                                           analysis.summary()))
         self.refresh()
         return analysis
+
+    # --------------------------------------------- mass at a temperature
+    def mass_targets(self):
+        """The mass curves a marker goes on: the selected ones, else every
+        one shown."""
+        shown = [s for s in self.doc.scans if s.is_mass and s.visible]
+        chosen = [s for s in shown if s.selected]
+        return chosen or shown
+
+    def add_mass_markers(self, scans, temperatures):
+        """A mass-at-temperature marker on each of `scans` at each of
+        `temperatures` (degC), ONE undo step; the made ones, in order. A
+        temperature a curve does not reach is skipped and said."""
+        made, missed = [], 0
+        for scan in scans:
+            for celsius in temperatures:
+                analysis = measure.run(measure.MASS_AT, scan, float(celsius),
+                                       float(celsius))
+                if analysis is None:
+                    missed += 1
+                else:
+                    made.append((scan, analysis))
+        if not made:
+            self.note.setText("No curve reaches those temperatures")
+            return []
+
+        def undo_it():
+            for scan, analysis in made:
+                if analysis in scan.analysis_objects:
+                    scan.analysis_objects.remove(analysis)
+
+        def redo_it():
+            for scan, analysis in made:
+                if analysis not in scan.analysis_objects:
+                    scan.analysis_objects.append(analysis)
+
+        self.undo.push(undo.CallCommand(
+            redo_it, undo_it, "mass at {} temperature(s)".format(
+                len(temperatures))))
+        self.note.setText("{} mass marker(s){}".format(
+            len(made), "; {} temperature(s) off a curve".format(missed)
+            if missed else ""))
+        self.refresh()
+        return [analysis for _scan, analysis in made]
+
+    def ask_mass_temperatures(self):
+        """F3 "Mass at temperatures...": type them, in the axis unit (98 F,
+        371 K convert); separated by ", ", ";" or spaces - a comma with no
+        space is a decimal point."""
+        scans = self.mass_targets()
+        if not scans:
+            return []
+        from PySide6.QtWidgets import QInputDialog as _Input
+        text, ok = _Input.getText(
+            self, "Mass at temperatures",
+            "Temperatures for {} mass curve(s), e.g. 261, 360, 480, 630:"
+            .format(len(scans)), text=getattr(self, "_mass_typed", ""))
+        if not ok or not text.strip():
+            return []
+        temperatures = parse_temperatures(text, self.doc.x_unit)
+        if temperatures is None:
+            self.note.setText("Not temperatures: {}".format(text.strip()))
+            return []
+        self._mass_typed = text.strip()
+        return self.add_mass_markers(scans, temperatures)
+
+    def mass_here(self, scan, at):
+        """The right-click's "Mass at this temperature": at the sample of
+        `scan` nearest the point `at` (figure units) - on that curve and on
+        every other SELECTED mass curve, at the same temperature
+        (Christian, 2026-09-29)."""
+        trace = self.plot._trace_of(scan)
+        index = self.plot.sample_at(trace, at) if trace is not None else None
+        if index is None:
+            return []
+        temperature = float(scan.temperature()[index])
+        targets = [scan] + [s for s in self.doc.scans
+                            if s.is_mass and s.visible and s.selected
+                            and s is not scan]
+        return self.add_mass_markers(targets, [temperature])
 
     def remeasure(self, analysis, x0, x1, span=None):
         """Move an analysis made here to a new interval, IN PLACE.
@@ -1920,7 +2169,9 @@ class MainWindow(QMainWindow):
         """
         unit = units.TEMPERATURE_LABEL.get(self.doc.x_unit, self.doc.x_unit)
         low, high = sorted((self.plot.to_axis(x0), self.plot.to_axis(x1)))
-        dialog = MeasurePalette(measure.MODELS, self)
+        scan = getattr(self, "_analysis_scan", None)
+        dialog = MeasurePalette(measure.models_for(scan) if scan is not None
+                                else measure.MODELS, self)
         dialog.setWindowTitle("Analyse {:.1f} - {:.1f} {}".format(low, high,
                                                                unit))
         dialog.place_at(QCursor.pos())
@@ -1959,14 +2210,21 @@ class MainWindow(QMainWindow):
         """Align analysis labels left, right or centred on their arrows,
         as one undo step."""
         targets = self.flush_targets()
-        if not targets:
-            self.note.setText("Select an analysis label (or its scan) first")
+        texts = [o for o in self.doc.selected()
+                 if isinstance(o, model.TextLabel)]
+        if not targets and not texts:
+            self.note.setText("Select a label, a note or an analysis label "
+                              "first")
             return 0
-        self.undo.set_props([(a, "flush", side) for a in targets],
-                            "align labels")
+        changes = [(a, "flush", side) for a in targets]
+        for label in texts:
+            changes += self.plot.note_flush_changes(
+                label, style.FLUSH_CENTER if side == style.FLUSH_CENTER
+                else side)
+        self.undo.set_props(changes, "align labels")
         self.note.setText("{} label(s) aligned {}".format(
-            len(targets), style.FLUSH_TITLES.get(side, side)))
-        return len(targets)
+            len(targets) + len(texts), style.FLUSH_TITLES.get(side, side)))
+        return len(targets) + len(texts)
 
     # --------------------------------------------------------------- x range
     def x_range_dialog(self):
@@ -1977,13 +2235,14 @@ class MainWindow(QMainWindow):
             unit = units.TEMPERATURE_LABEL.get(self.doc.x_unit, "")
         else:
             unit = "min"
-        y_lo, y_hi = self.plot.view_y()
-        y2 = None
-        if self.plot.y2_shown():
+        y = y2 = None
+        if self.plot.heat_shown():
+            y_lo, y_hi = self.plot.view_y()
+            y = (self.doc.y_unit, y_lo, y_hi)
+        if self.plot.mass_shown():
             w_lo, w_hi = self.plot.view_y2()
             y2 = (self.doc.weight_unit, w_lo, w_hi)
-        return RangeDialog("Range", unit, lo, hi, self,
-                           y=(self.doc.y_unit, y_lo, y_hi), y2=y2)
+        return RangeDialog("Range", unit, lo, hi, self, y=y, y2=y2)
 
     def ask_x_range(self):
         dialog = self.x_range_dialog()
@@ -2087,18 +2346,55 @@ class MainWindow(QMainWindow):
         if near is not None:
             tip, trace = near
             scan = trace.scan
-        corner_x = min(rect.right() - 20.0, tip.x() + 28.0)
-        corner_y = max(rect.top() + 20.0, tip.y() - 34.0)
+        # Straight above the point, the arrow pointing DOWN at it
+        # (Christian, 2026-09-28); below it where there is no room above.
+        above = tip.y() - 40.0 >= rect.top() + 20.0
+        corner_x = tip.x()
+        corner_y = tip.y() - 40.0 if above else tip.y() + 40.0
         label = model.TextLabel(
             self.doc._next_id(), text,
             (corner_x - rect.left()) / max(1.0, rect.width()),
             (corner_y - rect.top()) / max(1.0, rect.height()), scan)
-        label.anchor = "bottom left"
+        label.anchor = "bottom" if above else "top"
         label.leader = plot.leader_value(label, tip, rect)
         self.undo.push(undo.CallCommand(
             lambda: self.doc.labels.append(label),
             lambda: self.doc.remove_label(label),
             "add a note"))
+        self.refresh()
+        return label
+
+    def add_marker_line(self, text=None, at=None):
+        """A MARKER LINE (Christian's `mark_peak`, 2026-09-28): a dashed
+        vertical line across the axes at the pointer's temperature (or
+        `at`, figure units), with its text turned upright on it - a melting
+        point, a decomposition. A label underneath: moved sideways it moves
+        the line, up and down the text slides along it. One undo step."""
+        if self.doc.x_axis != model.AXIS_TEMPERATURE:
+            self.note.setText("A marker line needs the temperature axis")
+            return None
+        from PySide6.QtWidgets import QInputDialog as _Input
+        if text is None:
+            text, ok = _Input.getText(self, "Add a marker line", "Text:")
+            if not ok:
+                return None
+            text = text.strip()
+        plot = self.plot
+        rect = plot.plot_rect()
+        where = QPointF(at if at is not None
+                        else (plot._cursor or rect.center()))
+        celsius = float(units.to_celsius(plot.px_to_x(where.x(), rect),
+                                         self.doc.x_unit))
+        label = model.TextLabel(
+            self.doc._next_id(), text or " ",
+            (where.x() - rect.left()) / max(1.0, rect.width()), 0.72)
+        label.vline = celsius
+        label.rotation = 90.0
+        label.anchor = "center"
+        self.undo.push(undo.CallCommand(
+            lambda: self.doc.labels.append(label),
+            lambda: self.doc.remove_label(label),
+            "add a marker line"))
         self.refresh()
         return label
 
@@ -2554,8 +2850,23 @@ class MainWindow(QMainWindow):
             made = self.add_molecule(text.strip())
             if made is not None:
                 return made
+        if (not as_text and not chem.available()
+                and chem.plausible_smiles(text)):
+            # Said, not pasted as words: the structure is what was meant.
+            self.missing_rdkit()
+            return None
         self.ensure_figure()
         return self.add_label(text)
+
+    def missing_rdkit(self):
+        """The pop-up for a SMILES pasted without RDKit (a method of its
+        own, so a test can stand in for the modal box)."""
+        QMessageBox.information(
+            self, "RDKit is not installed",
+            "This looks like a SMILES. Drawing it as a structure needs "
+            "RDKit, which is not installed.\n\nInstall it with\n\n"
+            "    pip install rdkit\n\nand start {} again. Ctrl+Shift+V "
+            "pastes the text as a label instead.".format(branding.APP_NAME))
 
     def add_molecule(self, smiles, at=None):
         """A skeletal structure from a SMILES, undoably, where the pointer
@@ -2707,23 +3018,43 @@ class MainWindow(QMainWindow):
         return any(s.has_weight() for s in self.doc.scans)
 
     def set_weight_unit(self, unit):
-        """The weight axis in % of the sample mass or in mg. Like the heat
-        flow's unit, not an undo step; the weight range is fitted again."""
+        """The mass axis in % of the sample mass or in mg, the mass scans'
+        offsets carried across like the heat flow's (`Document.
+        set_weight_unit`); the mass range is fitted again."""
         if unit not in model.WEIGHT_UNITS or unit == self.doc.weight_unit:
             return
-        self.doc.weight_unit = unit
+        changes = self.doc.set_weight_unit(unit)
+        for scan in self.doc.scans:
+            scan._cache_key = None
+        if changes:
+            self.undo.set_props(changes, "mass unit")
         self.plot._view_y2 = None
         self.refresh()
 
-    def toggle_weights(self):
-        """Every weight curve on or off together, one undo step: on when
-        any is off."""
-        curves = [s.weight for s in self.doc.scans if s.has_weight()]
-        if not curves:
+    def toggle_signal(self, signal):
+        """One kind of curve on or off for every segment that has a curve
+        on the figure: off when any of that kind is on, else on - made where
+        a segment has never shown it. One undo step."""
+        doc = self.doc
+        mine = [s for s in doc.scans if s.signal == signal]
+        if any(s.visible for s in mine):
+            self.undo.set_props([(s, "visible", False) for s in mine
+                                 if s.visible], "hide " + signal)
             return
-        shown = not all(c.visible for c in curves)
-        self.undo.set_props([(c, "visible", shown) for c in curves],
-                            "weight curves")
+        wanted = []
+        for scan in list(doc.scans):
+            if not scan.visible or scan.signal == signal:
+                continue
+            if signal == model.SIGNAL_MASS and not scan.has_weight():
+                continue
+            if (scan.sample, scan.seg) not in wanted:
+                wanted.append((scan.sample, scan.seg))
+        if not wanted:
+            return
+        with self._room_for_axes("show " + signal):
+            for sample, seg in wanted:
+                self._toggle_segment(sample, seg, True, signal)
+            self.refresh()
 
     def set_unit(self, unit):
         changes = self.doc.set_unit(unit)

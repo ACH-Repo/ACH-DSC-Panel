@@ -182,8 +182,25 @@ SETTINGS = (
                  "converts."),
     Setting("offset_format", "Offset markers", numbers.OFFSET, kind="format",
             note="Text of each y-offset marker."),
+    Setting("mass_format", "Masses (m% at a temperature)", numbers.MASS,
+            kind="format",
+            note="%.0f whole percent; %.1f mg converts."),
     Setting("line_width", "Curve width", 1.0, low=0.2, high=8.0, step=0.2,
             decimals=2),
+    # How much room F leaves round the data on each side, as a share of its
+    # range - his scripts' `set_side_margins` (Christian, 2026-09-29).
+    Setting("fit_left", "Fit margin, left", 0.0, low=0.0, high=100.0,
+            step=1.0, decimals=0, suffix=" %",
+            note="Room F leaves left of the data, % of its range."),
+    Setting("fit_right", "Fit margin, right", 0.0, low=0.0, high=100.0,
+            step=1.0, decimals=0, suffix=" %",
+            note="Room F leaves right of the data, % of its range."),
+    Setting("fit_bottom", "Fit margin, bottom", 6.0, low=0.0, high=100.0,
+            step=1.0, decimals=0, suffix=" %",
+            note="Room F leaves below the curves, % of their range."),
+    Setting("fit_top", "Fit margin, top", 6.0, low=0.0, high=100.0,
+            step=1.0, decimals=0, suffix=" %",
+            note="Room F leaves above the curves, % of their range."),
     # How close a press must be to a curve or a label to act on it (mark an
     # interval, move the label) rather than start a box select. Christian
     # found 60 px grabbed a neighbouring scan where curves run close; 14 is
@@ -394,9 +411,12 @@ def figure_value(doc, key):
 def key_for(obj, attr):
     if getattr(obj, "kind", "") == "analysis" and attr == "number_format":
         # By what the number IS, not by the kind of object.
-        return ("temperature_format"
-                if getattr(obj, "quantity", "") == "temperature"
-                else "value_format")
+        quantity = getattr(obj, "quantity", "")
+        if quantity == "temperature":
+            return "temperature_format"
+        if quantity == "mass":
+            return "mass_format"
+        return "value_format"
     return FIELDS.get((getattr(obj, "kind", ""), attr))
 
 

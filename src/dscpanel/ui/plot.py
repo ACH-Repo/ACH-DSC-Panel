@@ -208,24 +208,6 @@ BLINK_ON = (0, 1, 3, 4)
 BLINK_PERIOD = 30
 
 
-class WeightTrace(object):
-    """One scan's weight, prepared for the view: the TGA curve of an SDT
-    run, against the second y axis (round 25). Built by `rebuild` like a
-    `Trace`, and picked by what was last drawn."""
-
-    __slots__ = ("scan", "weight", "x", "y", "px", "py", "hidden")
-
-    def __init__(self, scan, x, y, hidden=()):
-        self.scan = scan
-        self.weight = scan.weight
-        self.x = x
-        self.y = y
-        self.px = None
-        self.py = None
-        #: The truncated ends as `[(x, w), ...]`, drawn dotted on hover.
-        self.hidden = list(hidden)
-
-
 class Trace(object):
     """One scan, prepared for one particular view.
 
@@ -356,13 +338,8 @@ class PlotWidget(QWidget):
         self.y_margin = 0.06
         self._view_x = None
         self._view_y = None
-        #: The weight axis's range, or None for fitted (round 25).
+        #: The mass axis's range, or None for fitted.
         self._view_y2 = None
-        #: The weight curves drawn (`WeightTrace`), from the last rebuild.
-        self.weight_traces = []
-        #: `[(scan, reason), ...]`: weights switched on that cannot be drawn
-        #: (`Scan.weight_missing_for`), said by a blinking label.
-        self.weight_missing = []
         self._cursor = None
         self._mode = None
         self._drag = None           # a navigation drag (zoom band / pan)
@@ -414,16 +391,18 @@ class PlotWidget(QWidget):
 
     def rebuild(self, keep_view=True):
         """Rebuild every trace from the document, then redraw."""
+        self._span_memo = {}
         traces = []
         doc = self.doc
         if doc is not None:
             for scan in doc.scans:
                 if not scan.visible:
                     continue
-                x, y = scan.curve(doc.x_axis, doc.y_unit, doc.exo,
+                unit = doc.unit_for(scan)
+                x, y = scan.curve(doc.x_axis, unit, doc.exo,
                                   getattr(doc, 'x_unit', units.TEMP_C))
                 missing = (None if x is not None
-                           else scan.missing_for(doc.y_unit, doc.x_axis))
+                           else scan.missing_for(unit, doc.x_axis))
                 if x is None:
                     traces.append(Trace(scan, x, y, scan.colour, missing))
                     continue
@@ -438,27 +417,9 @@ class PlotWidget(QWidget):
                 traces.append(Trace(scan, x[k0:k1], y[k0:k1], scan.colour,
                                     None, hidden, k0))
         self.traces = traces
-        weights, missing = [], []
-        if doc is not None:
-            for scan in doc.scans:
-                if not (scan.visible and scan.weight.visible
-                        and scan.has_weight()):
-                    continue
-                unit = getattr(doc, "weight_unit", model.WEIGHT_PCT)
-                x_unit = getattr(doc, "x_unit", units.TEMP_C)
-                reason = scan.weight_missing_for(unit, doc.x_axis)
-                if reason is not None:
-                    # Not drawn, and SAID, where the heat flow's absence
-                    # is said too (golden rule 4, review F7).
-                    missing.append((scan, reason))
-                    continue
-                x, w = scan.weight_curve(doc.x_axis, unit, x_unit)
-                weights.append(WeightTrace(
-                    scan, x, w, scan.weight_hidden(doc.x_axis, unit, x_unit)))
-        self.weight_traces = weights
-        self.weight_missing = missing
         if not keep_view:
             self._view_x = self._view_y = self._view_y2 = None
+            self.forget_fit()
         self._sync_blink()
         self.invalidate()
 
@@ -521,17 +482,41 @@ class PlotWidget(QWidget):
         return [t for t in self.traces if t.missing is None]
 
     # ---------------------------------------------------------------- ranges
+    def drawable_of(self, signal):
+        """The drawable traces of one signal: heat flow or mass."""
+        return [t for t in self.drawable()
+                if getattr(t.scan, "signal", model.SIGNAL_HEAT) == signal]
+
     def data_x(self):
+        """The x range of what is drawn: heat flow and mass curves."""
         lows, highs = [], []
+        # A paint asks for the range dozens of times and each ask scanned
+        # every sample of every curve for NaN: half of a redraw (measured,
+        # 2026-09-28). The spans only change when the traces are rebuilt.
+        memo = self.__dict__.setdefault("_span_memo", {})
         for trace in self.drawable():
-            span = _finite_span(trace.x)
+            key = id(trace.x)
+            if key not in memo:
+                memo[key] = _finite_span(trace.x)
+            span = memo[key]
             if span is not None:
                 lows.append(span[0])
                 highs.append(span[1])
         if not lows:
             return (0.0, 100.0)
         lo, hi = min(lows), max(highs)
-        return (lo, hi) if hi > lo else (lo, lo + 1.0)
+        if hi <= lo:
+            return (lo, lo + 1.0)
+        span = hi - lo
+        return (lo - span * self.fit_pad("left"),
+                hi + span * self.fit_pad("right"))
+
+    def fit_pad(self, side):
+        """The share of the data's range F leaves on `side` (house style
+        "Fit margin")."""
+        return float(style.figure_value(self.doc, "fit_" + side)
+                     if self.doc is not None
+                     else style.preference("fit_" + side)) / 100.0
 
     def data_y(self):
         """The fitted y range: every drawn curve, and every analysis label
@@ -545,26 +530,30 @@ class PlotWidget(QWidget):
         of `hi = y + reach / height * (hi - lo)`, which settles quickly
         while the labels take less than the box.
 
-        Worked out once per paint (`paint_into` holds `_fit_memo`): a paint
-        converts coordinates a hundred times, and nothing it reads can change
-        while it runs.
+        Worked out once per paint (`paint_into` holds `_fit_memo`, one
+        entry per axis): a paint converts coordinates a hundred times, and
+        nothing it reads can change while it runs.
         """
+        return self._memo_fit(model.SIGNAL_HEAT)
+
+    def _memo_fit(self, signal):
         memo = getattr(self, "_fit_memo", False)
-        if memo:
-            return memo
-        found = self._fit_y()
-        if memo is None and not getattr(self, "_fitting", False):
-            self._fit_memo = found
+        if isinstance(memo, dict) and signal in memo:
+            return memo[signal]
+        found = self._fit_y(signal)
+        if isinstance(memo, dict) and not getattr(self, "_fitting", False):
+            memo[signal] = found
         return found
 
-    def _fit_y(self):
-        lo, hi = self._curves_y()
+    def _fit_y(self, signal=model.SIGNAL_HEAT):
+        lo, hi = self._curves_y(signal)
         if getattr(self, "_fitting", False):
             # Measuring the labels asks for the axes box, whose margin asks
             # for the widest y number, which asks for this range: the curves
             # alone are the answer there (the box's HEIGHT does not change).
             return lo, hi
-        last = getattr(self, "_fitted_y", None)
+        fitted = self.__dict__.setdefault("_fitted", {})
+        last = fitted.get(signal)
         moving = getattr(self, "_move", None)
         if (last is not None and moving is not None
                 and any(isinstance(o, model.Analysis)
@@ -575,11 +564,11 @@ class PlotWidget(QWidget):
         self._fitting = True
         try:
             rect = self.plot_rect()
-            reach = self.label_reach(rect)
+            reach = self.label_reach(rect, signal)
         finally:
             self._fitting = False
         if not reach:
-            self._fitted_y = (lo, hi)
+            fitted[signal] = (lo, hi)
             return lo, hi
         height = max(1.0, rect.height())
         # Labels taller than about half the box cannot all fit: cap each
@@ -597,10 +586,10 @@ class PlotWidget(QWidget):
             top, bottom = new_top, new_bottom
             if settled:
                 break
-        self._fitted_y = (bottom, top)
+        fitted[signal] = (bottom, top)
         return bottom, top
 
-    def label_reach(self, rect):
+    def label_reach(self, rect, signal=model.SIGNAL_HEAT):
         """`[(y, above, below), ...]`: for each analysis label a fitted view
         draws, the curve's height it points at (data units) and how far the
         label and its arrow reach above and below that point (drawing units).
@@ -612,7 +601,7 @@ class PlotWidget(QWidget):
         lo, hi = self.view_x()
         base = self.figure_font()
         out = []
-        for trace in self.drawable():
+        for trace in self.drawable_of(signal):
             for analysis in trace.scan.visible_analyses():
                 value = self.label_celsius(analysis)
                 if value is None:
@@ -636,45 +625,42 @@ class PlotWidget(QWidget):
                             max(0.0, half - offset), max(0.0, half + offset)))
         return out
 
-    def _curves_y(self):
-        """The curves' y range, with `y_margin` of it either side."""
+    def _curves_y(self, signal=model.SIGNAL_HEAT):
+        """One axis's curves' y range, with `y_margin` of it either side:
+        the heat flow's (-1 to 1 with none) or the mass's (0 to 100)."""
         lows, highs = [], []
-        for trace in self.drawable():
-            span = _finite_span(trace.y)
+        memo = self.__dict__.setdefault("_span_memo", {})
+        for trace in self.drawable_of(signal):
+            key = ("y", id(trace.y))
+            if key not in memo:
+                memo[key] = _finite_span(trace.y)
+            span = memo[key]
             if span is not None:
                 lows.append(span[0])
                 highs.append(span[1])
         for trace in self.traces:
-            if trace.missing is not None:
+            if (trace.missing is not None and getattr(
+                    trace.scan, "signal", model.SIGNAL_HEAT) == signal):
                 lows.append(float(trace.scan.offset))
                 highs.append(float(trace.scan.offset))
         if not lows:
-            return (-1.0, 1.0)
+            return ((0.0, 100.0) if signal == model.SIGNAL_MASS
+                    else (-1.0, 1.0))
         lo, hi = min(lows), max(highs)
         if hi <= lo:
             lo, hi = lo - 0.5, hi + 0.5
-        pad = (hi - lo) * float(self.y_margin)
-        return (lo - pad, hi + pad)
+        span = hi - lo
+        return (lo - span * self.fit_pad("bottom"),
+                hi + span * self.fit_pad("top"))
 
     def data_y2(self):
-        """The weight axis fitted: every drawn weight curve, 6 % either
-        side; 0 to 100 with none."""
-        lows, highs = [], []
-        for trace in self.weight_traces:
-            span = _finite_span(trace.y)
-            if span is not None:
-                lows.append(span[0])
-                highs.append(span[1])
-        if not lows:
-            return (0.0, 100.0)
-        lo, hi = min(lows), max(highs)
-        if hi <= lo:
-            lo, hi = lo - 0.5, hi + 0.5
-        pad = (hi - lo) * float(self.y_margin)
-        return (lo - pad, hi + pad)
+        """The mass axis fitted, like `data_y`: every drawn mass curve and
+        the analysis labels on them (a mass-at-temperature marker hangs
+        above its point)."""
+        return self._memo_fit(model.SIGNAL_MASS)
 
     def view_y2(self):
-        return self._view_y2 or self.data_y2()
+        return self._view_y2 or self.kept_fit("y2")
 
     def set_view_y2(self, lo, hi):
         if hi > lo:
@@ -683,8 +669,8 @@ class PlotWidget(QWidget):
             self.view_changed.emit()
 
     def y2_shown(self):
-        """True while a weight curve is drawn: then the second y axis is."""
-        return bool(getattr(self, "weight_traces", None))
+        """True while the mass axis is drawn."""
+        return self.mass_shown()
 
     def y2_to_px(self, value, rect=None, view=None):
         return self.y_to_px(value, rect, view or self.view_y2())
@@ -693,10 +679,56 @@ class PlotWidget(QWidget):
         return self.px_to_y(px, rect, view or self.view_y2())
 
     def view_x(self):
-        return self._view_x or self.data_x()
+        return self._view_x or self.kept_fit("x")
 
     def view_y(self):
-        return self._view_y or self.data_y()
+        return self._view_y or self.kept_fit("y")
+
+    def kept_fit(self, which):
+        """An unframed axis's range: the fit, worked out ONCE and kept
+        (Christian, 2026-09-29: "no matter what you do, the plot is
+        automatically rescaled without even pressing F" - a label moved, an
+        analysis arrow lengthened). It is worked out again by F, and when
+        the set of curves on that axis changes (one shown or hidden, a
+        unit, a truncation) - never because something moved."""
+        signature = self._fit_signature(which)
+        kept = self.__dict__.setdefault("_kept_fits", {}).get(which)
+        if kept is not None and kept[0] == signature:
+            return kept[1]
+        value = {"x": self.data_x, "y": self.data_y,
+                 "y2": self.data_y2}[which]()
+        # Not while a fit is being worked out: the inner range asked for
+        # there is the curves' alone (`_fit_y`).
+        if not getattr(self, "_fitting", False):
+            self._kept_fits[which] = (signature, value)
+        return value
+
+    def _fit_signature(self, which):
+        """What an axis's fit depends on besides where things were moved:
+        which curves are on it, their truncation, the units, the exo flip,
+        the fit margins."""
+        doc = self.doc
+        if doc is None:
+            return None
+        if which == "x":
+            traces = self.drawable()
+            extra = (doc.x_axis, getattr(doc, "x_unit", ""),
+                     self.fit_pad("left"), self.fit_pad("right"))
+        else:
+            signal = model.SIGNAL_MASS if which == "y2" else model.SIGNAL_HEAT
+            traces = [t for t in self.traces if getattr(
+                t.scan, "signal", model.SIGNAL_HEAT) == signal]
+            extra = (doc.x_axis, doc.exo, doc.unit_for(traces[0].scan)
+                     if traces else "", self.fit_pad("bottom"),
+                     self.fit_pad("top"))
+        return (tuple(sorted((id(t.scan), tuple(t.scan.keep),
+                              t.missing is None) for t in traces)) + extra)
+
+    def forget_fit(self, *which):
+        """Work the fit out again next time (all axes without names)."""
+        kept = self.__dict__.setdefault("_kept_fits", {})
+        for name in (which or ("x", "y", "y2")):
+            kept.pop(name, None)
 
     def set_view_x(self, lo, hi):
         if hi > lo:
@@ -779,11 +811,13 @@ class PlotWidget(QWidget):
         return True
 
     def at_home_x(self):
-        return self._view_x is None or _close(self._view_x, self.data_x())
+        """True when F would not change x: what is shown IS the fit."""
+        return _close(self.view_x(), self.data_x())
 
     def at_home_y(self):
-        return ((self._view_y is None or _close(self._view_y, self.data_y()))
-                and self._view_y2 is None)
+        return (_close(self.view_y(), self.data_y())
+                and (not self.mass_shown()
+                     or _close(self.view_y2(), self.data_y2())))
 
     def reset_view(self):
         """`F`: x first, then y. Staged, the way the PXRD window does it -
@@ -794,8 +828,10 @@ class PlotWidget(QWidget):
         self._view_begin("fit")
         if not self.at_home_x():
             self._view_x = None
+            self.forget_fit("x")
         else:
             self._view_y = self._view_y2 = None
+            self.forget_fit("y", "y2")
         self.invalidate()
         self.view_changed.emit()
         self.commit_view()
@@ -804,6 +840,7 @@ class PlotWidget(QWidget):
     def fit(self):
         self._view_begin("fit")
         self._view_x = self._view_y = self._view_y2 = None
+        self.forget_fit()
         self.invalidate()
         self.view_changed.emit()
         self.commit_view()
@@ -1109,15 +1146,31 @@ class PlotWidget(QWidget):
         return sides["left"], sides["right"], sides["top"], sides["bottom"]
 
     def shown_axes(self):
-        """The axes drawn: x and y, and the weight axis while a weight
-        curve is on the figure."""
+        """The axes drawn: x, the mass axis while a mass scan is shown, and
+        the heat flow's while a heat flow scan is (or nothing is) - a TGA
+        figure has no heat flow axis at all (Christian, 2026-09-28)."""
         doc = self.doc
         if doc is None:
             return []
-        out = [doc.axes["x"], doc.axes["y"]]
-        if "y2" in doc.axes and self.y2_shown():
+        return [doc.axes["x"]] + self.shown_y_axes()
+
+    def shown_y_axes(self):
+        """The y axes drawn, the MAIN one first."""
+        doc = self.doc
+        if doc is None:
+            return []
+        out = []
+        if self.mass_shown():
             out.append(doc.axes["y2"])
+        if self.heat_shown():
+            out.append(doc.axes["y"])
         return out
+
+    def y_mirrored(self, axis):
+        """True when a y axis closes the box on the far side: its own
+        setting, while it is the only y axis (two have a side each)."""
+        return (bool(getattr(axis, "mirror", False))
+                and len(self.shown_y_axes()) < 2)
 
     def overflow(self):
         """`[(side, needed, set), ...]` in drawing units, for each margin of
@@ -1132,17 +1185,21 @@ class PlotWidget(QWidget):
         return out
 
     def axis_side(self, axis):
-        """Which side of the axes box an axis is drawn on. The weight axis
-        is always OPPOSITE the heat flow's (round 25)."""
+        """Which side of the axes box an axis is drawn on. The heat flow
+        axis's `side` is the MAIN side; the mass axis takes it whenever it
+        is drawn, and the heat flow then goes to the other (Christian,
+        2026-09-28: "m% left")."""
         side = getattr(axis, "side", None)
         if axis.which == "x":
             return side if side in ("bottom", "top") else "bottom"
+        doc = self.doc
+        main = (doc.axes["y"].side if doc is not None
+                and doc.axes["y"].side in ("left", "right") else "left")
         if axis.which == "y2":
-            doc = self.doc
-            heat = (self.axis_side(doc.axes["y"]) if doc is not None
-                    else "left")
-            return "right" if heat == "left" else "left"
-        return side if side in ("left", "right") else "left"
+            return main
+        if self.mass_shown():
+            return "right" if main == "left" else "left"
+        return main
 
     def axis_reach(self, axis):
         """How far an axis's ticks, numbers and caption reach out from the
@@ -1214,7 +1271,9 @@ class PlotWidget(QWidget):
         spec = getattr(axis, "number_format", None)
         if spec:
             return numbers.write(value, spec)
-        return "{:g}".format(round(value, 6 if which == "x" else 10))
+        # "+ 0.0": a tick stepped onto zero in floating point is -2.8e-17,
+        # which rounds to -0.0 and was written "-0" (GQ-empty, round 25).
+        return "{:g}".format(round(value, 6 if which == "x" else 10) + 0.0)
 
     def plot_rect(self):
         """The axes box, in drawing units - FRACTIONAL, so an exact margin
@@ -1246,10 +1305,81 @@ class PlotWidget(QWidget):
         lo, hi = view or self.view_y()
         return lo + (1.0 - (px - rect.top()) / max(1.0, rect.height())) * (hi - lo)
 
-    def y_per_px(self, rect=None):
+    def y_per_px(self, rect=None, scan=None):
         rect = rect or self.plot_rect()
-        lo, hi = self.view_y()
+        lo, hi = self.view_for(scan) if scan is not None else self.view_y()
         return (hi - lo) / max(1.0, rect.height())
+
+    # A MASS scan is drawn against the mass axis (`doc.axes["y2"]`), every
+    # other one against the heat flow's (Christian, 2026-09-28). Anything
+    # placed at one scan's height maps through these, never through the
+    # heat flow's `y_to_px` alone.
+    def view_for(self, scan):
+        """The y range a scan is drawn against."""
+        return (self.view_y2() if getattr(scan, "is_mass", False)
+                else self.view_y())
+
+    def sy_to_px(self, scan, value, rect=None):
+        """`y_to_px` on `scan`'s own axis."""
+        return self.y_to_px(value, rect, self.view_for(scan))
+
+    def px_to_sy(self, scan, px, rect=None):
+        """`px_to_y` on `scan`'s own axis."""
+        return self.px_to_y(px, rect, self.view_for(scan))
+
+    def mass_shown(self):
+        """True while a mass scan is switched on: the mass axis is drawn,
+        on the main side."""
+        doc = self.doc
+        return bool(doc is not None and doc.shows(model.SIGNAL_MASS))
+
+    def heat_shown(self):
+        """True while a heat flow scan is switched on, or nothing is (an
+        empty figure is a DSC figure until a mass is shown)."""
+        doc = self.doc
+        if doc is None:
+            return True
+        return (doc.shows(model.SIGNAL_HEAT)
+                or not doc.shows(model.SIGNAL_MASS))
+
+    def main_axis(self):
+        """"y2" while a mass is shown - it takes the main side, and the
+        wheel, the pinch and the pans work on it - else "y"."""
+        return "y2" if self.mass_shown() else "y"
+
+    def main_view(self):
+        return self.view_y2() if self.main_axis() == "y2" else self.view_y()
+
+    def set_main_view(self, lo, hi):
+        if self.main_axis() == "y2":
+            self.set_view_y2(lo, hi)
+        else:
+            self.set_view_y(lo, hi)
+
+    def _set_main_stored(self, pair):
+        """Store a main-axis range without the redraw `set_main_view`
+        asks for (a pan in progress blits the cache)."""
+        if self.main_axis() == "y2":
+            self._view_y2 = pair
+        else:
+            self._view_y = pair
+
+    def artist_scan(self, artist):
+        """The scan whose axis an artist placed in data units is on: its
+        parent's, for a label that belongs to a scan; else None, the main
+        axis's."""
+        return getattr(artist, "scan", None)
+
+    def ay_to_px(self, artist, value, rect=None):
+        """`y_to_px` for an artist in data units (see `artist_scan`)."""
+        scan = self.artist_scan(artist)
+        view = self.view_for(scan) if scan is not None else self.main_view()
+        return self.y_to_px(value, rect, view)
+
+    def px_to_ay(self, artist, px, rect=None):
+        scan = self.artist_scan(artist)
+        view = self.view_for(scan) if scan is not None else self.main_view()
+        return self.px_to_y(px, rect, view)
 
     # ------------------------------------------------------------ navigation
     def cycle_mode(self, cycle):
@@ -1473,11 +1603,11 @@ class PlotWidget(QWidget):
         """Zoom the view about the cursor: y always, x as well when `both`."""
         if factor <= 0:
             return
-        lo, hi = self.view_y()
-        anchor = self.px_to_y(pos.y())
+        lo, hi = self.main_view()
+        anchor = self.px_to_y(pos.y(), view=(lo, hi))
         span = (hi - lo) / factor
         frac = (anchor - lo) / max(hi - lo, 1e-12)
-        self.set_view_y(anchor - span * frac, anchor + span * (1 - frac))
+        self.set_main_view(anchor - span * frac, anchor + span * (1 - frac))
         if both:
             lo, hi = self.view_x()
             anchor = self.px_to_x(pos.x())
@@ -1486,21 +1616,22 @@ class PlotWidget(QWidget):
             self.set_view_x(anchor - span * frac, anchor + span * (1 - frac))
 
     def scale_y(self, factor):
-        """Scale the y axis about y = 0: zero keeps its place on screen."""
+        """Scale the main y axis about y = 0: zero keeps its place on
+        screen. (The other y axis, when both are drawn, follows M and F.)"""
         if factor <= 0:
             return
-        lo, hi = self.view_y()
-        self.set_view_y(lo / factor, hi / factor)
+        lo, hi = self.main_view()
+        self.set_main_view(lo / factor, hi / factor)
 
     def pan_by(self, dx_px, dy_px):
         """Move the view by a distance in PIXELS."""
         rect = self.plot_rect()
         x0, x1 = self.view_x()
-        y0, y1 = self.view_y()
+        y0, y1 = self.main_view()
         dx = dx_px / max(1.0, rect.width()) * (x1 - x0)
         dy = -dy_px / max(1.0, rect.height()) * (y1 - y0)
         self._view_x = (x0 + dx, x1 + dx)
-        self._view_y = (y0 + dy, y1 + dy)
+        self._set_main_stored((y0 + dy, y1 + dy))
         self.invalidate()
         self.view_changed.emit()
 
@@ -1552,6 +1683,13 @@ class PlotWidget(QWidget):
             near(doc.legend, legend_box, -model.z_of(doc.legend))
         for label, box in self._text_boxes:
             near(label, box, -model.z_of(label))
+        rect_now = self.plot_rect()
+        for label in doc.labels:
+            x = self.vline_px(label, rect_now) if label.visible else None
+            if (x is not None and rect_now.top() <= point.y()
+                    <= rect_now.bottom() and abs(point.x() - x) <= radius):
+                hits.append((abs(point.x() - x), -model.z_of(label), label,
+                             None))
         for image, box in getattr(self, "_image_boxes", ()):
             near(image, box, -model.z_of(image))
         for analysis, box in self._analysis_boxes:
@@ -1577,11 +1715,6 @@ class PlotWidget(QWidget):
             gap = self._gap_to(trace, point)
             if gap is not None and gap <= radius:
                 hits.append((gap, -model.z_of(trace.scan), trace.scan, None))
-        for trace in getattr(self, "weight_traces", ()):
-            gap = self._gap_to(trace, point)
-            if gap is not None and gap <= radius:
-                hits.append((gap, -model.z_of(trace.weight), trace.weight,
-                             None))
         hits.sort(key=lambda hit: (hit[0], hit[1]))
         found = []
         for _gap, _rank, obj, axis_hit in hits:
@@ -1609,7 +1742,7 @@ class PlotWidget(QWidget):
         for trace in self.traces:
             if trace.px is None or not len(trace.px):
                 if trace.missing is not None:
-                    gap = abs(self.y_to_px(trace.scan.offset) - pos.y())
+                    gap = abs(self.sy_to_px(trace.scan, trace.scan.offset) - pos.y())
                     if gap < best_gap:
                         best, best_gap = trace, gap
                 continue
@@ -1623,7 +1756,7 @@ class PlotWidget(QWidget):
         """How far `pos` is from a drawn curve, or None."""
         if trace.px is None or not len(trace.px):
             if getattr(trace, "missing", None) is not None:
-                return abs(self.y_to_px(trace.scan.offset) - pos.y())
+                return abs(self.sy_to_px(trace.scan, trace.scan.offset) - pos.y())
             return None
         return float(np.min(np.hypot(trace.px - pos.x(), trace.py - pos.y())))
 
@@ -1678,7 +1811,7 @@ class PlotWidget(QWidget):
         for trace in self.traces:
             if trace.px is None or not len(trace.px):
                 if trace.missing is not None:
-                    y = self.y_to_px(trace.scan.offset)
+                    y = self.sy_to_px(trace.scan, trace.scan.offset)
                     if box.top() <= y <= box.bottom():
                         chosen.append(trace.scan)
                 continue
@@ -1794,6 +1927,12 @@ class PlotWidget(QWidget):
           the data.
         * a scan: its offset, in data units.
         """
+        if isinstance(obj, model.TextLabel) and getattr(obj, "vline",
+                                                        None) is not None:
+            return ("vline", "x", "y")
+        if isinstance(obj, model.TextLabel) and getattr(obj, "leader",
+                                                        None):
+            return ("x", "y", "leader")
         if PlotWidget.is_artist(obj):
             return ("x", "y")
         if isinstance(obj, model.OffsetMarker):
@@ -1802,8 +1941,6 @@ class PlotWidget(QWidget):
             return ("label_dy", "label_at")
         if isinstance(obj, model.Axis):
             return ("label_along", "label_gap")
-        if isinstance(obj, model.WeightCurve):
-            return ()                  # it is where the file puts it
         return ("offset",)
 
     def _value_of(self, obj):
@@ -1821,6 +1958,12 @@ class PlotWidget(QWidget):
             # The sample it is DRAWN at, so a drag starts under the hand
             # (and a moved marker is pinned to a point ON its curve).
             return (self.marker_at(obj), self.marker_dy(obj))
+        if isinstance(obj, model.TextLabel) and getattr(obj, "vline",
+                                                        None) is not None:
+            return (float(obj.vline), float(obj.x), float(obj.y))
+        if isinstance(obj, model.TextLabel) and getattr(obj, "leader",
+                                                        None):
+            return (float(obj.x), float(obj.y), tuple(obj.leader))
         # `style_of`, not getattr: a caption's gap is None until dragged.
         return tuple(float(self.style_of(obj, name))
                      for name in self._fields_of(obj))
@@ -1874,6 +2017,10 @@ class PlotWidget(QWidget):
         return -46.0
 
     def _apply_value(self, obj, value):
+        if getattr(obj, "vline", None) is not None and len(value) > 2:
+            obj.vline, obj.x, obj.y = (float(value[0]), float(value[1]),
+                                       float(value[2]))
+            return
         if self.is_artist(obj):
             # Clamped only where the numbers ARE fractions. A data-space
             # artist stores a temperature and a heat flow, and clamping those
@@ -1883,6 +2030,8 @@ class PlotWidget(QWidget):
             else:
                 obj.x = float(min(0.99, max(0.01, value[0])))
                 obj.y = float(min(0.99, max(0.01, value[1])))
+            if len(value) > 2 and isinstance(obj, model.TextLabel):
+                obj.leader = list(value[2]) if value[2] else None
         elif isinstance(obj, model.Analysis):
             obj.label_dy = float(value[0])
             if len(value) > 1:
@@ -1924,9 +2073,12 @@ class PlotWidget(QWidget):
         """Where an artist stood when the gesture began, in pixels (a
         label with a parent as drawn, following its scan)."""
         follow = self.follow_px(artist, rect)
+        if getattr(artist, "vline", None) is not None and len(origin) > 2:
+            return (float(self.x_to_px(self.to_axis(origin[0]), rect)),
+                    rect.top() + float(origin[2]) * rect.height())
         if getattr(artist, "space", model.SPACE_RELATIVE) == model.SPACE_DATA:
             return (float(self.x_to_px(origin[0], rect)),
-                    float(self.y_to_px(origin[1], rect)) + follow)
+                    float(self.ay_to_px(artist, origin[1], rect)) + follow)
         return (rect.left() + float(origin[0]) * rect.width(),
                 rect.top() + float(origin[1]) * rect.height() + follow)
 
@@ -1938,6 +2090,31 @@ class PlotWidget(QWidget):
             return float(state["typed"].replace(",", "."))
         except ValueError:
             return None
+
+    def _typed_px(self, artist, typed, axis, rect):
+        """`(dx, dy)` in pixels for a typed distance `typed` in the axes'
+        units: x with an X lock, else y (up is more) on the artist's axis."""
+        if axis == "x":
+            lo, hi = self.view_x()
+            return typed / max(hi - lo, 1e-12) * rect.width(), 0.0
+        scan = self.artist_scan(artist)
+        lo, hi = (self.view_for(scan) if scan is not None
+                  else self.main_view())
+        return 0.0, -typed / max(hi - lo, 1e-12) * rect.height()
+
+    def _typed_unit(self, artist, axis):
+        """The unit a typed distance for `artist` is in."""
+        doc = self.doc
+        if doc is None:
+            return ""
+        if axis == "x":
+            if doc.x_axis != model.AXIS_TEMPERATURE:
+                return "min"
+            return units.TEMPERATURE_LABEL.get(doc.x_unit, doc.x_unit)
+        scan = self.artist_scan(artist)
+        if scan is not None:
+            return doc.unit_for(scan)
+        return doc.weight_unit if self.main_axis() == "y2" else doc.y_unit
 
     def _update_move(self, pos, mods=Qt.NoModifier):
         """Move everything in the gesture to where the cursor now is.
@@ -1966,13 +2143,23 @@ class PlotWidget(QWidget):
             dx_px = 0.0
         for obj, origin in zip(state["objs"], state["origin"]):
             if self.is_artist(obj):
-                # A typed number is not offered for an artist: "0.25" says
-                # nothing about a position on a plot, and the drag is the
-                # gesture that means something here. Worked in PIXELS and
-                # handed back in the artist's own space, so a data-space
-                # artist moves under the hand exactly like a relative one.
+                # Worked in PIXELS and handed back in the artist's own
+                # space, so a data-space artist moves under the hand
+                # exactly like a relative one. A typed number is a distance
+                # in the AXES' units (Christian, 2026-09-28: "I cannot type
+                # numbers when moving decorator objects"): along x with X,
+                # in the x axis's unit; otherwise up, in its y axis's.
+                if (axis == "x" and typed is None
+                        and isinstance(obj, model.TextLabel)
+                        and obj.leader and obj.scan is not None
+                        and self._slide_note(obj, origin, dx_px, rect)):
+                    self.keep_inside(obj, rect)
+                    continue
+                move_x, move_y = dx_px, dy_px
+                if typed is not None:
+                    move_x, move_y = self._typed_px(obj, typed, axis, rect)
                 ox, oy = self._artist_origin_px(obj, origin, rect)
-                self.set_artist_point(obj, ox + dx_px, oy + dy_px, rect,
+                self.set_artist_point(obj, ox + move_x, oy + move_y, rect,
                                       clamp=False)
                 self.keep_inside(obj, rect)
                 continue
@@ -2014,9 +2201,13 @@ class PlotWidget(QWidget):
             if typed is not None:
                 delta = typed
             else:
-                delta = -dy_px * self.y_per_px(rect)   # up on screen is more
+                own = obj if isinstance(obj, model.Scan) else None
+                # up on screen is more, in the scan's own axis's unit
+                delta = -dy_px * self.y_per_px(rect, own)
                 if mods & Qt.ControlModifier:
-                    snap = _nice_step(self.view_y()[1] - self.view_y()[0], 20)
+                    lo, hi = (self.view_for(own) if own is not None
+                              else self.view_y())
+                    snap = _nice_step(hi - lo, 20)
                     delta = round(delta / snap) * snap
             self._apply_value(obj, (origin[0] + delta,))
         for obj in state["objs"]:
@@ -2157,6 +2348,12 @@ class PlotWidget(QWidget):
         if doc is None or self._move is not None or self._scale is not None:
             return False
         listed = [s for s in doc.scans if s in scans and s.visible]
+        # One axis at a time: heat flows and masses are in different units,
+        # and a step means something only in one of them.
+        if listed:
+            signal = getattr(listed[0], "signal", model.SIGNAL_HEAT)
+            listed = [s for s in listed
+                      if getattr(s, "signal", model.SIGNAL_HEAT) == signal]
         if len(listed) < 2:
             return False
         ordered = sorted(listed, key=lambda s: (float(s.offset),
@@ -2172,17 +2369,28 @@ class PlotWidget(QWidget):
                      for t in self.traces
                      if t.scan in ordered and t.y is not None and len(t.y)]
             step = 0.6 * max(spans) if spans else 1.0
-        zero = self.y_to_px(0.0)
+        # The neutral line: y = 0 where the axis shows it, else the level of
+        # the curve that stays put - a mass axis runs 80 to 100 %, where a
+        # distance from 0 made every step huge (Christian, 2026-09-29).
+        lo, hi = self.view_for(ordered[0])
+        level = 0.0
+        if not lo <= 0.0 <= hi:
+            level = self._curve_level(ordered[anchor])
+        zero = self.sy_to_px(ordered[0], level)
         cursor = self._cursor or QPointF(self.plot_rect().center())
         # The frame holds still under the hand; a fitted one fits the new
         # stack once it is let go.
-        framed = self._view_y
-        self._view_y = self.view_y()
+        mass = getattr(ordered[0], "is_mass", False)
+        framed = self._view_y2 if mass else self._view_y
+        if mass:
+            self._view_y2 = self.view_y2()
+        else:
+            self._view_y = self.view_y()
         self._scale = {"mode": "spread", "entries": [], "scans": ordered,
                        "framed": framed,
                        "anchor": anchor, "base": step, "step": step,
                        "stored": [s.offset for s in ordered], "typed": "",
-                       "zero": zero,
+                       "zero": zero, "level": level,
                        "start": max(abs(cursor.y() - zero), 20.0),
                        "factor": 1.0, "turn": 0.0, "pivot": (0.0, 0.0),
                        "last": None}
@@ -2190,6 +2398,16 @@ class PlotWidget(QWidget):
         self._transform_readout()
         self.update()
         return True
+
+    def _curve_level(self, scan):
+        """A drawn curve's middle height, in its axis's unit (its offset
+        in), or 0 when it is not drawn."""
+        trace = self._trace_of(scan)
+        if trace is None or trace.y is None or not len(trace.y):
+            return 0.0
+        values = np.asarray(trace.y, dtype=float)
+        values = values[np.isfinite(values)]
+        return float(np.median(values)) if len(values) else 0.0
 
     @staticmethod
     def _round_step(step):
@@ -2301,6 +2519,9 @@ class PlotWidget(QWidget):
 
     def _centre_of_pivots(self):
         points = [self._pivot_point(e) for e in self._scale["entries"]]
+        if not points:
+            centre = self.plot_rect().center()
+            return centre.x(), centre.y()
         return (sum(p[0] for p in points) / len(points),
                 sum(p[1] for p in points) / len(points))
 
@@ -2362,7 +2583,8 @@ class PlotWidget(QWidget):
     def _transform_readout(self):
         state = self._scale
         if state["mode"] == "spread":
-            unit = self.doc.y_unit if self.doc is not None else ""
+            unit = (self.doc.unit_for(state["scans"][0])
+                    if self.doc is not None else "")
             text = ("SPREAD {} scans {:.4g} {} apart about y = 0 - away from "
                     "0 wider, type the step, Ctrl round, Enter, Esc").format(
                         len(state["scans"]), state["step"], unit)
@@ -2465,7 +2687,10 @@ class PlotWidget(QWidget):
             changes = ([] if cancel else
                        [(s, "offset", v) for s, v, old in
                         zip(state["scans"], now, state["stored"]) if v != old])
-            self._view_y = state["framed"]
+            if getattr(state["scans"][0], "is_mass", False):
+                self._view_y2 = state["framed"]
+            else:
+                self._view_y = state["framed"]
             self.rebuild()
             self.mode_changed.emit(self.MODE_TEXT.get(self._mode,
                                                        self.SELECT_TEXT))
@@ -2538,14 +2763,20 @@ class PlotWidget(QWidget):
         rect = self.plot_rect()
         p.setRenderHint(QPainter.Antialiasing, True)
         if state["mode"] == "spread":
-            # The neutral line, and the pointer's distance from it.
-            zero = self.y_to_px(0.0, rect)
+            # The neutral line, and the pointer's distance from it. Nothing
+            # else: a spread has no boxes and no pivots (drawing a line to
+            # "the centre of the pivots" divided by zero mid-paint, and that
+            # took the whole program down).
+            zero = self.sy_to_px(state["scans"][0], state.get("level", 0.0),
+                                 rect)
             p.setPen(QPen(_SELECT, 1.0, Qt.DashLine))
             p.drawLine(QPointF(rect.left(), zero), QPointF(rect.right(), zero))
             if self._cursor is not None:
                 p.setPen(QPen(_CURSOR, 1.0, Qt.DashLine))
                 p.drawLine(QPointF(self._cursor.x(), zero),
                            QPointF(self._cursor))
+            p.setRenderHint(QPainter.Antialiasing, False)
+            return
         for entry in state["entries"]:
             obj = entry["obj"]
             box = self.artist_box(obj, rect)
@@ -2636,7 +2867,7 @@ class PlotWidget(QWidget):
             return None
         rect = rect or self.plot_rect()
         px = self.x_to_px(trace.x, rect)
-        py = self.y_to_px(trace.y, rect)
+        py = self.sy_to_px(trace.scan, trace.y, rect)
         gaps = np.hypot(px - pos.x(), py - pos.y())
         if not np.isfinite(gaps).any():
             return None
@@ -2653,7 +2884,7 @@ class PlotWidget(QWidget):
         rect = rect or self.plot_rect()
         local = int(_clamp(int(index) - trace.first, 0, len(trace.x) - 1))
         return QPointF(float(self.x_to_px(trace.x[local], rect)),
-                       float(self.y_to_px(trace.y[local], rect)))
+                       float(self.sy_to_px(trace.scan, trace.y[local], rect)))
 
     def _celsius_at(self, px):
         """The file's Celsius under a pixel column, whatever the axis shows."""
@@ -3187,8 +3418,9 @@ class PlotWidget(QWidget):
             rect = self.plot_rect()
             self._drag = {"px": pos.x(), "py": pos.y(),
                           "x": self.px_to_x(pos.x(), rect),
-                          "y": self.px_to_y(pos.y(), rect),
-                          "view_x": self.view_x(), "view_y": self.view_y(),
+                          "y": self.px_to_y(pos.y(), rect, self.main_view()),
+                          "view_x": self.view_x(),
+                          "view_y": self.main_view(),
                           "mode": self._mode}
             self._view_begin("zoom" if self._mode.startswith("zoom")
                              else "pan")
@@ -3364,7 +3596,7 @@ class PlotWidget(QWidget):
             if drag["mode"] in ("pan_h", "pan_free"):
                 self._view_x = (x0 + dx, x1 + dx)
             if drag["mode"] in ("pan_v", "pan_free"):
-                self._view_y = (y0 + dy, y1 + dy)
+                self._set_main_stored((y0 + dy, y1 + dy))
             self.update()                  # blit the cache, rebuild on release
             self.view_changed.emit()
             return
@@ -3457,7 +3689,7 @@ class PlotWidget(QWidget):
         if mode in ("zoom_h", "zoom_box") and abs(x1 - drag["x"]) > 1e-12:
             self.set_view_x(min(drag["x"], x1), max(drag["x"], x1))
         if mode in ("zoom_v", "zoom_box") and abs(y1 - drag["y"]) > 1e-12:
-            self.set_view_y(min(drag["y"], y1), max(drag["y"], y1))
+            self.set_main_view(min(drag["y"], y1), max(drag["y"], y1))
         self.commit_view()
         self.update()
 
@@ -3593,26 +3825,32 @@ class PlotWidget(QWidget):
         if doc is None:
             return ""
         x = self.px_to_x(pos.x())
-        y = self.px_to_y(pos.y())
+        main_unit = (doc.weight_unit if self.main_axis() == "y2"
+                     else doc.y_unit)
+        y = self.px_to_y(pos.y(), view=self.main_view())
         x_name = "T" if doc.x_axis == model.AXIS_TEMPERATURE else "t"
         x_unit = "°C" if doc.x_axis == model.AXIS_TEMPERATURE else "min"
         text = "{} = {:.3f} {}   y = {:.5g} {}".format(
-            x_name, x, x_unit, y, doc.y_unit)
+            x_name, x, x_unit, y, main_unit)
         trace = self._trace_at(pos)
         if trace is not None:
             text += "   |   {}".format(trace.name)
             if trace.missing:
                 text += "   NO {}".format(trace.missing.upper())
             elif trace.scan.offset:
-                text += "   offset {:+.5g} {}".format(trace.scan.offset,
-                                                      doc.y_unit)
+                text += "   offset {:+.5g} {}".format(
+                    trace.scan.offset, doc.unit_for(trace.scan))
         return text
 
     def _move_readout(self):
         state = self._move
         if state is None:
             return ""
-        unit = self.doc.y_unit if self.doc else ""
+        first = state["objs"][0]
+        unit = ((self.doc.unit_for(first) if isinstance(first, model.Scan)
+                 else self.doc.y_unit) if self.doc else "")
+        if self.is_artist(first):
+            unit = self._typed_unit(first, state.get("axis"))
         if state["typed"]:
             return "GRAB {} {}   (Enter to confirm, Esc to cancel)".format(
                 state["typed"], unit)
@@ -3641,8 +3879,7 @@ class PlotWidget(QWidget):
 
     # -------------------------------------------------------------- blinking
     def _sync_blink(self):
-        need = (any(t.missing for t in self.traces)
-                or bool(getattr(self, "weight_missing", None)))
+        need = any(t.missing for t in self.traces)
         if need and not self._blink_timer.isActive():
             self._blink_timer.start()
         elif not need and self._blink_timer.isActive():
@@ -3713,7 +3950,17 @@ class PlotWidget(QWidget):
                       for t in self.traces))
 
     def paintEvent(self, _ev):
+        # The painter is ENDED whatever happens: a Python error while it was
+        # open (between a save and its restore) did not stay a logged error
+        # - Qt was left with a half-used painter and the process died with
+        # an access violation (the S spread, round 24).
         painter = QPainter(self)
+        try:
+            self._paint_widget(painter)
+        finally:
+            painter.end()
+
+    def _paint_widget(self, painter):
         drag = self._drag
         if (drag is not None and drag["mode"].startswith("pan")
                 and self._cache is not None and self._cursor is not None):
@@ -3833,55 +4080,36 @@ class PlotWidget(QWidget):
         export can carry it.
         """
         shown = self.hidden_shown()
-        weights = self.hidden_weights_shown()
-        if not shown and not weights:
+        if not shown:
             return
         rect = self.plot_rect()
         limit = max(50, 2 * rect.width())
         p.setRenderHint(QPainter.Antialiasing, True)
-        # A dashed weight's hidden ends DOTTED, or they would not show as
-        # the part that is cut.
-        for group, to_py, dash in ((shown, self.y_to_px, Qt.DashLine),
-                                   (weights, self.y2_to_px, Qt.DotLine)):
-            for trace in group:
-                colour = (trace_colour(trace) if isinstance(trace, Trace)
-                          else QColor(for_light(trace.scan.colour)
-                                      if THEME == THEME_LIGHT
-                                      else trace.scan.colour))
-                colour.setAlpha(170)
-                pen = QPen(colour, self.style_of(trace.scan, "line_width")
-                           * CURVE_WIDTH, dash)
-                p.setPen(pen)
-                for x, y in trace.hidden:
-                    stride = max(1, int(len(x) // limit))
-                    # Flagged samples (NaN) break the line; a NaN point
-                    # in a polyline draws nothing sensible.
-                    for xs, ys in _finite_runs(x[::stride], y[::stride]):
-                        p.drawPolyline(_polyline(self.x_to_px(xs, rect),
-                                                 to_py(ys, rect)))
+        for trace in shown:
+            colour = trace_colour(trace)
+            colour.setAlpha(170)
+            pen = QPen(colour, self.style_of(trace.scan, "line_width")
+                       * CURVE_WIDTH, Qt.DashLine)
+            p.setPen(pen)
+            for x, y in trace.hidden:
+                stride = max(1, int(len(x) // limit))
+                # Flagged samples (NaN) break the line; a NaN point in a
+                # polyline draws nothing sensible.
+                for xs, ys in _finite_runs(x[::stride], y[::stride]):
+                    p.drawPolyline(_polyline(
+                        self.x_to_px(xs, rect),
+                        self.sy_to_px(trace.scan, ys, rect)))
         p.setRenderHint(QPainter.Antialiasing, False)
 
-    def hidden_weights_shown(self):
-        """The weight curves whose truncated ends are on screen now: while
-        the weight or its scan is hovered or selected."""
-        cursor = self._cursor if self._move is None else None
-        hovered = self._trace_at(cursor) if cursor is not None else None
-        near = None
-        if cursor is not None:
-            radius = self.pick_radius()
-            for trace in getattr(self, "weight_traces", ()):
-                gap = self._gap_to(trace, cursor)
-                if gap is not None and gap <= radius:
-                    near = trace
-                    break
-        return [t for t in getattr(self, "weight_traces", ())
-                if t.hidden and (t is near or t.weight.selected
-                                 or t.scan.selected
-                                 or (hovered is not None
-                                     and hovered.scan is t.scan))]
+    def page_colour(self):
+        """The page: its own colour (`Document.background`) or the
+        theme's."""
+        own = getattr(self.doc, "background", None) if self.doc else None
+        return QColor(own) if own else QColor(_BG)
 
     def _surround(self):
-        return (_BG if self.layout_mode() == figure_module.MODE_WINDOW
+        return (self.page_colour()
+                if self.layout_mode() == figure_module.MODE_WINDOW
                 and not self.page_zoomed() else _SURROUND)
 
     def _render(self):
@@ -3901,7 +4129,8 @@ class PlotWidget(QWidget):
         painter.translate(dx, dy)
         painter.scale(k, k)
         canvas_w, canvas_h = self.canvas_size()
-        painter.fillRect(QRectF(0.0, 0.0, canvas_w, canvas_h), _BG)
+        painter.fillRect(QRectF(0.0, 0.0, canvas_w, canvas_h),
+                         self.page_colour())
         self.paint_into(painter)
         painter.end()
         return pixmap
@@ -3940,7 +4169,7 @@ class PlotWidget(QWidget):
         """
         previous, self._columns_override = self._columns_override, columns
         # The fitted y range, worked out once for the whole paint (`data_y`).
-        memo, self._fit_memo = getattr(self, "_fit_memo", False), None
+        memo, self._fit_memo = getattr(self, "_fit_memo", False), {}
         try:
             self._paint_all(painter)
         finally:
@@ -4020,9 +4249,6 @@ class PlotWidget(QWidget):
         def add(obj, inside, draw):
             items.append((model.z_of(obj), len(items), inside, draw))
 
-        for trace in getattr(self, "weight_traces", ()):
-            add(trace.weight, True,
-                lambda t=trace: self._paint_weight(p, rect, t))
         for trace in self.traces:
             if trace.missing is None:
                 add(trace.scan, True,
@@ -4065,27 +4291,26 @@ class PlotWidget(QWidget):
         doc = self.doc
         p.setPen(QPen(_AXIS, 1))
         x_side = self.axis_side(doc.axes["x"]) if doc else "bottom"
-        y_side = self.axis_side(doc.axes["y"]) if doc else "left"
         y_line = rect.bottom() if x_side == "bottom" else rect.top()
-        x_line = rect.left() if y_side == "left" else rect.right()
         p.drawLine(QPointF(rect.left(), y_line), QPointF(rect.right(), y_line))
-        p.drawLine(QPointF(x_line, rect.top()), QPointF(x_line, rect.bottom()))
-        # The line on the OPPOSITE side, which closes the box (Origin's
-        # style, and the default): per axis, with its ticks or without.
+        # Each y axis drawn has its line on its side; one alone may close
+        # the box on the far side (Origin's style, and the default).
+        y_axes = (self.shown_y_axes() if doc is not None
+                  else [model.Axis(0, "y")])
+        for axis in y_axes:
+            side = self.axis_side(axis)
+            at = rect.left() if side == "left" else rect.right()
+            p.drawLine(QPointF(at, rect.top()), QPointF(at, rect.bottom()))
+            if doc is not None and self.y_mirrored(axis):
+                far = rect.right() if side == "left" else rect.left()
+                p.drawLine(QPointF(far, rect.top()),
+                           QPointF(far, rect.bottom()))
         if doc is not None and doc.axes["x"].mirror:
             y_far = rect.top() if x_side == "bottom" else rect.bottom()
             p.drawLine(QPointF(rect.left(), y_far),
                        QPointF(rect.right(), y_far))
-        if doc is not None and doc.axes["y"].mirror:
-            x_far = rect.right() if y_side == "left" else rect.left()
-            p.drawLine(QPointF(x_far, rect.top()),
-                       QPointF(x_far, rect.bottom()))
         if doc is None:
             return
-        if self.y2_shown():
-            side = self.axis_side(doc.axes["y2"])
-            at = rect.right() if side == "right" else rect.left()
-            p.drawLine(QPointF(at, rect.top()), QPointF(at, rect.bottom()))
         for axis in self.shown_axes():
             which = axis.which
             if not axis.visible:
@@ -4548,6 +4773,9 @@ class PlotWidget(QWidget):
             font = QFont(p.font())
             font.setPointSizeF(self.style_of(label, "size"))
             font.setBold(bool(label.bold))
+            if getattr(label, "vline", None) is not None:
+                if not self._paint_vline(p, label, box, rect):
+                    continue
             with self._rotated(p, label, rect):
                 p.save()
                 # The same markup as every other text on the figure -
@@ -4560,6 +4788,41 @@ class PlotWidget(QWidget):
             self._paint_leader(p, label, bounds, rect)
             self._text_boxes.append((label, bounds.toRect()))
 
+    def vline_px(self, label, rect=None):
+        """A marker line's x in figure units, or None off the axes (or on
+        a time axis, where a temperature has no place)."""
+        if getattr(label, "vline", None) is None or \
+                not self._temperature_axis():
+            return None
+        rect = rect or self.plot_rect()
+        x = float(self.x_to_px(self.to_axis(label.vline), rect))
+        if not rect.left() <= x <= rect.right():
+            return None
+        return x
+
+    def _paint_vline(self, p, label, box, rect):
+        """A marker line (his `mark_peak`): the line across the axes at
+        its temperature, in the label's colour, dashed unless asked
+        otherwise, 0.6 pt as he draws it; and the paper behind the text so
+        the line does not run through it. False when it is off the axes."""
+        x = self.vline_px(label, rect)
+        if x is None:
+            return False
+        colour = self.label_colour(label)
+        pen = QPen(colour, 0.6 * 96.0 / 72.0)
+        if getattr(label, "line_dashed", True):
+            pen.setDashPattern([6.0, 4.0])
+        p.save()
+        p.setPen(pen)
+        p.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
+        bounds = self.rotated_bounds(label, box, rect)
+        if bounds is not None:
+            p.setPen(Qt.NoPen)
+            p.setBrush(self.page_colour())
+            p.drawRoundedRect(bounds.adjusted(-2.0, -2.0, 2.0, 2.0), 3, 3)
+        p.restore()
+        return True
+
     # ------------------------------------------------------------- notes
     #: A note's arrowhead, in figure units: its length and half its width.
     LEADER_HEAD = (6.0, 2.4)
@@ -4571,7 +4834,7 @@ class PlotWidget(QWidget):
             return None
         rect = rect or self.plot_rect()
         return QPointF(float(self.x_to_px(self.to_axis(leader[0]), rect)),
-                       float(self.y_to_px(leader[1], rect))
+                       float(self.ay_to_px(label, leader[1], rect))
                        + self.follow_px(label, rect))
 
     def leader_value(self, label, point, rect=None):
@@ -4581,7 +4844,8 @@ class PlotWidget(QWidget):
         x = self.px_to_x(point.x(), rect)
         if self._temperature_axis():
             x = float(units.to_celsius(x, self.doc.x_unit))
-        y = self.px_to_y(point.y() - self.follow_px(label, rect), rect)
+        y = self.px_to_ay(label, point.y() - self.follow_px(label, rect),
+                          rect)
         return [float(x), float(y)]
 
     def curve_point_near(self, pos, rect=None):
@@ -4607,8 +4871,7 @@ class PlotWidget(QWidget):
         tip = self.leader_tip(label, rect)
         if tip is None or bounds is None or bounds.contains(tip):
             return
-        start = QPointF(min(max(tip.x(), bounds.left()), bounds.right()),
-                        min(max(tip.y(), bounds.top()), bounds.bottom()))
+        start = self.leader_start(label, bounds, tip)
         dx, dy = tip.x() - start.x(), tip.y() - start.y()
         span = math.hypot(dx, dy)
         if span < 3.0:
@@ -4616,7 +4879,7 @@ class PlotWidget(QWidget):
         ux, uy = dx / span, dy / span
         start = QPointF(start.x() + ux * 2.0, start.y() + uy * 2.0)
         length, half = self.LEADER_HEAD
-        colour = self.label_colour(label)
+        colour = self.leader_colour(label)
         p.save()
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setPen(QPen(colour, 0.9))
@@ -4632,6 +4895,87 @@ class PlotWidget(QWidget):
             p.setPen(QPen(_SELECT, 1.2))
             p.drawEllipse(tip, 3.5, 3.5)
         p.restore()
+
+    @staticmethod
+    def leader_start(label, bounds, tip):
+        """Where a note's arrow leaves its text: the chosen point of the
+        box (`leader_from`), or the point of the box nearest the tip."""
+        chosen = getattr(label, "leader_from", "auto")
+        if chosen in model.ANCHORS:
+            fx = 0.0 if "left" in chosen else 1.0 if "right" in chosen else 0.5
+            fy = (0.0 if "top" in chosen else 1.0 if "bottom" in chosen
+                  else 0.5)
+            return QPointF(bounds.left() + fx * bounds.width(),
+                           bounds.top() + fy * bounds.height())
+        return QPointF(min(max(tip.x(), bounds.left()), bounds.right()),
+                       min(max(tip.y(), bounds.top()), bounds.bottom()))
+
+    def leader_colour(self, label):
+        """A note arrow's colour: its own, else the text's."""
+        own = getattr(label, "leader_colour", "auto")
+        if own in (None, "", "auto"):
+            return self.label_colour(label)
+        return (for_light(own) if THEME == THEME_LIGHT else QColor(own))
+
+    def note_flush_changes(self, label, side):
+        """Ctrl+L / R / M on a label: `[(obj, field, value), ...]`. Its
+        lines line up that way; a NOTE also puts that edge of its text over
+        the point, the arrow leaving straight from it - what the same keys
+        do to an analysis label (Christian, 2026-09-28)."""
+        changes = [(label, "flush", side)]
+        rect = self.plot_rect()
+        tip = self.leader_tip(label, rect)
+        if tip is None:
+            return changes
+        box = self.rotated_bounds(label, self.artist_box(label, rect), rect)
+        if box is None:
+            return changes
+        row = "bottom" if box.center().y() < tip.y() else "top"
+        edge = {"left": box.left(), "right": box.right(),
+                "center": box.center().x()}[side]
+        px, py = self.artist_point(label, rect)
+        before = (label.x, label.y)
+        self.set_artist_point(label, px + (tip.x() - edge), py, rect,
+                              clamp=False)
+        after = (label.x, label.y)
+        label.x, label.y = before
+        changes += [(label, "x", after[0]), (label, "y", after[1]),
+                    (label, "leader_from",
+                     row if side == "center" else "{} {}".format(row, side))]
+        return changes
+
+    def _slide_note(self, label, origin, dx_px, rect):
+        """G, then X, on a note that belongs to a scan: its tip WALKS
+        along the curve by `dx_px` and the text goes with it (Christian,
+        2026-09-28: "grab it and move it along the DSC trace"). False when
+        there is no curve to walk."""
+        trace = self._trace_of(label.scan)
+        leader = origin[2] if len(origin) > 2 else None
+        if (trace is None or trace.x is None or not len(trace.x)
+                or not leader):
+            return False
+        state = self._move
+        starts = state.setdefault("note_start", {})
+        if id(label) not in starts:
+            tip = QPointF(float(self.x_to_px(self.to_axis(leader[0]), rect)),
+                          float(self.ay_to_px(label, leader[1], rect))
+                          + self.follow_px(label, rect))
+            index = self.sample_at(trace, tip, rect)
+            starts[id(label)] = (index, tip)
+        index, tip = starts[id(label)]
+        if index is None:
+            return False
+        px, _py, shown = self._shown_samples(trace, rect)
+        k0 = int(index) - trace.first
+        if not (0 <= k0 < len(px) and shown[k0]):
+            return False
+        k = self._walk(px, shown, k0, px[k0] + dx_px)
+        new_tip = self._sample_point(trace, trace.first + k, rect)
+        ox, oy = self._artist_origin_px(label, origin, rect)
+        self.set_artist_point(label, ox + new_tip.x() - tip.x(),
+                              oy + new_tip.y() - tip.y(), rect, clamp=False)
+        label.leader = self.leader_value(label, new_tip, rect)
+        return True
 
     def leader_at(self, pos):
         """A SELECTED note whose arrow tip is within the pick distance of
@@ -4675,9 +5019,10 @@ class PlotWidget(QWidget):
         not, and Christian wants the default to be the figure.
         """
         doc = self.doc
-        rows = [("x", self.view_x(), self.x_to_px),
-                ("y", self.view_y(), self.y_to_px)]
-        if doc is not None and self.y2_shown():
+        rows = [("x", self.view_x(), self.x_to_px)]
+        if doc is None or self.heat_shown():
+            rows.append(("y", self.view_y(), self.y_to_px))
+        if doc is not None and self.mass_shown():
             rows.append(("y2", self.view_y2(), self.y2_to_px))
         for which, view, to_px in rows:
             axis = doc.axes[which] if doc else model.Axis(0, which)
@@ -4700,10 +5045,9 @@ class PlotWidget(QWidget):
             # The opposite line takes ticks too when asked (no numbers).
             far = {"bottom": rect.top(), "top": rect.bottom(),
                    "left": rect.right(), "right": rect.left()}[side]
-            mirrored = (getattr(axis, "mirror", False)
-                        and getattr(axis, "mirror_ticks", False)
-                        # the weight axis's ticks are on that side now
-                        and not (which == "y" and self.y2_shown()))
+            mirrored = (getattr(axis, "mirror_ticks", False)
+                        and (getattr(axis, "mirror", False) if which == "x"
+                             else self.y_mirrored(axis)))
             clear = self._tick_out(axis)
             numbers = getattr(axis, "show_numbers", True)
 
@@ -4818,7 +5162,8 @@ class PlotWidget(QWidget):
                 continue
             xs, ys = x[run], y[run]
             px = left + (xs - lo) / max(hi - lo, 1e-12) * width
-            py = (to_py or self.y_to_px)(ys, rect)
+            py = (to_py(ys, rect) if to_py is not None
+                  else self.sy_to_px(trace.scan, ys, rect))
             # A few samples per column are drawn as they are: a DSC run is
             # thousands of points, not millions, and thinning below that
             # only costs shape (round 25).
@@ -4848,28 +5193,6 @@ class PlotWidget(QWidget):
         for poly in polys:
             p.drawPolyline(poly)
 
-    def _paint_weight(self, p, rect, trace):
-        """A weight curve, against the weight axis: the scan's colour,
-        dashed unless asked otherwise, as wide as the scan's line."""
-        polys, px, py = self._polylines(trace, rect, self.y2_to_px)
-        trace.px, trace.py = px, py
-        scan = trace.scan
-        width = self.style_of(scan, "line_width") * CURVE_WIDTH
-        if trace.weight.selected:
-            halo = QColor(_SELECT)
-            halo.setAlpha(90)
-            p.setPen(QPen(halo, width + 4.0))
-            for poly in polys:
-                p.drawPolyline(poly)
-        colour = (for_light(scan.colour) if THEME == THEME_LIGHT
-                  else QColor(scan.colour))
-        pen = QPen(colour, width)
-        if trace.weight.dashed:
-            pen.setDashPattern([6.0, 3.0])     # in line widths
-        p.setPen(pen)
-        for poly in polys:
-            p.drawPolyline(poly)
-
     def _paint_placeholder(self, p, rect, trace):
         """A scan that cannot be drawn in this unit, drawn as its absence.
 
@@ -4878,7 +5201,7 @@ class PlotWidget(QWidget):
         The alarm label beside it is painted per event so it can blink.
         """
         trace.px = trace.py = None
-        y = self.y_to_px(trace.scan.offset, rect)
+        y = self.sy_to_px(trace.scan, trace.scan.offset, rect)
         if not (rect.top() - 4 <= y <= rect.bottom() + 4):
             return
         colour = trace_colour(trace)
@@ -4942,8 +5265,8 @@ class PlotWidget(QWidget):
         # the two cursors, which is TRIOS's "linear, double point".
         base = _chord(xs, ys)
         px = self.x_to_px(xs, rect)
-        top = self.y_to_px(ys, rect)
-        bottom = self.y_to_px(base, rect)
+        top = self.sy_to_px(trace.scan, ys, rect)
+        bottom = self.sy_to_px(trace.scan, base, rect)
         shape = QPolygonF()
         for a, b in zip(px.tolist(), top.tolist()):
             shape.append(QPointF(a, b))
@@ -4969,6 +5292,10 @@ class PlotWidget(QWidget):
         """
         if analysis.label_dy is not None:
             return float(analysis.label_dy)
+        if analysis.quantity == "mass":
+            # A mass at a temperature hangs ABOVE its point, the arrow
+            # pointing down at the curve (Christian's `add_annot`).
+            return -34.0
         return -46.0 if self.peak_points_up(analysis, trace) else 46.0
 
     def _covered(self, trace, analysis):
@@ -4978,22 +5305,30 @@ class PlotWidget(QWidget):
         otherwise every sample between the two stored cursor temperatures,
         which is all a file's analysis says - and which, on a curve that
         doubles back, takes in more than one branch.
+
+        MEASURED samples only: a flagged one (NaN) made the baseline, the
+        shading and the side the label goes NaN (CN-INDIUM-CHECK's first
+        34 samples have a temperature and no heat flow).
         """
         stretch = self._analysis_slice(trace, analysis)
         if stretch is not None:
             a, b = stretch
             if b - a < 2:
                 return None
-            return trace.x[a:b + 1], trace.y[a:b + 1]
-        x0 = model.number(analysis.fields.get("Baseline cursor x"))
-        x1 = model.number(analysis.fields.get("Baseline cursor x1"))
-        if x0 is None or x1 is None or trace.x is None:
+            xs, ys = trace.x[a:b + 1], trace.y[a:b + 1]
+        else:
+            x0 = model.number(analysis.fields.get("Baseline cursor x"))
+            x1 = model.number(analysis.fields.get("Baseline cursor x1"))
+            if x0 is None or x1 is None or trace.x is None:
+                return None
+            low, high = self.to_axis(min(x0, x1)), self.to_axis(max(x0, x1))
+            with np.errstate(invalid="ignore"):
+                inside = (trace.x >= low) & (trace.x <= high)
+            xs, ys = trace.x[inside], trace.y[inside]
+        measured = np.isfinite(xs) & np.isfinite(ys)
+        if measured.sum() < 3:
             return None
-        low, high = self.to_axis(min(x0, x1)), self.to_axis(max(x0, x1))
-        inside = (trace.x >= low) & (trace.x <= high)
-        if inside.sum() < 3:
-            return None
-        return trace.x[inside], trace.y[inside]
+        return xs[measured], ys[measured]
 
     def peak_points_up(self, analysis, trace):
         """True when the feature rises above its own baseline on screen."""
@@ -5052,7 +5387,7 @@ class PlotWidget(QWidget):
             for local in stretch:
                 bounds.append(QPointF(
                     float(self.x_to_px(trace.x[local], rect)),
-                    float(self.y_to_px(trace.y[local], rect))))
+                    float(self.sy_to_px(trace.scan, trace.y[local], rect))))
         else:
             for celsius in sorted(cursors):
                 x = self.to_axis(celsius)
@@ -5107,13 +5442,14 @@ class PlotWidget(QWidget):
         found = measure.tangent_points(analysis, trace.scan)
         if not found.points:
             return None
-        xs, ys = trace.scan.axes_points(found.points, found.base, doc.y_unit,
+        xs, ys = trace.scan.axes_points(found.points, found.base,
+                                        doc.unit_for(trace.scan),
                                         doc.exo, getattr(doc, "x_unit",
                                                          units.TEMP_C))
         if xs is None:
             return None
         px = np.asarray(self.x_to_px(xs, rect), dtype=float)
-        py = np.asarray(self.y_to_px(ys, rect), dtype=float)
+        py = np.asarray(self.sy_to_px(trace.scan, ys, rect), dtype=float)
         if not (np.all(np.isfinite(px)) and np.all(np.isfinite(py))):
             return None
         points = [QPointF(float(a), float(b)) for a, b in zip(px, py)]
@@ -5206,7 +5542,7 @@ class PlotWidget(QWidget):
         screen, and whether it is inside the axes box - the curve as it is
         actually SHOWN, truncated and framed."""
         px = np.asarray(self.x_to_px(trace.x, rect), dtype=float)
-        py = np.asarray(self.y_to_px(trace.y, rect), dtype=float)
+        py = np.asarray(self.sy_to_px(trace.scan, trace.y, rect), dtype=float)
         shown = (np.isfinite(px) & np.isfinite(py)
                  & (px >= rect.left()) & (px <= rect.right())
                  & (py >= rect.top()) & (py <= rect.bottom()))
@@ -5345,7 +5681,7 @@ class PlotWidget(QWidget):
             if k is None:
                 continue
             x = float(self.x_to_px(trace.x[k], rect))
-            anchor = float(self.y_to_px(trace.y[k], rect))
+            anchor = float(self.sy_to_px(trace.scan, trace.y[k], rect))
             font = QFont(p.font())
             font.setPointSizeF(max(4.0, float(self.style_of(marker, "size"))))
             p.setFont(font)
@@ -5410,19 +5746,24 @@ class PlotWidget(QWidget):
         index = self._sample_near(trace, value, within)
         if index is None:
             return None
-        return self.y_to_px(float(trace.y[index]), rect)
+        return self.sy_to_px(trace.scan, float(trace.y[index]), rect)
 
     @staticmethod
     def _sample_near(trace, value, within=None):
         """The index of the kept sample nearest x = `value` (inside the
-        stretch `within`), or None."""
+        stretch `within`), or None. A MEASURED one: a sample with a
+        temperature and a flagged heat flow has no y to put a point at."""
         if trace.x is None or not len(trace.x):
             return None
         lo, hi = within if within is not None else (0, len(trace.x) - 1)
         xs = trace.x[lo:hi + 1]
         if not len(xs):
             return None
-        gaps = np.abs(xs - value)
+        with np.errstate(invalid="ignore"):
+            gaps = np.abs(xs - value)
+            if trace.y is not None:
+                gaps = np.where(np.isfinite(trace.y[lo:hi + 1]), gaps,
+                                np.nan)
         if not np.isfinite(gaps).any():
             return None
         return lo + int(np.nanargmin(gaps))
@@ -5453,7 +5794,7 @@ class PlotWidget(QWidget):
             if trace.py is not None and len(trace.py):
                 y = float(trace.py[np.argmax(trace.px)])
             elif trace.missing is not None:
-                y = self.y_to_px(trace.scan.offset, rect)
+                y = self.sy_to_px(trace.scan, trace.scan.offset, rect)
             if y is None or not (rect.top() - 20 <= y <= rect.bottom() + 20):
                 continue
             text = trace.name
@@ -5498,15 +5839,20 @@ class PlotWidget(QWidget):
         if not follow:
             return 0.0
         rect = rect or self.plot_rect()
-        return float(self.y_to_px(follow, rect) - self.y_to_px(0.0, rect))
+        return float(self.ay_to_px(artist, follow, rect)
+                     - self.ay_to_px(artist, 0.0, rect))
 
     def artist_point(self, artist, rect=None):
         """Where an artist sits, in pixels, whichever space it is stored in
         - and, for a label with a parent, as far up as its scan has moved."""
         rect = rect or self.plot_rect()
+        if getattr(artist, "vline", None) is not None:
+            # A marker line's text stands ON its line, at its own height.
+            return (float(self.x_to_px(self.to_axis(artist.vline), rect)),
+                    rect.top() + float(artist.y) * rect.height())
         if getattr(artist, "space", "relative") == model.SPACE_DATA:
             return (float(self.x_to_px(artist.x, rect)),
-                    float(self.y_to_px(artist.y, rect))
+                    float(self.ay_to_px(artist, artist.y, rect))
                     + self.follow_px(artist, rect))
         return (rect.left() + float(artist.x) * rect.width(),
                 rect.top() + float(artist.y) * rect.height()
@@ -5519,9 +5865,23 @@ class PlotWidget(QWidget):
         rotation (`clamp=False`) must not, or the point it is about moves
         whenever the anchor would pass the edge."""
         rect = rect or self.plot_rect()
+        if getattr(artist, "vline", None) is not None:
+            # Sideways moves the LINE (a temperature), up and down slides
+            # the text along it.
+            value = self.px_to_x(px, rect)
+            if self._temperature_axis():
+                value = float(units.to_celsius(value, self.doc.x_unit))
+            artist.vline = float(value)
+            fx = (px - rect.left()) / max(1.0, rect.width())
+            fy = (py - rect.top()) / max(1.0, rect.height())
+            if clamp:
+                fy = _clamp(fy, 0.01, 0.99)
+            artist.set_position(fx, fy)
+            return artist
         py = py - self.follow_px(artist, rect)
         if getattr(artist, "space", "relative") == model.SPACE_DATA:
-            artist.set_position(self.px_to_x(px, rect), self.px_to_y(py, rect))
+            artist.set_position(self.px_to_x(px, rect),
+                                self.px_to_ay(artist, py, rect))
         else:
             fx = (px - rect.left()) / max(1.0, rect.width())
             fy = (py - rect.top()) / max(1.0, rect.height())
@@ -5611,7 +5971,7 @@ class PlotWidget(QWidget):
         p.setFont(font)
         metrics = QFontMetrics(font)
         if legend.show_frame:
-            backing = QColor(_BG)
+            backing = self.page_colour()
             backing.setAlpha(210)
             p.setBrush(backing)
             edge = QColor(_SELECT) if legend.selected else QColor(_GRID)
@@ -5623,18 +5983,13 @@ class PlotWidget(QWidget):
             p.drawRect(box)
         step = metrics.height() * legend.spacing
         y = box.top() + 5 + metrics.height() / 2.0
-        for entry, text in legend.entries(doc):
-            weight = isinstance(entry, model.WeightCurve)
-            scan = entry.scan if weight else entry
+        for scan, text in legend.entries(doc):
             colour = (for_light(scan.colour) if THEME == THEME_LIGHT
                       else QColor(scan.colour))
             width = (float(legend.line_width) if legend.line_width
                      else max(1.2, self.style_of(scan, "line_width")
                               * CURVE_WIDTH))
-            pen = QPen(colour, width)
-            if weight and entry.dashed:
-                pen.setDashPattern([6.0, 3.0])
-            p.setPen(pen)
+            p.setPen(QPen(colour, width))
             p.drawLine(QPointF(box.left() + 8, y),
                        QPointF(box.left() + 8 + legend.sample, y))
             ink = (QColor(_SELECT) if legend.selected
@@ -5848,8 +6203,8 @@ class PlotWidget(QWidget):
         for scan in scans:
             if not scan.offset:
                 continue
-            zero = self.y_to_px(0.0, rect)
-            here = self.y_to_px(scan.offset, rect)
+            zero = self.sy_to_px(scan, 0.0, rect)
+            here = self.sy_to_px(scan, scan.offset, rect)
             if abs(zero - here) < 4:
                 continue
             x = rect.left() + 26
@@ -5863,7 +6218,8 @@ class PlotWidget(QWidget):
             for end in (zero, here):
                 p.drawLine(QPointF(x - 5, end), QPointF(x + 5, end))
             p.drawText(QPointF(x + 8, (zero + here) / 2.0 + 4),
-                       "{:+.4g} {}".format(scan.offset, doc.y_unit))
+                       "{:+.4g} {}".format(scan.offset,
+                                           doc.unit_for(scan)))
 
     def _paint_alarms(self, p):
         """The blinking red label on a scan that is missing its molar mass.
@@ -5885,32 +6241,12 @@ class PlotWidget(QWidget):
         for trace in self.traces:
             if not trace.missing:
                 continue
-            y = self.y_to_px(trace.scan.offset, rect)
+            y = self.sy_to_px(trace.scan, trace.scan.offset, rect)
             if not (rect.top() - 10 <= y <= rect.bottom() + 10):
                 continue
             text = "NO {}".format(trace.missing.upper())
             width = metrics.horizontalAdvance(text) + 12
             box = QRect(int(rect.left()) + 8, int(y) - 9, width, 18)
-            p.setBrush(_ALARM)
-            p.setPen(QPen(_ALARM.lighter(140), 1))
-            p.drawRoundedRect(box, 3, 3)
-            p.setPen(QColor(255, 255, 255))
-            p.drawText(box, Qt.AlignCenter, text)
-            p.setBrush(Qt.NoBrush)
-        # A weight that cannot be drawn has no place of its own on the
-        # heat flow's axis: its labels stand on the weight axis's side, one
-        # under another from the top, and name their scan.
-        side = (self.axis_side(self.doc.axes["y2"])
-                if self.doc is not None and "y2" in self.doc.axes
-                else "right")
-        for row, (scan, reason) in enumerate(
-                getattr(self, "weight_missing", ())):
-            text = "NO {}: {} weight".format(reason.upper(),
-                                            scan.display_name())
-            width = metrics.horizontalAdvance(text) + 12
-            left = (int(rect.right()) - 8 - width if side == "right"
-                    else int(rect.left()) + 8)
-            box = QRect(left, int(rect.top()) + 8 + 22 * row, width, 18)
             p.setBrush(_ALARM)
             p.setPen(QPen(_ALARM.lighter(140), 1))
             p.drawRoundedRect(box, 3, 3)
@@ -6404,6 +6740,9 @@ def _clip_segment(a, b, rect):
 
 def _flush_of(artist):
     """How an artist's lines line up: by the side of its anchor."""
+    chosen = getattr(artist, "flush", None)
+    if chosen in ("left", "right", "center"):
+        return chosen
     anchor = str(getattr(artist, "anchor", "center"))
     return ("left" if "left" in anchor else
             "right" if "right" in anchor else "center")

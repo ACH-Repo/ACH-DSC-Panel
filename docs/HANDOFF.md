@@ -10,9 +10,12 @@ always current. `docs/TRI-FORMAT.md` is the binary format.
 The repo is on GitHub (`ACH-Repo/ACH-DSC-Panel`, private, branch `main`).
 Christian works from a laptop and a desktop PC. `4bc9426 "intermediary"` was
 pushed from the desktop mid-round-25 (an interrupted session there); this
-laptop pulled it and continued. **Everything below is in the WORKING TREE of
-the laptop, not committed**, and the session may have been cut off by the
-usage limit while a multi-agent workflow was still running.
+laptop pulled it and continued. Christian committed and pushed the laptop's
+state as `dbcf753 "intermediary2"` (13:55) when the usage limit hit: stages
+1-2 below complete, stage 3 PARTIAL (its agent died at 13:45 mid-edit;
+`tests/test_weight.py::test_weight_analyses_are_listed_honestly_and_never_drawn`
+fails on a test bug, `ItemFlag & int`; 445 others pass). New requests for
+after round 25 are in `docs/NEXT.md`.
 
 **Decisions Christian made on 2026-09-28 (do not reopen):**
 - **ACH-DSC-Plotter is RETIRED.** The reader (`core/trios_io.py`,
@@ -49,13 +52,14 @@ stage 2):**
    108.02) and a cooling onset took its baseline on the wrong side (fixed:
    the flat cursor goes by acquisition order). `tests/test_tangents.py`.
 
-**In progress when this was written (stage 3 of 5): the SDT UI fixes** -
-findings F2-F14 of the round-25 review (weight % vs mg by unit, the y2 range
-in sessions, weight analyses not drawn against heat flow, a missing weight
-said where it would be drawn, the weight axis's own tick step, weights in the
-stack order, y2-only framings saved, NaN safety everywhere data is read, CSV
-for TGA-only segments), plus Scan settings for the weight curve. Then stage 4
-(review from three angles, each finding verified) and stage 5 (fixes).
+**Stage 3 (the SDT UI findings) finished** (452 tests); its review was
+stopped by Christian (he does not want agent fleets - see the memory
+`no-agent-swarms`). Then, done directly and uncommitted on top of
+`intermediary2`: the S crash fixed, the outliner shows file names, redraws
+3x faster, and **TGA redesigned** (PLAN.md Next 1): the m% curve is a scan of
+its own and an SDT file opens with it alone; all five TGA steps done (mass-
+at-temperature markers, m% onsets, marker lines), and every request in
+`docs/NEXT.md` (PLAN round 26); 477 tests. Uncommitted.
 
 **If you pick this up in a new session:**
 1. `git status` / `git diff --stat` shows what landed. Run the suite. If it
@@ -69,13 +73,20 @@ for TGA-only segments), plus Scan settings for the weight curve. Then stage 4
    later ones if they were written). The workflow journal with every
    agent's full report is under that session's folder in
    `.claude\projects\...\f13728c1-...\subagents\workflows\wf_799aa108-cf3\`.
+   **`stage3_progress.md` in that folder is the live log of stage 3**: the
+   restarted agent writes its assessment of each finding first and a
+   `DONE` / `FIXED` line after each one. Journals: `wf_799aa108-cf3`
+   (stages 1-3, cut off) and `wf_9e46eedd-5b6` (stage 3 restarted, with
+   its review and fixes).
 3. Whatever of stage 3 is missing: redo it from `report_sdt_ui_review.json`
    (F2, F4, F5, F7-F14; F1/F3/F14 are done in the reader; F6 and the driver
-   halves of F7/F12 are NOT to be done - the driver is frozen). Then review.
-4. Then the doc pass: PLAN.md round 25 is written (below it says what is
-   done); CLAUDE.md has the new traps; README's "vendored" lines and
-   `tools/vendor.py` mentions still need removing.
-5. Commit only when Christian asks.
+   halves of F7/F12 are NOT to be done - the driver is frozen), guided by
+   `stage3_progress.md`. Then review (three lenses, each verified).
+4. The doc pass is done for what is known (CLAUDE.md rule 3 and traps,
+   README, PLAN round 25). Add stage 3's outcome to PLAN round 25 and clear
+   this section's "in progress" once it is finished.
+5. Then `docs/NEXT.md` (Christian's next requests, verbatim).
+6. Commit only when Christian asks.
 
 **Open for Christian (from the stage reports):** tune the Python onset fit
 towards TRIOS (panel analyses are 1.06 K median, up to 8.1 K off TRIOS on the
@@ -110,10 +121,9 @@ structure label defaults; sharpness on a scaled page, S spreading scans,
 the Boombox theme, notes, stereo wedges - PLAN.md rounds 22 to 24. PLAN's
 "Next" is empty but for optional items. The desktop has Python 3.13 and no
 3.10. Its
-ACH-DSC-Plotter checkout equals GitHub (`a0c9972`): `d743702` exists only on
-the laptop, unpushed, so `vendor.py --check` fails here and must NOT be
-"fixed" by re-vendoring (it would roll the reader back). Push it from the
-laptop, then pull here. The working tree here is CRLF (`core.autocrlf`
+ACH-DSC-Plotter checkout equals GitHub (`a0c9972`). (Superseded on
+2026-09-28: the Plotter is retired and nothing is vendored any more - see
+section 0.) The working tree here is CRLF (`core.autocrlf`
 true): a script that rewrites a file writes `"\r\n"` to match.
 
 Christian commits and pushes himself, per message, never as a standing
@@ -170,8 +180,9 @@ backlog (`C:\Users\chris\.claude\CLAUDE.md` and
   test fails if it is hard-coded elsewhere. `register --clean-legacy` plus
   `LEGACY_NAMES` is the deregistration plan; `dsc-panel alias <name>` gives a
   personal name on any platform.
-- **The reader is VENDORED** from ACH-DSC-Plotter (`tools/vendor.py`,
-  `--check` is the drift alarm). Fix the reader THERE, then re-vendor.
+- **The reader is the panel's own** (2026-09-28, section 0). Until then it
+  was vendored from ACH-DSC-Plotter; that arrangement and `tools/vendor.py`
+  are gone.
 
 ## 4. Standing instruction: the interactions are provisional
 

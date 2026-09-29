@@ -88,11 +88,12 @@ This file is GENERATED. After adding an operator, run:
 | Set the molar mass... | `Shift+M` | a scan is selected | there is no default M, so this is how W/mol happens |
 | Show or hide the y-offset markers |  | always |  |
 | Show or hide the legend |  | always | or its tick in the outliner |
-| Align analysis labels left | `Ctrl+L` | an analysis, or a scan with one shown, is selected | the selected labels, else all on the selected scans |
-| Align analysis labels right | `Ctrl+R` | an analysis, or a scan with one shown, is selected |  |
-| Align analysis labels centred | `Ctrl+M` | an analysis, or a scan with one shown, is selected |  |
+| Align labels left | `Ctrl+L` | an analysis, or a scan with one shown, is selected | the selected labels, else all on the selected scans |
+| Align labels right | `Ctrl+R` | an analysis, or a scan with one shown, is selected |  |
+| Align labels centred | `Ctrl+M` | an analysis, or a scan with one shown, is selected |  |
 | Legend settings... |  | always |  |
 | Add a label... | `Ctrl+T` | always |  |
+| Add a marker line... | `or right-click the plot` | always |  |
 | Add a note with an arrow... | `Ctrl+Shift+T, or right-click a curve` | always |  |
 | Give the selected labels to the selected scan | `Ctrl+P, or drag the label onto the scan in the outliner` | always |  |
 | Free the selected labels from their scan | `Alt+P` | always |  |
@@ -109,6 +110,10 @@ This file is GENERATED. After adding an operator, run:
 | Y axis: mW |  | the y axis is not mW |  |
 | Y axis: W/g |  | the y axis is not W/g |  |
 | Y axis: W/mol |  | the y axis is not W/mol |  |
+| Mass axis: % of the sample mass |  | always |  |
+| Mass axis: mg |  | always |  |
+| Show or hide the mass curves |  | always |  |
+| Show or hide the heat flow curves |  | always |  |
 | Theme: blender-default |  | always |  |
 | Theme: light |  | always |  |
 | Theme: boombox |  | always |  |
@@ -144,6 +149,7 @@ This file is GENERATED. After adding an operator, run:
 
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
+| Mass at temperatures... |  | always |  |
 | Measure on the selected scan | `C, or double-click-drag a curve` | always | the typed route; double-click-drag a curve is the quick one |
 | Analyse the interval... | `Enter, with both cursors down` | always |  |
 | Stop measuring |  | always |  |

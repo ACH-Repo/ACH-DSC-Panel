@@ -130,6 +130,7 @@ def _analysis_state(analysis):
              "show_interval": analysis.show_interval,
              "construction": analysis.construction,
              "number_format": analysis.number_format,
+             "unit": analysis.unit,
              "label_at": analysis.label_at, "z": analysis.z,
              "attribution": analysis.attribution,
              "source": analysis.source}
@@ -172,6 +173,9 @@ def _restore_analysis(analysis, saved, version):
         saved.get("number_format"))
     analysis.label_at = _number_or_none(saved.get("label_at"))
     analysis.z = _number_or_none(saved.get("z"))
+    unit = labels.canonical_unit(saved.get("unit"))
+    analysis.unit = (unit if unit in labels.units_of(analysis.quantity)
+                     else None)
     if version < 5 and measure.is_legacy_label(analysis.label):
         # Before round 15 a panel analysis was GIVEN a label with its
         # number written in ("*T*_{onset} = 61.1 degC"), and a version-4
@@ -196,6 +200,7 @@ def to_state(doc):
         scans.append({
             "path": scan.sample.path,
             "seg": scan.seg,
+            "signal": scan.signal,
             "colour": scan.colour,
             "offset": scan.offset,
             "line_width": scan.line_width,
@@ -212,8 +217,6 @@ def to_state(doc):
                        "size": scan.marker.size,
                        "colour": scan.marker.colour,
                        "visible": scan.marker.visible},
-            "weight": {"visible": scan.weight.visible,
-                       "dashed": scan.weight.dashed, "z": scan.weight.z},
         })
     arrow = doc.arrow
     axes = {}
@@ -245,7 +248,11 @@ def to_state(doc):
                        "scan": (None if lb.scan is None
                                 else [lb.scan.sample.path, lb.scan.seg]),
                        "parent_offset": lb.parent_offset,
-                       "leader": lb.leader})
+                       "leader": lb.leader,
+                       "leader_from": lb.leader_from,
+                       "leader_colour": lb.leader_colour,
+                       "flush": lb.flush,
+                       "vline": lb.vline, "line_dashed": lb.line_dashed})
     return {
         "format": FORMAT,
         "version": VERSION,
@@ -273,6 +280,7 @@ def to_state(doc):
         "y_unit": doc.y_unit,
         "weight_unit": doc.weight_unit,
         "theme": doc.theme,
+        "background": doc.background,
         "offset_markers": bool(doc.offset_markers),
         "view": view_to_state(doc.view),
         "style": doc.style.chosen(),
@@ -345,6 +353,10 @@ def load(path, read_sample):
             sample.exo_source = entry.get("exo_source", sample.exo_source)
         doc.samples.append(sample)
         by_path[os.path.normcase(sample.path)] = sample
+    # Round 25 kept a scan's weight as a dashed extra on it; a weight shown
+    # then opens as a mass scan of its own, AFTER the saved scans (labels
+    # name their scan by its place in the list).
+    legacy_mass = []
     for entry in state.get("scans", []):
         sample = by_path.get(os.path.normcase(entry.get("path", "")))
         if sample is None:
@@ -354,9 +366,12 @@ def load(path, read_sample):
             problems.append("{}: segment {} is gone".format(sample.name,
                                                             seg + 1))
             continue
+        signal = (entry.get("signal") if entry.get("signal") in model.SIGNALS
+                  else model.SIGNAL_HEAT)
         scan = model.Scan(doc._next_id(), sample, seg,
                           entry.get("colour")
-                          or model.PALETTE[len(doc.scans) % len(model.PALETTE)])
+                          or model.PALETTE[len(doc.scans) % len(model.PALETTE)],
+                          signal)
         scan.offset = float(entry.get("offset", 0.0))
         scan.line_width = _chosen(entry.get("line_width"), "line_width",
                                   version)
@@ -369,10 +384,10 @@ def load(path, read_sample):
             scan.keep = (start, end)
         scan.label = entry.get("label")
         scan.visible = bool(entry.get("visible", True))
-        weight = entry.get("weight") or {}
-        scan.weight.visible = bool(weight.get("visible", True))
-        scan.weight.dashed = bool(weight.get("dashed", True))
-        scan.weight.z = _number_or_none(weight.get("z"))
+        weight = entry.get("weight")
+        if (isinstance(weight, dict) and weight.get("visible", True)
+                and signal == model.SIGNAL_HEAT and scan.has_weight()):
+            legacy_mass.append((sample, seg, scan.colour))
         stored = entry.get("analyses") or []
         wanted = {item.get("key"): item for item in stored
                   if item.get("source") != "panel"}
@@ -380,14 +395,6 @@ def load(path, read_sample):
             saved = wanted.get(analysis.key())
             if saved:
                 _restore_analysis(analysis, saved, version)
-        for analysis in scan.weight_analyses:
-            # Shown on the heat flow by round 25, which did not know it was
-            # made on the weight: said, not drawn.
-            saved = wanted.get(analysis.key())
-            if saved and saved.get("visible"):
-                problems.append(
-                    "{}: {} was made on the weight and is not drawn".format(
-                        scan.display_name(), analysis.model_name))
         for saved in stored:
             if saved.get("source") != "panel":
                 continue
@@ -416,6 +423,14 @@ def load(path, read_sample):
         scan.marker.z = _number_or_none(marker.get("z"))
         sample.scans.append(scan)
         doc.scans.append(scan)
+    for sample, seg, colour in legacy_mass:
+        if any(s.sample is sample and s.seg == seg and s.is_mass
+               for s in doc.scans):
+            continue
+        mass = model.Scan(doc._next_id(), sample, seg, colour,
+                          model.SIGNAL_MASS)
+        sample.scans.append(mass)
+        doc.scans.append(mass)
     arrow = state.get("arrow") or {}
     doc.arrow.word = arrow.get("word", doc.arrow.word)
     doc.arrow.direction = arrow.get("direction", doc.arrow.direction)
@@ -497,6 +512,13 @@ def load(path, read_sample):
         if (isinstance(leader, (list, tuple)) and len(leader) == 2
                 and all(_number_or_none(v) is not None for v in leader)):
             label.leader = [float(leader[0]), float(leader[1])]
+        start = saved.get("leader_from", "auto")
+        label.leader_from = start if start in model.ANCHORS else "auto"
+        label.leader_colour = saved.get("leader_colour") or "auto"
+        flush = saved.get("flush")
+        label.flush = flush if flush in ("left", "right", "center") else None
+        label.vline = _number_or_none(saved.get("vline"))
+        label.line_dashed = bool(saved.get("line_dashed", True))
     for saved in state.get("structures") or []:
         if not saved.get("atoms"):
             continue
@@ -550,6 +572,9 @@ def load(path, read_sample):
     if state.get("weight_unit") in model.WEIGHT_UNITS:
         doc.weight_unit = state["weight_unit"]
     doc.theme = state.get("theme", doc.theme)
+    background = state.get("background")
+    doc.background = (str(background) if isinstance(background, str)
+                      and background.startswith("#") else None)
     doc.offset_markers = bool(state.get("offset_markers", False))
     doc.view = _view_from(state.get("view"))
     if doc.view and doc.view.get("y2") and not doc.view.get("y2_unit"):

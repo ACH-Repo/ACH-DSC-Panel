@@ -37,6 +37,7 @@ _LEAD = re.compile(r"^(%[-+ 0#]*\d*(?:\.\d+)?[fFeEgGd]"
 TEMPERATURE = "%.0f"        # an onset, an endset, a Tg: whole degrees
 VALUE = "%.3g"              # an enthalpy, a step: three significant figures
 OFFSET = "%+.1f"            # the template's add_yoffset_markers
+MASS = "%.0f"               # a mass at a temperature: "99 %", as he writes it
 
 
 def normalise(spec, unit_of=None):

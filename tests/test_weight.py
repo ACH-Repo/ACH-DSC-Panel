@@ -37,6 +37,9 @@ DESY_OPEN = "CN-123-EXAFS-SDT_OPEN.tri"
 DESY_NO_MASS = "CN-112_119-EXAFS-ag-SDT.tri"
 OJ12 = "OJ-12-DSC-2-07012026.tri"
 INDIUM_CHECK = "CN-INDIUM-CHECK.tri"
+#: A DSC25 run whose first segment (Equilibrate) flags its first samples:
+#: 5 temperatures, 35 heat flows (TRI-FORMAT.md section 3).
+GQ_EMPTY = "GQ-empty-01122025.tri"
 DEG_C = "\u00b0C"
 
 
@@ -232,13 +235,13 @@ def test_a_weight_that_cannot_be_drawn_is_said_where_it_would_be(
     sample = _sample(sdt_data(shape="txt", mass_mg=None),
                      "C:/nowhere/SDT-1.txt")
     win = _window(qapp, sample)
+    win.toggle_signal(model.SIGNAL_HEAT)        # its W/g heat flow draws
     win.set_weight_unit(model.WEIGHT_MG)
     doc, plot = win.doc, win.plot
-    scan = doc.scans[0]
-    assert not plot.y2_shown()
-    assert not [e for e, _t in doc.legend.entries(doc)
-                if isinstance(e, model.WeightCurve)]
-    assert doc.weights_missing() == [(scan, "sample mass")]
+    (mass,) = [s for s in doc.scans if s.is_mass]
+    assert mass.missing_for(doc.unit_for(mass), doc.x_axis) == "sample mass"
+    assert mass not in [s for s, _t in doc.legend.entries(doc)]
+    assert (mass, "sample mass") in doc.scans_missing()
     assert plot._blink_timer.isActive()
     rows = [win.outliner.topLevelItem(0)]
     texts = []
@@ -246,14 +249,15 @@ def test_a_weight_that_cannot_be_drawn_is_said_where_it_would_be(
         item = rows.pop()
         texts.append((item.text(0), item.text(1)))
         rows.extend(item.child(k) for k in range(item.childCount()))
-    assert ("Weight", "NO SAMPLE MASS") in texts
+    assert (mass.display_name(), "NO SAMPLE MASS") in texts
     warnings = export.warnings_for(doc)
-    assert any("NO SAMPLE MASS" in w and "weight" in w for w in warnings)
+    assert any("NO SAMPLE MASS" in w and "mass is not drawn" in w
+               for w in warnings)
     path = str(tmp_path / "curves.csv")
     export.curves_csv(doc, path)
     comments, header, _rows = _csv_rows(path)
-    assert not any("Weight" in h for h in header)
-    assert any("weight is not drawn" in c for c in comments)
+    assert not any("Mass/" in h for h in header)
+    assert any("is not drawn" in c for c in comments)
     plot.grab()                                 # paints, alarm and all
 
 
@@ -264,15 +268,16 @@ def test_the_negative_weight_run_draws_no_inverted_curve(qapp):
     sample = loader.read_sample(_path(DESY_NO_MASS))
     assert sample.mass_g is None
     win = _window(qapp, sample)
+    win.toggle_signal(model.SIGNAL_HEAT)
     doc, plot = win.doc, win.plot
-    scan = doc.scans[0]
+    (mass,) = [s for s in doc.scans if s.is_mass]
+    (heat,) = [s for s in doc.scans if not s.is_mass]
     assert doc.y_unit == units.UNIT_W_G
-    assert scan.missing_for(doc.y_unit, doc.x_axis) == "sample mass"
-    assert scan.weight_missing_for(doc.weight_unit, doc.x_axis) == \
-        "sample mass"
-    assert not plot.drawable() and not plot.y2_shown()
+    assert heat.missing_for(doc.y_unit, doc.x_axis) == "sample mass"
+    assert mass.missing_for(doc.weight_unit, doc.x_axis) == "sample mass"
+    assert not plot.drawable()
     win.set_weight_unit(model.WEIGHT_MG)
-    assert plot.y2_shown()                   # the recorded milligrams
+    assert [t.scan for t in plot.drawable()] == [mass]   # recorded mg
     lo, hi = plot.data_y2()
     assert hi < 0
 
@@ -344,10 +349,14 @@ def _weight_analyses_data():
 
 
 def test_an_analysis_made_on_the_weight_is_not_a_heat_flow_one():
-    scan = _doc(_sample(_weight_analyses_data())).scans[0]
+    """A file's analysis goes to the scan of the curve it was made on: the
+    onset of mass loss is the MASS scan's (Christian, 2026-09-28)."""
+    doc = _doc(_sample(_weight_analyses_data()),
+               [0, (0, model.SIGNAL_MASS)])
+    scan, mass = doc.scans
     heat = [a.model_name for a in scan.analysis_objects]
     assert "Peak Integration (enthalpy)" in heat
-    assert [a.fields.get("variable") for a in scan.weight_analyses] == \
+    assert [a.fields.get("variable") for a in mass.analysis_objects] == \
         ["Weight Change"]
     assert all(a.fields.get("variable") != "Weight Change"
                for a in scan.analysis_objects)
@@ -364,40 +373,44 @@ def test_an_analysis_made_on_the_weight_is_not_a_heat_flow_one():
     assert integration.certain
 
 
-def test_weight_analyses_are_listed_honestly_and_never_drawn(qapp):
+def test_weight_analyses_are_the_mass_scans_and_drawn_on_it(qapp):
+    """Listed under the MASS scan like any analysis, with a box; shown, it
+    is drawn on the mass curve; the heat flow's settings never list it."""
+    from PySide6.QtCore import Qt
     from dscpanel.ui.dialogs import ScanSettings
     sample = _sample(_weight_analyses_data())
     win = _window(qapp, sample)
-    doc = win.doc
-    scan = doc.scans[0]
-    weight_row = None
+    win.toggle_signal(model.SIGNAL_HEAT)
+    doc, plot = win.doc, win.plot
+    (mass,) = [s for s in doc.scans if s.is_mass]
+    (heat,) = [s for s in doc.scans if not s.is_mass]
+    (onset,) = mass.analysis_objects
     rows = [win.outliner.topLevelItem(0)]
+    found = None
     while rows:
         item = rows.pop()
-        if item.text(0) == "Weight":
-            weight_row = item
+        if item.data(0, Qt.UserRole) == ("analysis", id(onset)):
+            found = item
         rows.extend(item.child(k) for k in range(item.childCount()))
-    assert weight_row is not None and weight_row.childCount() == 1
-    child = weight_row.child(0)
-    assert "on the weight, not drawn" in child.text(1)
-    assert not (child.flags() & 0x10)            # Qt.ItemIsUserCheckable
-    dialog = ScanSettings(win, scan, doc.y_unit)
+    assert found is not None
+    assert found.parent().data(0, Qt.UserRole) == ("scan", id(mass))
+    dialog = ScanSettings(win, heat, doc.y_unit)
     texts = [dialog.analyses.item(k).text()
              for k in range(dialog.analyses.count())]
-    assert any("on the weight, not drawn" in t for t in texts)
-    # showing every analysis of the scan never reaches the weight's
-    doc.select_only([scan])
+    assert not any("340" in t for t in texts)
+    doc.select_only([mass])
     win.set_analyses(True)
-    assert not any(a.visible for a in scan.weight_analyses)
-    assert all(a not in doc.analyses() for a in scan.weight_analyses)
+    assert onset.visible
+    plot.grab()                         # drawn against the mass axis
 
 
 def test_cn81s_onsets_are_on_the_weight(qapp):
     sample = loader.read_sample(_path(CN81_TRI))
-    scan = _doc(sample).scans[0]
-    assert sorted(round(a.value(), 3) for a in scan.weight_analyses) == \
+    doc = _doc(sample, [0, (0, model.SIGNAL_MASS)])
+    heat, mass = doc.scans
+    assert sorted(round(a.value(), 3) for a in mass.analysis_objects) == \
         [415.587, 476.281]
-    assert [a.model_name for a in scan.analysis_objects] == \
+    assert [a.model_name for a in heat.analysis_objects] == \
         ["Peak Integration (enthalpy)"]
 
 
@@ -406,6 +419,7 @@ def test_the_weight_axis_settings_are_the_weight_axis(qapp):
     from dscpanel.ui.dialogs import AxisSettings, CaptionSettings
     from dscpanel.ui.dialogs import NumberSettings
     win = _window(qapp, _sample(sdt_data()))
+    win.toggle_signal(model.SIGNAL_HEAT)
     doc, plot = win.doc, win.plot
     axis = doc.axes["y2"]
     dialog = AxisSettings(win, axis, doc)
@@ -413,30 +427,96 @@ def test_the_weight_axis_settings_are_the_weight_axis(qapp):
     assert dialog._step_shown() == pytest.approx(plot.tick_step(axis, lo, hi))
     assert dialog._step_shown() != pytest.approx(
         plot.tick_step(doc.axes["y"], *plot.view_y()))
-    assert dialog.mirror.isHidden() and dialog.mirror_ticks.isHidden()
+    # it may close the box when it is the only y axis
+    assert not dialog.mirror.isHidden()
     assert NumberSettings(win, axis, doc).windowTitle() == \
-        "Weight axis numbers"
+        "Mass axis numbers"
     assert CaptionSettings(win, axis, doc).windowTitle() == \
-        "Weight axis caption"
+        "Mass axis caption"
     assert not AxisSettings(win, doc.axes["y"], doc).mirror.isHidden()
 
 
+# ------------------------------------------ the mass is a scan of its own
+def test_an_sdt_run_opens_with_its_mass_alone(qapp):
+    """Christian, 2026-09-28: "the m% data is the meat" - an SDT file opens
+    with the first heating's MASS, on one y axis on the main side and no
+    heat flow axis at all; the heat flow is one tick away. Both shown, the
+    mass keeps the main (left) side and the heat flow goes right."""
+    win = _window(qapp, _sample(sdt_data()))
+    doc, plot = win.doc, win.plot
+    (mass,) = doc.scans
+    assert mass.is_mass and mass.visible
+    assert [a.which for a in plot.shown_axes()] == ["x", "y2"]
+    assert plot.axis_side(doc.axes["y2"]) == "left"
+    assert plot.main_axis() == "y2"
+    assert plot.y_mirrored(doc.axes["y2"]) == bool(doc.axes["y2"].mirror)
+    win.toggle_signal(model.SIGNAL_HEAT)
+    assert [a.which for a in plot.shown_axes()] == ["x", "y2", "y"]
+    assert plot.axis_side(doc.axes["y"]) == "right"
+    assert not plot.y_mirrored(doc.axes["y2"])
+    win.undo.undo()
+    assert [a.which for a in plot.shown_axes()] == ["x", "y2"]
+    plot.grab()
+
+
+def test_the_wheel_frames_the_mass_axis_when_it_is_the_main_one(qapp):
+    win = _window(qapp, _sample(sdt_data()))
+    plot = win.plot
+    before = plot.view_y2()
+    plot.scale_y(2.0)
+    assert plot.view_y2() == pytest.approx((before[0] / 2, before[1] / 2))
+
+
+def test_a_mass_scan_moves_stacks_and_converts_in_its_own_unit(qapp):
+    """Its offset is in % (or mg): G by pixels uses the mass axis, S spreads
+    mass scans in %, and switching the axis to mg carries the offsets by
+    the sample mass (20 mg: 10 % is 2 mg), one undo step."""
+    sample = _sample(sdt_data(segments=2))
+    win = _window(qapp, sample)
+    win.toggle_segment(sample, 1, True, model.SIGNAL_MASS)
+    doc, plot = win.doc, win.plot
+    first, second = doc.scans
+    assert first.is_mass and second.is_mass
+    rect = plot.plot_rect()
+    assert plot.y_per_px(rect, first) == pytest.approx(
+        (plot.view_y2()[1] - plot.view_y2()[0]) / rect.height())
+    doc.select_only([first, second])
+    assert plot.start_spread([first, second])
+    plot._scale["typed"] = "10"
+    plot._update_transform()
+    plot._finish_transform()
+    assert sorted((first.offset, second.offset)) == [0.0, 10.0]
+    moved = first if first.offset else second
+    win.set_weight_unit(model.WEIGHT_MG)
+    assert moved.offset == pytest.approx(2.0)
+    win.undo.undo()
+    assert moved.offset == pytest.approx(10.0)
+
+
+def test_a_round_25_weight_opens_as_a_mass_scan(tmp_path):
+    doc = _doc(_sample(sdt_data()), [0])
+    state = session.to_state(doc)
+    for entry in state["scans"]:
+        entry.pop("signal", None)
+        entry["weight"] = {"visible": True, "dashed": True, "z": None}
+    path = str(tmp_path / "r25.dscpanel")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(state, fh)
+    loaded, _problems = session.load(path, lambda _p: _sample(sdt_data()))
+    assert [s.signal for s in loaded.scans] == [model.SIGNAL_HEAT,
+                                                model.SIGNAL_MASS]
+
+
 # ---------------------------------------------------- F9: in the stack
-def test_the_weight_curves_are_in_the_stack(qapp):
+def test_the_mass_scans_are_in_the_stack(qapp):
     win = _window(qapp, _sample(sdt_data()))
     doc = win.doc
-    scan = doc.scans[0]
-    assert scan.weight in win.stack_objects()
-    doc.select_only([doc.legend])
-    win.restack("back")
-    assert scan.weight.z is not None
-    stack = win.stack_objects()
-    assert stack.index(scan.weight) < stack.index(doc.legend) or \
-        doc.legend.z == 0.0
-    doc.select_only([scan.weight])
-    assert win.layered_selected() == [scan.weight]
+    (scan,) = doc.scans
+    assert scan in win.stack_objects()
+    doc.select_only([scan])
+    assert win.layered_selected() == [scan]
     win.restack("front")
-    assert win.stack_objects()[-1] is scan.weight
+    assert win.stack_objects()[-1] is scan
 
 
 # ------------------------------------------------- F11: NaN, everywhere
@@ -508,6 +588,95 @@ def test_the_fits_and_the_picking_skip_flagged_samples(qapp):
     assert plot.sample_at(trace, at) == trace.first + 100
 
 
+def test_an_analysis_over_flagged_samples_is_drawn_on_measured_ones(qapp):
+    """An integration whose stretch holds flagged heat flows (CN-INDIUM-
+    CHECK's first 34 samples have a temperature and no heat flow): its
+    shading, the side its label goes and the point its arrow lands on come
+    from the measured samples - a NaN there drew the shading and the arrow
+    nowhere and put the label on the peak's side."""
+    from dscpanel.core import measure
+    from dscpanel.ui.plot import PlotWidget
+    found = {}
+    for flagged in (False, True):
+        data = _gappy_data() if flagged else make_data(points=400)
+        doc = _doc(model.Sample("C:/nowhere/GAP-1.tri", data))
+        # the other way up, so the peak is drawn upwards
+        doc.arrow.direction = ("up" if doc.arrow.direction == "down"
+                               else "down")
+        scan = doc.scans[0]
+        plot = PlotWidget(doc)
+        plot.resize(700, 450)
+        plot.rebuild(keep_view=False)
+        temp = scan.temperature()
+        analysis = measure.run("Peak Integration (enthalpy)", scan,
+                               float(temp[120]), float(temp[260]),
+                               span=(120, 260))
+        plot.rebuild(keep_view=True)
+        plot.grab()
+        trace = plot.traces[0]
+        xs, ys = plot._covered(trace, analysis)
+        assert np.all(np.isfinite(xs)) and np.all(np.isfinite(ys))
+        rect = plot.plot_rect()
+        # x of a sample whose heat flow is flagged (205): the nearest
+        # MEASURED sample is the one the curve has there
+        at = plot._curve_y_at(trace, float(trace.x[205 - trace.first]), rect)
+        assert at is not None and np.isfinite(at)
+        found[flagged] = plot.peak_points_up(analysis, trace)
+    assert found[True] == found[False] is True
+
+
+@pytest.mark.parametrize("name", [INDIUM_CHECK, GQ_EMPTY])
+def test_a_run_that_flags_its_first_samples_picks_marks_and_measures(
+        qapp, name):
+    """The real runs with leading NaN (stage 1's NaN risks 1, 4 and 5): a
+    click among the first samples picks a measured one, the offset marker
+    sits on a measured sample, and an analysis over the start measures."""
+    from PySide6.QtCore import QPointF
+    from dscpanel.core import measure
+    sample = loader.read_sample(_path(name))
+    win = _window(qapp, sample)
+    if not any(s.seg == 0 for s in win.doc.scans):
+        win.toggle_segment(sample, 0, True)
+    doc, plot = win.doc, win.plot
+    (scan,) = [s for s in doc.scans if s.seg == 0]
+    values, _base = scan.heat_flow()
+    assert np.isnan(values[0]) and np.isnan(scan.temperature()[0])
+    doc.offset_markers = True
+    win.refresh()
+    plot.grab()
+    trace = plot._trace_of(scan)
+    at = QPointF(float(plot.x_to_px(float(trace.x[20 - trace.first]))),
+                 float(plot.y_to_px(float(np.nanmean(trace.y[:60])))))
+    index = plot.sample_at(trace, at)
+    assert index is not None and np.isfinite(values[index])
+    k = plot.marker_sample(scan.marker, trace)
+    assert k is not None and np.isfinite(trace.x[k]) and np.isfinite(
+        trace.y[k])
+    temp = scan.temperature()
+    low, high = float(np.nanmin(temp[:200])), float(np.nanmax(temp[:200]))
+    for model_name in ("Onset point", "Peak Integration (enthalpy)",
+                       "Glass transition"):
+        analysis = measure.run(model_name, scan, low, high, span=(0, 200))
+        assert analysis is not None and np.isfinite(analysis.value())
+        assert not any("nan" in str(v).lower()
+                       for v in analysis.fields.values())
+    win.refresh()
+    plot.grab()
+
+
+def test_an_axis_number_at_zero_has_no_sign(qapp):
+    """Ticks are stepped in floating point, so the one at zero can be
+    -2.8e-17: GQ-empty's heat-flow axis said "-0" (found in the round-25
+    pass over the leading-NaN runs)."""
+    from dscpanel.ui.plot import PlotWidget
+    axis = model.Document().axes["y"]
+    assert axis.number_format in (None, "")
+    for which in ("x", "y", "y2"):
+        assert PlotWidget.tick_text(axis, -0.1 + 0.1 - 2.7e-17, which) == "0"
+        assert PlotWidget.tick_text(axis, -0.0, which) == "0"
+    assert PlotWidget.tick_text(axis, -0.1, "y") == "-0.1"
+
+
 def test_the_hidden_ends_are_drawn_without_flagged_samples():
     from dscpanel.ui.plot import _finite_runs
     runs = _finite_runs(np.array([np.nan, 1.0, 2.0, np.nan, 4.0, 5.0, 6.0]),
@@ -544,7 +713,7 @@ def test_the_csv_writes_the_weight_of_a_segment_without_heat_flow(tmp_path):
     step["dims"] = [step["dims"][i] for i in keep]
     step["units"] = [step["units"][i] for i in keep]
     step["nums"] = step["nums"][:, keep]
-    doc = _doc(_sample(data))
+    doc = _doc(_sample(data), [0, (0, model.SIGNAL_MASS)])
     scan = doc.scans[0]
     assert scan.missing_for(doc.y_unit, doc.x_axis) == \
         "heat flow in this segment"
@@ -552,46 +721,51 @@ def test_the_csv_writes_the_weight_of_a_segment_without_heat_flow(tmp_path):
     assert export.curves_csv(doc, path) == path
     _comments, header, rows = _csv_rows(path)
     assert header[0].endswith("Temperature/C")
-    assert header[1].endswith("Weight/%")
+    assert header[1].endswith("Mass/%")
     assert float(rows[0][1]) == pytest.approx(100.0, abs=0.01)
 
 
+def test_a_weight_with_no_heat_flow_beside_it_is_fitted_in_x(qapp):
+    """A segment that recorded a weight and no heat flow, or whose heat
+    flow cannot be drawn (the negative-weight DESY run in W/g, its weight in
+    the recorded mg): F frames the weight curve that IS drawn, not the
+    0-100 of an empty plot, which showed a TGA step cut off at 100."""
+    data = sdt_data()
+    step = data["numdata"][0]
+    keep = [0, 1, 2, 4]                     # no Heat Flow of either kind
+    step["dims"] = [step["dims"][i] for i in keep]
+    step["units"] = [step["units"][i] for i in keep]
+    step["nums"] = step["nums"][:, keep]
+    win = _window(qapp, _sample(data))
+    plot = win.plot
+    assert [t.scan.is_mass for t in plot.drawable()] == [True]
+    lo, hi = plot.data_x()
+    assert lo == pytest.approx(50.0) and hi == pytest.approx(650.0)
+    win.run_op("view.fit")
+    assert plot.view_x()[1] >= 650.0 - 1e-6
+    plot.grab()
+
+
 def test_the_csv_says_where_the_mass_came_from(tmp_path):
-    doc = _doc(_sample(sdt_data()))
+    doc = _doc(_sample(sdt_data()), [0, (0, model.SIGNAL_MASS)])
     path = str(tmp_path / "sdt.csv")
     export.curves_csv(doc, path)
     comments, header, _rows = _csv_rows(path)
     assert any("mass 20 mg (derived from the weight)" in c
                for c in comments)
-    assert header[2].endswith("Weight/%")
+    assert header[3].endswith("Mass/%")
 
 
 # ------------------------------------------------ the scan's settings
-def test_the_scan_settings_show_and_dash_the_weight(qapp):
+def test_a_mass_scans_settings_are_in_its_own_unit(qapp):
     from dscpanel.ui.dialogs import ScanSettings
-    sample = _sample(sdt_data(segments=2))
-    win = _window(qapp, sample, segments=[1])
+    win = _window(qapp, _sample(sdt_data()))
     doc = win.doc
-    first, second = doc.scans
-    doc.select_only([first, second])
-    dialog = ScanSettings(win, first, doc.y_unit)
-    dialog.set_group([second])
-    assert dialog.weight_shown.isChecked() and dialog.weight_dashed.isChecked()
-    dialog.weight_dashed.setChecked(False)
-    assert not first.weight.dashed and not second.weight.dashed
-    dialog.weight_shown.setChecked(False)
-    assert not first.weight.visible and not second.weight.visible
-    win._live_dialog_done(dialog, first, "scan settings",
-                          dialog.snapshot(), None, 1)
-    assert not second.weight.visible
-    win.undo.undo()
-    assert first.weight.visible and second.weight.visible
-    assert first.weight.dashed and second.weight.dashed
-    # a DSC scan has no weight rows
-    dsc = model.Sample("C:/nowhere/TEST-1.tri", make_data())
-    other = _window(qapp, dsc)
-    assert ScanSettings(other, other.doc.scans[0],
-                        other.doc.y_unit).weight_shown is None
+    (mass,) = doc.scans
+    dialog = ScanSettings(win, mass, doc.unit_for(mass))
+    dialog.offset.setValue(-20.0)
+    assert mass.offset == -20.0
+    assert "%" in dialog.offset.suffix()
 
 
 # ------------------------------------------------------------ presets
@@ -614,21 +788,22 @@ def test_a_preset_carries_the_weight_axis():
 def test_a_truncated_weights_hidden_ends_show_on_hover(qapp):
     win = _window(qapp, _sample(sdt_data()))
     doc, plot = win.doc, win.plot
-    scan = doc.scans[0]
+    (scan,) = doc.scans
     scan.keep = (0.1, 0.9)
     win.refresh()
-    (trace,) = plot.weight_traces
+    (trace,) = plot.traces
     assert len(trace.hidden) == 2
     doc.select_only([scan])
-    assert trace in plot.hidden_weights_shown()
+    assert trace in plot.hidden_shown()
     doc.select_only([])
-    assert not plot.hidden_weights_shown()
+    assert not plot.hidden_shown()
     plot.grab()
 
 
 # ---------------------------------------------------- the real files
 @pytest.mark.parametrize("name", [CN81_TRI, CN81_TXT, DESY_OPEN,
-                                  DESY_NO_MASS, OJ12, INDIUM_CHECK])
+                                  DESY_NO_MASS, OJ12, INDIUM_CHECK,
+                                  GQ_EMPTY])
 def test_a_real_file_goes_through_everything(qapp, tmp_path, name):
     """Open, toggle the weights, % and mg, M with the weight row, F, a
     session there and back, CSV, PNG and SVG: nothing raises, nothing NaN
@@ -662,3 +837,155 @@ def test_a_real_file_goes_through_everything(qapp, tmp_path, name):
         assert "nan" not in [cell for row in rows for cell in row]
     assert win.export_image(str(tmp_path / "f.png"), light=True)
     assert win.export_image(str(tmp_path / "f.svg"), light=True)
+
+
+# ------------------------------------ mass at a temperature (round 26)
+def test_the_mass_at_a_temperature_is_the_curves_without_its_offset():
+    """Christian's `add_annot`: the first measured sample at or past the
+    temperature, its m% - the measurement, the offset not in it."""
+    from dscpanel.core import labels, measure
+    doc = _doc(_sample(sdt_data()), [(0, model.SIGNAL_MASS)])
+    (mass,) = doc.scans
+    mass.offset = -20.0
+    analysis = measure.run(measure.MASS_AT, mass, 350.0, 350.0)
+    at = float(analysis.fields["Cursor x"].split()[0])
+    assert at >= 350.0 and at - 350.0 < 600.0 / 399 + 1e-9
+    # the step is centred on 350 degC (100 - 25 / 2 = 87.5 there); the
+    # first sample past it has lost a little more
+    assert float(analysis.fields["Mass"].split()[0]) == pytest.approx(
+        87.5, abs=0.6)             # samples are 1.5 K apart there
+    assert labels.render(analysis, doc).text == "87 %"
+    assert analysis.quantity == "mass" and not analysis.marks_a_point
+    assert not analysis.show_interval
+    doc.set_weight_unit(model.WEIGHT_MG)
+    assert labels.render(analysis, doc).text == "17 mg"   # 87.24 % of 20 mg
+    assert measure.run(measure.MASS_AT, mass, 900.0, 900.0) is None
+    # a heat flow's curve is not offered the model
+    heat = model.Scan(1, mass.sample, 0, "#ffffff")
+    assert measure.MASS_AT not in [m.name for m in measure.models_for(heat)]
+    assert measure.MASS_AT in [m.name for m in measure.models_for(mass)]
+
+
+def test_typed_temperatures_mark_every_chosen_mass_curve_in_one_step(
+        qapp, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+    sample = _sample(sdt_data(segments=2))
+    win = _window(qapp, sample)
+    win.toggle_segment(sample, 1, True, model.SIGNAL_MASS)
+    win.undo.clear()
+    doc, plot = win.doc, win.plot
+    first, second = doc.scans
+    monkeypatch.setattr(QInputDialog, "getText",
+                        lambda *a, **k: ("261, 360; 480 630", True))
+    assert win.ops.get("analysis.mass_at").enabled(win)
+    made = win.ask_mass_temperatures()
+    assert len(made) == 8
+    assert [len(s.analysis_objects) for s in (first, second)] == [4, 4]
+    plot.grab()
+    # the label hangs ABOVE its point
+    trace = plot._trace_of(first)
+    assert plot.label_offset(made[0], trace, plot.plot_rect()) < 0
+    win.undo.undo()
+    assert not first.analysis_objects and not second.analysis_objects
+    # only the selected curve, when one is selected
+    doc.select_only([second])
+    monkeypatch.setattr(QInputDialog, "getText",
+                        lambda *a, **k: ("300", True))
+    win.run_op("analysis.mass_at")
+    assert (len(first.analysis_objects), len(second.analysis_objects)) == \
+        (0, 1)
+
+
+def test_the_temperatures_are_split_without_eating_decimal_commas():
+    from dscpanel.ui.window import parse_temperatures
+    assert parse_temperatures("261, 360, 480, 630", units.TEMP_C) == \
+        [261.0, 360.0, 480.0, 630.0]
+    assert parse_temperatures("261,5 300", units.TEMP_C) == [261.5, 300.0]
+    assert parse_temperatures("98 F; 400 K", units.TEMP_C) == \
+        pytest.approx([36.667, 126.85], abs=1e-3)
+    assert parse_temperatures("hot", units.TEMP_C) is None
+
+
+def test_a_right_click_puts_a_marker_where_it_was(qapp):
+    win = _window(qapp, _sample(sdt_data()))
+    doc, plot = win.doc, win.plot
+    (mass,) = doc.scans
+    plot.grab()
+    trace = plot._trace_of(mass)
+    k = len(trace.x) // 2
+    at = plot._sample_point(trace, trace.first + k)
+    (made,) = win.mass_here(mass, at)
+    assert float(made.fields["Cursor x"].split()[0]) == pytest.approx(
+        float(trace.x[k]), abs=2.0)
+
+
+def test_a_mass_marker_survives_a_session(qapp, tmp_path):
+    from dscpanel.core import labels
+    win = _window(qapp, _sample(sdt_data()))
+    (mass,) = win.doc.scans
+    win.add_mass_markers([mass], [350.0])
+    path = win.save_session(path=str(tmp_path / "m.dscpanel"))
+    loaded, problems = session.load(path, lambda _p: _sample(sdt_data()))
+    assert not problems
+    (again,) = [a for s in loaded.scans for a in s.analysis_objects]
+    assert again.model_name == "Mass at temperature"
+    assert labels.render(again, loaded).text == "87 %"
+
+
+def test_a_marker_on_a_run_with_no_mass_says_its_recorded_mg(qapp):
+    """The negative-weight DESY run has no sample mass, so no percentage;
+    its mg are recorded, and a marker in mg says them."""
+    from dscpanel.core import labels, measure
+    sample = loader.read_sample(_path(DESY_NO_MASS))
+    doc = _doc(sample, [(0, model.SIGNAL_MASS)])
+    doc.set_weight_unit(model.WEIGHT_MG)
+    (mass,) = doc.scans
+    analysis = measure.run(measure.MASS_AT, mass, 100.0, 100.0)
+    assert "Mass" not in analysis.fields and "Mass (mg)" in analysis.fields
+    assert labels.render(analysis, doc).text.endswith(" mg")
+    assert not labels.render(analysis, doc).text.startswith("?")
+    doc.weight_unit = model.WEIGHT_PCT
+    assert labels.render(analysis, doc).text == "? %"
+
+
+# --------------------------- step 4: onsets on the mass (round 26)
+def test_trioss_mass_onsets_draw_their_construction_on_the_mass(qapp):
+    """CN-81's two onsets were made in TRIOS on the weight: they are the
+    MASS scan's, and draw TRIOS's stored construction in % on its curve."""
+    from dscpanel.core import labels, measure
+    win = _window(qapp, loader.read_sample(_path(CN81_TRI)))
+    doc, plot = win.doc, win.plot
+    (mass,) = doc.scans
+    onsets = [a for a in mass.analysis_objects if a.model_name == "Onset point"]
+    assert len(onsets) == 2
+    for analysis in onsets:
+        found = measure.tangent_points(analysis)
+        assert found.points and found.base == model.WEIGHT_PCT
+        analysis.visible = True
+    assert sorted(labels.render(a, doc).text for a in onsets) == \
+        ["*T*_{on} = 416 °C", "*T*_{on} = 476 °C"]
+    win.refresh()
+    plot.grab()
+    trace = plot._trace_of(mass)
+    for analysis in onsets:
+        lines = plot.tangent_lines(trace, analysis)
+        assert lines and len(lines) == 2
+
+
+def test_an_onset_is_measured_on_a_mass_curve():
+    from dscpanel.core import measure
+    doc = _doc(_sample(sdt_data()), [(0, model.SIGNAL_MASS)])
+    (mass,) = doc.scans
+    assert "Onset point" in [m.name for m in measure.models_for(mass)]
+    analysis = measure.run("Onset point", mass, 250.0, 360.0)
+    # the step's steepest point is at 350 degC; its onset a little before
+    onset = float(analysis.fields["Onset x"].split()[0])
+    assert 310.0 < onset < 350.0
+    found = measure.tangent_points(analysis)
+    assert found.points and found.base == model.WEIGHT_PCT
+    # a heat flow's construction is never drawn on the mass, nor the other
+    # way round
+    analysis.source = "file"
+    analysis.stored_construction = found.points
+    analysis.fields["variable"] = "Heat Flow (Normalized)"
+    assert measure.tangent_points(analysis).points is None

@@ -31,16 +31,19 @@ class Measurement(object):
     business: a template per kind, with the measured value filled in.
     """
 
-    def __init__(self, name, run, needs=2, note="", title="", label=""):
+    def __init__(self, name, run, needs=2, note="", title="", label="",
+                 signals=(model.SIGNAL_HEAT,)):
         self.name = name
         self.title = title or name
         self.label = label
         self.run = run
-        #: How many cursors it takes. Everything here takes two so far; a
-        #: one-cursor model (a value at a point) fits without changing
-        #: anything else.
+        #: How many cursors it takes: two for an interval, one for a value
+        #: at a point (the mass at a temperature, which stores its one
+        #: temperature as both cursors).
         self.needs = needs
         self.note = note
+        #: Which curves it is offered on: a heat flow's, a mass's.
+        self.signals = tuple(signals)
 
 
 def _series(scan, span=None):
@@ -64,13 +67,22 @@ def _series(scan, span=None):
     """
     temperature = scan.temperature()
     minutes = scan.time_min()
-    values, base = scan.heat_flow()
-    if temperature is None or values is None:
-        return None
-    if base != "W/g":
-        if not scan.sample.mass_g:
+    if getattr(scan, "is_mass", False):
+        # A MASS scan is measured on its mass: % of the sample mass where
+        # the file has it, else the recorded mg (`series_unit`).
+        values = scan.weight_values(model.WEIGHT_PCT)
+        if values is None:
+            values = scan.weight_values(model.WEIGHT_MG)
+        if temperature is None or values is None:
             return None
-        values = values / float(scan.sample.mass_g)
+    else:
+        values, base = scan.heat_flow()
+        if temperature is None or values is None:
+            return None
+        if base != "W/g":
+            if not scan.sample.mass_g:
+                return None
+            values = values / float(scan.sample.mass_g)
     if minutes is None:
         minutes = np.arange(len(values), dtype=float)
     # Only what is DRAWN: a truncated end is gone from the analyses too, and
@@ -93,6 +105,17 @@ def _series(scan, span=None):
                                         temperature[measured],
                                         values[measured])
     return minutes, temperature, values
+
+
+def series_unit(scan):
+    """The unit `_series` measures in: W/g for a heat flow, % (or the
+    recorded mg, where the file has no percentage it can trust) for a
+    mass."""
+    if getattr(scan, "is_mass", False):
+        return (model.WEIGHT_PCT
+                if scan.weight_values(model.WEIGHT_PCT) is not None
+                else model.WEIGHT_MG)
+    return units.UNIT_W_G
 
 
 def acquisition_order(scan, x0, x1, span=None):
@@ -229,23 +252,82 @@ def peak_height(scan, x0, x1, span=None):
     return out
 
 
+MASS_AT = "Mass at temperature"
+
+
+def mass_at(scan, x0, x1=None, span=None):
+    """The mass of a MASS scan at one temperature (Christian's
+    `add_annot`, 2026-09-28): the first MEASURED sample at or past `x0` degC
+    in the order the run went (heating: the first at or above it), its
+    temperature, and its mass in % and in mg where the file has them. The
+    offset is not in it: this is the measurement."""
+    if not getattr(scan, "is_mass", False):
+        return None
+    temperature = scan.temperature()
+    if temperature is None or not len(temperature):
+        return None
+    percent = scan.weight_values(model.WEIGHT_PCT)
+    grams = scan.weight_values(model.WEIGHT_MG)
+    if percent is None and grams is None:
+        return None
+    lo, hi = scan.kept_range(len(temperature))
+    temp = np.asarray(temperature, dtype=float)
+    known = np.zeros(len(temp), dtype=bool)
+    for column in (percent, grams):
+        if column is not None:
+            with np.errstate(invalid="ignore"):
+                known |= np.isfinite(np.asarray(column, dtype=float))
+    with np.errstate(invalid="ignore"):
+        known &= np.isfinite(temp)
+        if scan.direction() == "down":
+            past = temp <= float(x0)
+        else:
+            past = temp >= float(x0)
+    index = np.flatnonzero(known & past)
+    index = index[(index >= lo) & (index < hi)]
+    if not len(index):
+        return None
+    k = int(index[0])
+    at = "{:.4f} \u00b0C".format(float(temp[k]))
+    out = {"Model": MASS_AT, "Cursor x": at, "Cursor x1": at,
+           "Sample": str(k)}
+    if percent is not None and np.isfinite(percent[k]):
+        out["Mass"] = "{:.4f} %".format(float(percent[k]))
+    if grams is not None and np.isfinite(grams[k]):
+        out["Mass (mg)"] = "{:.5f} mg".format(float(grams[k]))
+    if "Mass" not in out and "Mass (mg)" not in out:
+        return None
+    return out
+
+
 #: The quick-select list, in the order it is offered. Onset first because it
 #: is what a Tg run is analysed with, then the integral, then the rest.
 MODELS = (
     Measurement("Onset point", onset, title="Onset",
-                note="tangent from the flat part to the transition"),
+                note="tangent from the flat part to the transition",
+                signals=(model.SIGNAL_HEAT, model.SIGNAL_MASS)),
     Measurement("Peak Integration (enthalpy)", integrate, title="Integration",
                 note="area against a linear baseline"),
     Measurement("Glass transition", glass_transition,
                 title="Glass transition",
                 note="onset, midpoint and end of the step"),
     Measurement("Endset point", endset, title="Endset",
-                note="the tangent construction, from the other side"),
+                note="the tangent construction, from the other side",
+                signals=(model.SIGNAL_HEAT, model.SIGNAL_MASS)),
     Measurement("Peak height", peak_height, title="Peak height",
                 note="height above the baseline between the cursors"),
     Measurement("Signal change", signal_change, title="Signal change",
                 note="how much the signal moved between the cursors"),
+    Measurement(MASS_AT, mass_at, needs=1, title="Mass at temperature",
+                note="the m% at one temperature",
+                signals=(model.SIGNAL_MASS,)),
 )
+
+
+def models_for(scan):
+    """The models offered on `scan`'s curve: a heat flow's or a mass's."""
+    signal = getattr(scan, "signal", model.SIGNAL_HEAT)
+    return [entry for entry in MODELS if signal in entry.signals]
 
 
 def by_name(name):
@@ -272,6 +354,9 @@ def run(name, scan, x0, x1, span=None):
                               source="panel", attribution="measured here")
     analysis.span = clean_span(span)
     analysis.visible = True
+    if entry.needs == 1:
+        # A value at a point: no interval to mark.
+        analysis.show_interval = False
     # No label of its own: the default template of its kind, whose `{}` is
     # always the current measurement (`core/labels.py`).
     analysis.label = None
@@ -323,7 +408,12 @@ DEGENERATE = ("The tangents cross far outside the interval: drawn as "
 
 #: The unit a stored construction's y is in, by the reader's `variable`.
 _BASE_OF = {"Heat Flow (Normalized)": units.UNIT_W_G,
-            "Heat Flow": units.BASE_UNIT}
+            "Heat Flow": units.BASE_UNIT,
+            # An onset of mass loss, made on the weight (the reader's name
+            # for TRIOS's Weight (%) is "Weight Change"): drawn on the MASS
+            # scan it belongs to.
+            "Weight Change": model.WEIGHT_PCT,
+            "Weight": model.WEIGHT_MG}
 
 
 def tangent_points(analysis, scan=None):
@@ -373,10 +463,15 @@ def lines_note(analysis, doc=None):
     found = tangent_points(analysis)
     if not found.points:
         return found.reason
-    unit = getattr(doc, "y_unit", units.UNIT_W_G)
     scan = analysis.scan
-    missing = units.factor(unit, found.base, scan.sample.mass_g,
-                           scan.molar_mass)[1]
+    if getattr(scan, "is_mass", False):
+        unit = getattr(doc, "weight_unit", model.WEIGHT_PCT)
+        missing = (None if unit == found.base or scan.sample.mass_g
+                   else "sample mass")
+    else:
+        unit = getattr(doc, "y_unit", units.UNIT_W_G)
+        missing = units.factor(unit, found.base, scan.sample.mass_g,
+                               scan.molar_mass)[1]
     if missing:
         return "Drawing them needs the {}: drawn as chords.".format(missing)
     return ""
@@ -390,10 +485,12 @@ def _stored_construction(analysis, scan):
                             else NO_TANGENTS_FILE)
     variable = analysis.fields.get("variable")
     base = _BASE_OF.get(variable)
-    if base is None:
+    on_mass = base in (model.WEIGHT_PCT, model.WEIGHT_MG)
+    if base is None or on_mass != bool(getattr(scan, "is_mass", False)):
+        # A construction in % has no place on heat-flow axes, nor one in
+        # W/g on a mass's.
         return Construction(None, None, ON_THE_WEIGHT
-                            if variable == "Weight Change"
-                            else NO_TANGENTS_FILE)
+                            if on_mass else NO_TANGENTS_FILE)
     wanted = 4 if "Glass" in analysis.model_name else 3
     try:
         cleaned = [[float(x), float(y)] for x, y in points]
@@ -445,7 +542,7 @@ def _python_construction(analysis, scan):
     if not points or not np.all(np.isfinite(points)):
         return Construction(None, None, NOT_FITTED)
     return Construction([[float(x), float(y)] for x, y in points],
-                        units.UNIT_W_G, "")
+                        series_unit(scan), "")
 
 
 def relabelled(analysis, fields):

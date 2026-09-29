@@ -25,12 +25,15 @@ classifiers = [
 dependencies = [
     "numpy",
     "PySide6",
+    # Skeletal structures from a pasted SMILES (core/chem.py). A core
+    # dependency since 2026-09-28: pasting one on a fresh install failed
+    # silently. A session with a structure opens without it all the same.
+    "rdkit",
 ]
 
 [project.optional-dependencies]
 test = ["pytest"]
-# Skeletal structures from a pasted SMILES (core/chem.py). A session with a
-# structure in it opens without RDKit; only making a new one needs it.
+# Kept so `pip install .[structures]` still works; RDKit is a dependency.
 structures = ["rdkit"]
 
 [project.urls]

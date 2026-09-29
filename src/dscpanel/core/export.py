@@ -43,10 +43,6 @@ def warnings_for(doc, exo=True):
     for scan, missing in doc.scans_missing():
         out.append("NO {}: {} is not drawn".format(missing.upper(),
                                                    scan.display_name()))
-    # A weight switched on that cannot be drawn, the same way (round 25).
-    for scan, missing in doc.weights_missing():
-        out.append("NO {}: {} weight is not drawn".format(
-            missing.upper(), scan.display_name()))
     # A label that asks for a unit it cannot be given without a mass is a
     # missing value, exactly like a per-mole axis without M.
     for analysis, rendered in _rendered_labels(doc):
@@ -86,40 +82,33 @@ def curves_csv(doc, path):
     cooling scan runs the other way. Interpolating them onto a common grid
     would be inventing data.
 
-    A scan's weight (an SDT or TGA run, round 25) shares its samples, so it
-    is a third column beside the pair - or the second, for a segment that
-    recorded a weight and no heat flow. A flagged sample (NaN) is an EMPTY
-    cell, as in TRIOS's own export, never the text "nan".
+    A mass scan (an SDT run's m%) is a pair like any other, its y named
+    "Mass". A flagged sample (NaN) is an EMPTY cell, as in TRIOS's own
+    export, never the text "nan".
     """
     # The KEPT part of each: a truncated end is not part of the figure, so
     # it is not part of its numbers either.
     blocks = []
     for scan in doc.visible_scans():
-        x, y = scan.kept_curve(doc.x_axis, doc.y_unit, doc.exo, doc.x_unit)
-        weight = None
-        if scan.weight.visible and scan.has_weight():
-            wx, weight = scan.weight_curve(doc.x_axis, doc.weight_unit,
-                                           doc.x_unit)
-            if x is None:
-                x = wx
+        x, y = scan.kept_curve(doc.x_axis, doc.unit_for(scan), doc.exo,
+                               doc.x_unit)
         if x is None:
             continue
-        blocks.append((scan, x, y, weight))
+        blocks.append((scan, x, y, None))
     if not blocks:
         return None
     columns, headers = [], []
     x_label = ("Temperature/C" if doc.x_axis == model.AXIS_TEMPERATURE
                else "Time/min")
-    for scan, x, y, weight in blocks:
+    for scan, x, y, _unused in blocks:
         name = scan.display_name().replace(",", " ")
         columns.append(x)
         headers.append("{} {}".format(name, x_label))
         if y is not None:
             columns.append(y)
-            headers.append("{} HeatFlow/{}".format(name, doc.y_unit))
-        if weight is not None:
-            columns.append(weight)
-            headers.append("{} Weight/{}".format(name, doc.weight_unit))
+            headers.append("{} {}/{}".format(
+                name, "Mass" if scan.is_mass else "HeatFlow",
+                doc.unit_for(scan)))
     rows = max(len(c) for c in columns)
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("# {} export\n".format(branding.APP_NAME))
@@ -224,13 +213,14 @@ def driver_source(doc):
     y_dim = {units.UNIT_MW: "'Q'", units.UNIT_W_G: "'Qn'",
              units.UNIT_W_MOL: "'Qn'"}.get(doc.y_unit, "'Qn'")
     x_dim = "'T'" if doc.x_axis == model.AXIS_TEMPERATURE else "'t'"
-    for scan in doc.visible_scans():
+    heat = [s for s in doc.visible_scans() if not s.is_mass]
+    for scan in heat:
         i = index[os.path.normcase(scan.sample.path)]
         lines.append("    add_line(ax, datas, ({}, {}), color='{}', x={},"
                      " y={}, label={!r})".format(
                          i, scan.seg, scan.colour, x_dim, y_dim,
                          scan.display_name()))
-    for scan in doc.visible_scans():
+    for scan in heat:
         if scan.is_truncated():
             # The template's own function, with the same fractions: it
             # slices x[int(n * x0):int(n * x1)] exactly as the panel does.
@@ -238,7 +228,7 @@ def driver_source(doc):
             lines.append("    x_truncate(ax, datas, ({}, {}), x0={:.6g}, "
                          "x1={:.6g})".format(i, scan.seg, scan.keep[0],
                                              scan.keep[1]))
-    for scan in doc.visible_scans():
+    for scan in heat:
         if scan.offset:
             i = index[os.path.normcase(scan.sample.path)]
             lines.append("    y_offset(ax, datas, ({}, {}), {:.6g})".format(
@@ -280,8 +270,7 @@ def _weight_lines(doc, index, x_dim):
     panel draws them (round 25): the template's own `add_line` with the
     reader's "Weight Change" (%) or "Weight" (mg), dashed, truncated like
     their scan, at the panel's range and on its side."""
-    scans = [s for s in doc.visible_scans()
-             if s.weight.visible and s.has_weight()]
+    scans = [s for s in doc.visible_scans() if s.is_mass]
     if not scans:
         return []
     dim = ("'Weight Change'" if doc.weight_unit == model.WEIGHT_PCT
@@ -295,8 +284,7 @@ def _weight_lines(doc, index, x_dim):
         out.append("    add_line(ax2, datas, ({}, {}), color='{}', ls={!r}, "
                    "x={}, y={}, label={!r})".format(
                        i, scan.seg, scan.colour,
-                       "--" if scan.weight.dashed else "-", x_dim, dim,
-                       "{} (weight)".format(scan.display_name())))
+                       "-", x_dim, dim, scan.display_name()))
         if scan.is_truncated():
             out.append("    x_truncate(ax2, datas, ({}, {}), x0={:.6g}, "
                        "x1={:.6g})".format(i, scan.seg, scan.keep[0],
@@ -438,8 +426,7 @@ def _legend_lines(doc):
     size = float(style.value(doc, legend, "size"))
     out = []
     handles = ""
-    if any(isinstance(entry, model.WeightCurve)
-           for entry, _text in legend.entries(doc)):
+    if any(entry.is_mass for entry, _text in legend.entries(doc)):
         # The weight lines are on ax2: one legend for both axes.
         out.append("    handles = (ax.get_legend_handles_labels()[0]"
                    " + ax2.get_legend_handles_labels()[0])")
@@ -573,7 +560,7 @@ def doc_view_x(doc):
         return view
     lo, hi = None, None
     for scan in doc.visible_scans():
-        x, _y = scan.kept_curve(doc.x_axis, doc.y_unit, doc.exo,
+        x, _y = scan.kept_curve(doc.x_axis, doc.unit_for(scan), doc.exo,
                                 doc.x_unit)
         if x is None or not len(x):
             continue
