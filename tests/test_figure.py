@@ -1,6 +1,6 @@
 """The figure's size: exact, repeatable, and the same in every export.
 
-Christian's case: two session files - first up-scans in one, second
+The case in point: two session files - first up-scans in one, second
 up-scans in the other - exported with the same size settings must drop into
 Word side by side with their axes boxes the same size and in the same place.
 So these check the FILES, not only the layout code: pixel counts, the DPI
@@ -160,6 +160,9 @@ def test_axes_sit_on_either_side_and_hide_numbers_and_caption(window):
 def test_an_exact_margin_that_is_too_narrow_says_so(window):
     layout = _exact(window)
     layout.margin_left, layout.margin_bottom = 3.5, 2.0   # room to spare
+    # ...and on the right, where the last x number reaches past the box
+    # (the offscreen platform's glyphs are wide boxes).
+    layout.margin_right = 1.5
     window.refresh()
     assert window.plot.overflow() == []
     layout.margin_left = 0.2

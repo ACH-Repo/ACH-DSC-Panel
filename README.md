@@ -1,26 +1,39 @@
-# DSC-Panel
+# Triplot
 
 An interactive panel for stacked DSC scans from TA Instruments **TRIOS**
 files. Drop `.tri` files on it, stack the scans into the arrangement you want,
 mark an interval on a curve to analyse it, and hand the result to a figure: a
 PNG or SVG, a CSV, or a `DSC_Plotter.py` script that redraws it in matplotlib.
 
-It is the ergonomics of the PXRD window in ACH-MoloM, rebuilt for calorimetry.
 It reads TRIOS `.tri` files and `.txt` exports from DSC and SDT (TGA + DSC)
-instruments with its own reader (it came from ACH-DSC-Plotter, retired on
-2026-09-28), validated against TRIOS's exports value by value
-(`docs/TRI-FORMAT.md`, `tests/test_reader.py`).
+instruments with its own reader, validated against TRIOS's exports value by
+value (`tests/test_reader.py`).
 
 ```bash
-pip install git+https://github.com/ACH-Repo/ACH-DSC-Panel.git@v1.0.0
-dsc-panel                    # or find "DSC-Panel" in the Start Menu
-dsc-panel my-sample.tri      # straight into a file
+pip install triplot
+triplot                      # start it
+triplot my-sample.tri        # straight into a file
+triplot register             # put it in the Start Menu (optional)
 ```
 
-The repository is private: pip asks for access to it (a GitHub login or
-token), as `git clone` would. From a checkout, `pip install -e <checkout>`
-installs it editable. Version 1.0.0 (2026-09-29); what it does is in
-`CHANGELOG.md`, where the family goes next in `docs/FAMILY.md`.
+Python 3.10 or newer; PySide6 (the Essentials only), numpy and RDKit come
+with it. From a checkout, `pip install -e <checkout>` installs it editable.
+Version 1.1.0; what changed is in `CHANGELOG.md`.
+
+It was called **DSC-Panel** until 1.0.0 and installed from the repository
+as `ach-dsc-panel`. To move over, uninstall that first (both install the
+same `dscpanel` package), then clean up the old name's Start Menu entry:
+
+```bash
+pip uninstall ach-dsc-panel
+pip install triplot
+triplot register --clean-legacy
+triplot register
+```
+
+Its preferences, presets and window place come across by themselves the
+first time Triplot starts, and saved figures keep their `.dscpanel`
+extension.
 
 ## What it does differently from a plotting script
 
@@ -29,8 +42,9 @@ installs it editable. Version 1.0.0 (2026-09-29); what it does is in
   colour and right-click. A file opens with its first heating scan on the
   plot and every other segment listed in the outliner, one tick away - so
   comparing the second and third up-scans of four samples is four ticks.
-- **Two themes.** `blender-default` is the dark screen one, `light` is the
-  same figure on white. Exports are always light, whichever is on screen.
+- **Three themes.** `blender-default` is the dark screen one, `light` is
+  the same figure on white, `boombox` a brushed-metal dark one. Exports are
+  always light, whichever is on screen.
 - **Analyses are objects, and they start off.** A run carries a dozen stored
   analyses; each is a row in the outliner with its own box, its own colour
   and its own settings. Where the file could not say for certain which scan
@@ -70,8 +84,6 @@ installs it editable. Version 1.0.0 (2026-09-29); what it does is in
 
 ## Keys
 
-The navigation is MoloM's PXRD window and ORCA Workbench's, key for key.
-
 | Key | What it does |
 | :-- | :-- |
 | click | select what is under the pointer (`Shift` adds) |
@@ -85,10 +97,10 @@ The navigation is MoloM's PXRD window and ORCA Workbench's, key for key.
 | `Alt` + swipe or middle drag | zoom the page, like a document; with `Shift`, move it (`Alt+F` fits it again) |
 | `Z` | cycle zoom: box, horizontal, vertical (`Esc` leaves) |
 | `P` | cycle pan: horizontal, vertical, free |
-| `F` / `Home` | fit the view (x first, then y), with room for every analysis label shown |
+| `F` / `Home` | fit the view, with room for every analysis label shown |
 | `Esc` | back to plain select |
 | `G` | grab the selection: move, or type a number, `Enter` to confirm - the only way a scan moves |
-| `X` / `Y` while moving | lock an axis (x only applies to artists) |
+| `X` / `Y` while moving | lock a direction (a scan only moves in y) |
 | `Shift` / `Ctrl` while moving | precision / snap to round numbers |
 | `R` | reset the selected offsets to zero (or all of them) |
 | a number | move the selected scans by it; `Enter` confirms, `Esc` cancels |
@@ -121,8 +133,8 @@ arrow stretching to follow.
 The menu bar is File, Edit, **Search** (the same as `F3`) and Help (About).
 Everything else lives in the search, filtered by what is selected.
 
-Right-click a curve for its three entries (settings, molar mass, add a
-label).
+Right-click a curve for its settings, its molar mass, a label or a note;
+right-click an axis's number to hide it (its tick stays).
 
 The figure follows the DSC_Plotter template: no grid, ticks pointing inward
 with minor ticks, an italic `T` against an upright unit, and integrations
@@ -148,8 +160,8 @@ Cancel or the window's X - and the interval is confirmed and the gizmos go.
 
 The arithmetic is `trios_analysis`, the same code the reader uses for the
 analyses TRIOS stored, so a measurement made here and one read out of a `.tri`
-are the same kind of thing. Against a stored integration in OJ-12 the panel
-computes 13.3 J/g where the file says 13.2611.
+are the same kind of thing. Against a stored integration in a reference run
+the panel computes 13.3 J/g where the file says 13.2611.
 
 Each analysis marks its interval with a dash on the curve at each end, in
 the axis colour; an onset, endset or glass transition also gets straight
@@ -209,7 +221,10 @@ by side in Word without adjusting. On screen the figure is shown as its page,
 scaled to fit. **Use for new figures** makes a layout the default.
 
 Each axis can sit on either side (x bottom or top, y left or right) and hide
-its numbers or its caption (double-click the axis line).
+its numbers, single numbers or its caption (double-click the axis line or
+its numbers). On an exact figure an axis moved to its other side takes its
+margin with it, and no margin can be cut into the numbers it holds - the
+one at the corner of the box included.
 
 ## Exports
 
@@ -217,33 +232,33 @@ its numbers or its caption (double-click the axis line).
 | :-- | :-- |
 | PNG / SVG | the figure, drawn in the light palette, warnings stamped on; at an exact size, exactly that size (the PNG carries its dpi, the SVG its millimetres) |
 | CSV | the curves as numbers, one x/y column pair per scan |
-| `DSC_Plotter.py` | the arrangement as a driver for ACH-DSC-Plotter |
+| `DSC_Plotter.py` | the arrangement as a driver script for the DSC_Plotter matplotlib template |
 
-The last one is the point of the panel: it arranges, the plotter publishes.
-With `achdsc` installed it writes a complete, runnable `DSC_Plotter.py` with
+The driver needs that template's `achdsc` package, which is not on PyPI.
+With it installed the export is a complete, runnable `DSC_Plotter.py` with
 your paths, segments, colours and offsets already in it; without it, the
 driver section alone, to paste into a copy made by `dsc -c .`.
 
-## The name, and changing it
+## The Start Menu, aliases, and the name
 
-`DSC-Panel` is a working title, so the name lives in exactly one module
-(`src/dscpanel/branding.py`) and a test fails if it is hard-coded anywhere
-else. Putting the program in the Start Menu is opt-in and reversible, and it
-writes down what it created, so a later rename can take the old name away:
+The name lives in exactly one module (`src/dscpanel/branding.py`) and a test
+fails if it is hard-coded anywhere else; that is how DSC-Panel became
+Triplot. Putting the program in the Start Menu is opt-in and reversible,
+and it writes down what it created, so a rename can take the old name away:
 
 ```bash
-dsc-panel register              # Start Menu entry (add --desktop for one there too)
-dsc-panel register --list       # what is registered
-dsc-panel register --remove     # take it away again
-dsc-panel register --clean-legacy   # after a rename: remove the old name's entries
+triplot register                # Start Menu entry (add --desktop for one there too)
+triplot register --list         # what is registered
+triplot register --remove       # take it away again
+triplot register --clean-legacy # after a rename: remove the old name's entries
 ```
 
 Your own name for it, on any platform (a `.cmd` shim on Windows, a symlink in
 `~/.local/bin` elsewhere):
 
 ```bash
-dsc-panel alias dscp
-dsc-panel alias dscp --remove
+triplot alias tp
+triplot alias tp --remove
 ```
 
 ## Project layout
@@ -268,5 +283,7 @@ python -m pytest -q
 ```
 
 Measurements are not committed. The tests that need a real `.tri` look for
-paths in `ACHDSC_TESTDATA` or in an uncommitted `tests/local_testdata.txt`,
-and skip when there are none.
+paths in `TRIOS_TESTDATA` or in an uncommitted `tests/local_testdata.txt`,
+and skip when there are none. They name a real file by a hash of its file
+name (`tests/conftest.py`, `hashed_name`), so no sample id is in the
+source.

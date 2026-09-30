@@ -32,7 +32,7 @@ This file is GENERATED. After adding an operator, run:
 | :-- | :-- | :-- | :-- |
 | Copy the selected labels | `Ctrl+C` | always |  |
 | Paste (a picture, a SMILES, text) | `Ctrl+V` | always |  |
-| Paste as a text label | `Ctrl+Shift+V` | always |  |
+| Paste as a text label | `Ctrl+Alt+V` | always |  |
 | Undo | `Ctrl+Z` | there is something to undo | also walks back zoom, pan and fit, one gesture at a time |
 | Redo | `Ctrl+Y` | there is something to redo |  |
 | Figure size and margins... |  | always | exact cm/in and margins, saved with the session |
@@ -54,6 +54,8 @@ This file is GENERATED. After adding an operator, run:
 
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
+| Mirror horizontally (left-right) | `Ctrl+Shift+H` | always |  |
+| Mirror vertically (top-bottom) | `Ctrl+Shift+V` | always |  |
 | Move the selection | `G, then a number, Enter (Esc cancels)` | something is selected | then a number, Enter; Shift is precision, Ctrl snaps |
 | Scale the selection | `S, then move or type a factor, Enter (Esc cancels); with only scans selected, spreads them about y = 0` | the arrow, the legend or a label is selected |  |
 | Align the artists' left edges | `Ctrl+Shift+Alt+L` | always |  |
@@ -106,6 +108,8 @@ This file is GENERATED. After adding an operator, run:
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
 | Fit the page to the window | `Alt+F` | always |  |
+| Tighten the page margins |  | always |  |
+| Decorators follow the zoom (on / off) |  | always |  |
 | Lock the current framing |  | always |  |
 | Unlock the framing (F fits the data) |  | always |  |
 | Fit the view | `F or Home` | a scan is open |  |

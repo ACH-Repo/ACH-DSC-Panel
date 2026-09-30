@@ -1,7 +1,7 @@
 """Number boxes that take a sum as well as a number.
 
-Christian, 2026-09-29: "just subtract 20 from 255 inside the box". Every
-number box of the program is one of these (`NumberBox`, `WholeBox`).
+"255-20" in a box is 235. Every number box of the program is one of these
+(`NumberBox`, `WholeBox`).
 """
 
 from PySide6.QtCore import QLocale
@@ -13,7 +13,7 @@ from ..core import numbers
 
 class _Sums(object):
     """A spin box that takes a SUM as well as a number: "255-20" is 235
-    (Christian, 2026-09-29), worked out on Enter or when the box is left.
+    worked out on Enter or when the box is left.
     `core.numbers.evaluate`: + - * / and brackets, a comma is a decimal
     point. A sum past the range is clamped to it."""
 
@@ -96,3 +96,8 @@ class WholeBox(_Sums, QSpinBox):
     @staticmethod
     def _cast(value):
         return int(round(value))
+
+# Qt calls the handlers here by itself; an error in one is logged and
+# survived rather than the end of the program (`core/log.py`).
+from ..core import log as _log
+_log.guard_classes(globals(), __name__)

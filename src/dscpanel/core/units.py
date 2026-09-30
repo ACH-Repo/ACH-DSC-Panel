@@ -1,18 +1,17 @@
 """What the y axis means, and what a scan needs before it can say so.
 
-UI-free on purpose (the golden rule this project inherits from MoloM and ORCA
-Workbench): everything here is arithmetic and naming, so it can be tested
-without a window.
+UI-free on purpose: everything here is arithmetic and naming, so it can be
+tested without a window.
 
-**A scan is never normalised to itself.** Christian's rule, and it is a
-statement about DSC rather than a preference: a diffractogram or an IR
-spectrum can defensibly be scaled to its own maximum, because the quantity of
-interest is where the features are. A DSC trace carries a baseline that
-depends on the sample mass, the pan, the heating rate and the sensor, and
-scaling each trace by its own extremum would silently make those differences
-disappear - which is exactly the comparison a stack of DSC scans is for. So
-every conversion here is a PHYSICAL one: watts, watts per gram, watts per
-mole. Nothing divides by a curve's own maximum anywhere in this program.
+**A scan is never normalised to itself.** This is a statement about DSC rather
+than a preference: a diffractogram or an IR spectrum can defensibly be scaled
+to its own maximum, because the quantity of interest is where the features are.
+A DSC trace carries a baseline that depends on the sample mass, the pan, the
+heating rate and the sensor, and scaling each trace by its own extremum would
+silently make those differences disappear - which is exactly the comparison a
+stack of DSC scans is for. So every conversion here is a PHYSICAL one: watts,
+watts per gram, watts per mole. Nothing divides by a curve's own maximum
+anywhere in this program.
 
 **Per mole is opt-in and cannot be guessed.** Heat flow is a power, so W/mol
 is (W/g) x (g/mol) and needs the molar mass of the substance. There is no

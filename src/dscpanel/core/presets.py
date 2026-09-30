@@ -14,9 +14,9 @@ What a preset holds:
   settings; the others are then left as they are.
 * **the size and margins**, optionally (`core/figure.py`): with them, two
   figures made with one preset have the same axes box to the hundredth of a
-  millimetre - Christian's two stacks side by side in Word (round 12).
-* **the frame and the furniture** every figure has (round 24: the arrow's
-  place and the axis captions did not come across): both axes - caption,
+  millimetre - two stacks side by side in Word.
+* **the frame and the furniture** every figure has (the arrow's place and
+  the axis captions once did not come across): both axes - caption,
   sizes, distances, ticks, numbers, sides - and the weight axis of an SDT
   run (all but its side, which follows the heat flow's), the heat-flow
   arrow's place,

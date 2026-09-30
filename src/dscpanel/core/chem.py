@@ -5,7 +5,7 @@ rings and chains the way a chemist would), and this hands back plain data -
 elements, positions, hydrogens, charges, bond orders - which the plot draws
 itself with its own painter (`ui/plot.py`). Drawn that way a structure is
 VECTOR in every export, its bond width and label size are settings, and its
-labels can stay upright when the structure is rotated (Christian, round 20).
+labels can stay upright when the structure is rotated.
 RDKit's own drawing would give a picture, none of that.
 
 The layout is STORED with the figure, so a session with a structure opens
@@ -46,7 +46,7 @@ def plausible_smiles(text):
     branches balance, and every ring-closure number is opened and closed.
     Not proof - RDKit alone parses it - but enough to tell "O=C(O)CCCCC(O)=O"
     from a word, which is what the program must know to say RDKit is
-    missing (Christian, 2026-09-28: pasting one "failed silently")."""
+    missing (pasting one otherwise did nothing visible)."""
     text = str(text or "").strip()
     if not text or "\n" in text or not _SMILES.match(text):
         return False
@@ -118,8 +118,8 @@ def layout(smiles):
         pass
     rdDepictor.Compute2DCoords(molecule)
     # Which single bond at each stereocentre is drawn as a wedge or a hash,
-    # chosen by RDKit from the layout (Christian, round 24). It puts the
-    # stereocentre first in each such bond.
+    # chosen by RDKit from the layout. It puts the stereocentre first in
+    # each such bond.
     try:
         Chem.WedgeMolBonds(molecule, molecule.GetConformer())
     except Exception:
@@ -215,3 +215,38 @@ def label_of(atom, hydrogens_left=False):
         sign = "+" if charge > 0 else "−"
         text += "^{%s%s}" % ("" if abs(charge) == 1 else abs(charge), sign)
     return text
+
+
+def mirrored_layout(atoms, bonds, horizontal=True):
+    """A drawn structure mirrored left-right (or top-bottom) about its
+    middle, as NEW lists: `(atoms, bonds)`. Wedges and hashes swap, so it
+    is the same molecule drawn the other way round and not its mirror
+    image. Labels stay upright: they are drawn at the atoms' places,
+    never mirrored themselves."""
+    key = "x" if horizontal else "y"
+    values = [float(atom.get(key, 0.0)) for atom in atoms]
+    if not values:
+        return list(atoms), list(bonds)
+    middle = (min(values) + max(values)) / 2.0
+    new_atoms = []
+    for atom in atoms:
+        moved = dict(atom)
+        moved[key] = 2.0 * middle - float(atom.get(key, 0.0))
+        new_atoms.append(moved)
+    swap = {"wedge": "hash", "hash": "wedge"}
+    index = 0 if horizontal else 1
+    new_bonds = []
+    for bond in bonds:
+        turned = dict(bond)
+        if turned.get("stereo") in swap:
+            turned["stereo"] = swap[turned["stereo"]]
+        # A ring's double bond keeps the centre of its ring, which says
+        # which side its inner line is on: it mirrors with the atoms, or
+        # the line is drawn outside the ring.
+        ring = turned.get("ring")
+        if ring and len(ring) == 2:
+            ring = [float(ring[0]), float(ring[1])]
+            ring[index] = 2.0 * middle - ring[index]
+            turned["ring"] = ring
+        new_bonds.append(turned)
+    return new_atoms, new_bonds

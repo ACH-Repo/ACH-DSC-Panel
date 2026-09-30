@@ -2,15 +2,15 @@
 
 The plot paints its own theme (`ui/plot.py`, `THEMES`). Everything else - the
 outliner, the menus, the status bar, every dialog - is Qt's, and it followed
-the system's light look while the plot beside it was dark. Christian: when
-the plot is dark, so should every window be.
+the system's light look while the plot beside it was dark. When the plot
+is dark, so should every window be.
 
-So the application palette follows the plot's theme: MoloM's dark greys
-(`apply_dark_theme` there, Fusion style plus a Blender-ish palette) for
-`blender-default`, Fusion's own light palette for `light`, ORCA Workbench's
-Boombox skin for `boombox`. Fusion in every case, because a palette only fully applies under a style that draws with it,
-and switching styles between two themes would change the widgets' shapes as
-well as their colours.
+So the application palette follows the plot's theme: dark greys (Fusion
+style plus a Blender-ish palette) for `blender-default`, Fusion's own
+light palette for `light`, the Boombox skin for `boombox`. Fusion in every
+case, because a palette only fully applies under a style that draws with
+it, and switching styles between two themes would change the widgets'
+shapes as well as their colours.
 """
 
 from PySide6.QtCore import Qt
@@ -25,7 +25,7 @@ _applied = None
 
 
 def dark_palette():
-    """MoloM's dark palette, colour for colour."""
+    """The dark palette: Fusion's greys, Blender-ish."""
     p = QPalette()
     grey = QColor(53, 53, 53)
     base = QColor(42, 42, 42)
@@ -81,8 +81,8 @@ def light_palette():
 
 
 def boombox_palette():
-    """ORCA Workbench's Boombox skin (`orca_workbench/core/theme.py`):
-    brushed-metal greys, parchment text, the LCD green."""
+    """The Boombox skin: brushed-metal greys, parchment text, the LCD
+    green."""
     p = QPalette()
     window = QColor("#232323")
     text = QColor("#d6d6c2")

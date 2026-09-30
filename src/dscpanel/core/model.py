@@ -37,7 +37,7 @@ from . import style
 from . import units
 
 #: Trace colours, in the order scans are added. Chosen to stay apart on a dark
-#: ground and to survive being printed in grey, like MoloM's PXRD palette.
+#: ground and to survive being printed in grey.
 PALETTE = ("#6ea8ff", "#ffb04e", "#7fd08a", "#e07b7b", "#c79bef",
            "#4fd0c8", "#d8d16a", "#f08ac0")
 
@@ -52,21 +52,20 @@ WEIGHT_UNITS = (WEIGHT_PCT, WEIGHT_MG)
 AXES = (AXIS_TEMPERATURE, AXIS_TIME)
 
 #: What a scan draws of its segment. An SDT run records a heat flow AND a
-#: mass, and each is a scan of its own (Christian, 2026-09-28: "TGA data
-#: needs to be independently visualisable, even in such a way that there
-#: isn't even a heat flow y-axis anymore"): its own tick, offset, colour,
-#: label and analyses. A mass scan is drawn against the mass axis
+#: mass, and each is a scan of its own (so the mass can be shown alone,
+#: with no heat flow y axis at all): its own tick, offset, colour, label
+#: and analyses. A mass scan is drawn against the mass axis
 #: (`Document.axes["y2"]`) in `Document.weight_unit`.
 SIGNAL_HEAT = "heat flow"
 SIGNAL_MASS = "mass"
-#: The derivative of the m% curve (Christian, 2026-09-29; `core/dtg.py`), a
-#: scan of its own like the mass. It is drawn on the y axis the heat flow
-#: otherwise has (`Document.y_signal`): while one is shown, that axis is the
-#: DTG's, and a heat flow shown beside it has no axis to be drawn on.
+#: The derivative of the m% curve (`core/dtg.py`), a scan of its own like the
+#: mass. It is drawn on the y axis the heat flow otherwise has
+#: (`Document.y_signal`): while one is shown, that axis is the DTG's, and a
+#: heat flow shown beside it has no axis to be drawn on.
 SIGNAL_DTG = "dtg"
 SIGNALS = (SIGNAL_HEAT, SIGNAL_MASS, SIGNAL_DTG)
 #: The order of one segment's curves in the outliner, and so in a stack:
-#: the mass (the "meat" of an SDT run), its DTG, then the heat flow.
+#: the mass (the main curve of an SDT run), its DTG, then the heat flow.
 SIGNAL_ROWS = (SIGNAL_MASS, SIGNAL_DTG, SIGNAL_HEAT)
 
 AXIS_LABEL = {
@@ -155,8 +154,8 @@ class Sample(object):
         _trim_empty_ends(data)
         head = (data or {}).get("head", {}) or {}
         #: The file's own name, without the extension: what the outliner and
-        #: a scan's default label say (Christian, 2026-09-28). Runs of one
-        #: sample saved as "x.tri", "x(1).tri" share their sample name.
+        #: a scan's default label say. Runs of one sample saved as "x.tri",
+        #: "x(1).tri" share their sample name.
         self.file_name = os.path.splitext(os.path.basename(path))[0]
         #: The sample name TRIOS stored in the file (shown as a tooltip).
         self.sample_name = (head.get("samplename")
@@ -178,9 +177,11 @@ class Sample(object):
         #: Anything the reader printed while reading this file.
         self.note = ""
         self.scans = []
-        #: The name the user gave it (F2 in the outliner, Christian,
-        #: 2026-09-29), or None for the file's own. Its curves' names, the
-        #: legend and exports follow it.
+        #: What its molar mass was worked out from in the calculator (a
+        #: formula, a SMILES or a composition), or None.
+        self.composition = None
+        #: The name the user gave it (F2 in the outliner), or None for the
+        #: file's own. Its curves' names, the legend and exports follow it.
         self.title = None
 
     @property
@@ -224,11 +225,11 @@ class Sample(object):
           by the step NAME, and three segments of a run routinely share one.
           So such an analysis is OFFERED under every segment whose program
           carries that name, marked "by step name", and the user attributes
-          it by showing it on the scan it belongs to (Christian, round 17:
-          an analysis is off until ticked, and it is ticked on a scan the
-          user picked, so the choice is the attribution). It used to go to
-          the first segment with the name, where the second heating's onset
-          could not be found from the second heating.
+          it by showing it on the scan it belongs to (an analysis is off
+          until ticked, and it is ticked on a scan the user picked, so the
+          choice is the attribution). Giving it to the first segment with
+          the name meant the second heating's onset could not be found from
+          the second heating.
         """
         out = []
         blocks = (self.data or {}).get("analyses", {}) or {}
@@ -264,8 +265,8 @@ def _trim_empty_ends(data):
     Off the END only, so every sample keeps its index counted from the
     segment's start: a session stores sample spans, and a marker's sample
     and `trace.first` count from there too. Trimming the start as well
-    (round 25) shifted every index of a run that flags its FIRST samples
-    (some DSC25 runs do, in segment 1). NaN at the start or in the middle
+    would shift every index of a run that flags its FIRST samples (some
+    DSC25 runs do, in segment 1). NaN at the start or in the middle
     stays, and whatever reads the arrays has to skip it; the curve is drawn
     broken there. The heat flow is the one `Scan.heat_flow` reads: watts
     when the file has them, else the normalised one of a `.txt` export."""
@@ -310,7 +311,7 @@ def _mass_g(head):
         value = number(head.get(key))
         # A mass that is not positive is none: dividing by one turns a curve
         # upside down under an exo arrow that still says it is the right
-        # way up (the DESY runs whose balance read -99.9 mg, round 25).
+        # way up (real runs whose balance read -99.9 mg).
         if value and value > 0:
             return value / 1000.0
     return None
@@ -334,7 +335,7 @@ class Scan(Obj):
         self.dtg_window = dtg_module.WINDOW_K
         #: Vertical placement, in the unit the y axis is currently showing.
         #: Continuous, dragged with the mouse or typed after G - never a slot
-        #: in a stacking order. Christian: DSC scans sit where they are put.
+        #: in a stacking order: DSC scans sit where they are put.
         self.offset = 0.0
         #: None follows the house style (`core/style.py`); read it through
         #: `style.value`, never directly.
@@ -354,8 +355,6 @@ class Scan(Obj):
         #: The analyses drawn on this scan, as objects. Built from the file
         #: the first time they are asked for; see `analysis_objects`.
         self._analyses = None
-        #: Grams per mole for THIS scan, overriding the sample's.
-        self.molar_mass_override = None
         #: Its y-offset marker (the template's `add_yoffset_markers`), drawn
         #: while the figure's markers are switched on.
         self.marker = OffsetMarker(oid, self)
@@ -375,9 +374,10 @@ class Scan(Obj):
 
     @property
     def molar_mass(self):
-        """The molar mass in force: the scan's own, else the sample's."""
-        return (self.molar_mass_override
-                if self.molar_mass_override else self.sample.molar_mass)
+        """The molar mass in force: the SAMPLE's. Every scan of a file has
+        the same one (there is no way to prove otherwise), so a scan has no
+        override of its own."""
+        return self.sample.molar_mass
 
     @property
     def is_mass(self):
@@ -438,7 +438,7 @@ class Scan(Obj):
         """"up", "down" or "iso", from the temperature the sample reached -
         between the first and the last MEASURED sample: a run can flag its
         first samples (NaN), and NaN compared with anything called a heating
-        ramp "cool" (CN-INDIUM-CHECK)."""
+        ramp "cool" (an indium check run)."""
         temp = self.temperature()
         if temp is not None:
             temp = temp[np.isfinite(temp)]
@@ -473,10 +473,10 @@ class Scan(Obj):
         So the base travels with the values and `core/units.py` works out what
         is still needed.
 
-        `(None, None)` when the segment records no heat flow at all. The
+        `(None, None)` when the segment records no heat flow at all. An
         indium calibration run's ramp was thought to be one until its
-        flagged arrays were read (TRI-FORMAT.md section 3); none on the
-        development machine is now, but a segment can still lack a signal.
+        flagged arrays were read (TRI-FORMAT.md section 3); no real file
+        read so far is one, but a segment can still lack a signal.
         """
         watts = self._column("Heat Flow")
         if watts is not None:
@@ -493,9 +493,8 @@ class Scan(Obj):
         the reader's name only where it does not: "Weight" is mg, "Weight
         Change" is % (TRIOS's signal list). A TRIOS export calls its
         percentage "Weight" too, with "%" beside it, and reading that by the
-        name drew 99.7 % as 99.7 mg and as 462 % of a 21.5 mg sample (review
-        F2, 2026-09-28). A "Weight Change" in mg is a CHANGE of weight, which
-        is neither."""
+        name drew 99.7 % as 99.7 mg and as 462 % of a 21.5 mg sample. A
+        "Weight Change" in mg is a CHANGE of weight, which is neither."""
         step = self.step
         dims = step.get("dims") or []
         stated = list(step.get("units") or [])
@@ -532,7 +531,7 @@ class Scan(Obj):
         percentage recorded BESIDE the milligrams also needs the mass: the
         reader finds none exactly when Weight / Weight Change is no single
         positive mass (TRI-FORMAT.md section 3b), and then the percentage is
-        of a reference nobody knows - on the DESY runs a negative one, which
+        of a reference nobody knows - on some real runs a negative one, which
         turns the weight loss the percentage shows into a gain."""
         mass = self.sample.mass_g
         percent = self._weight_column(WEIGHT_PCT)
@@ -651,7 +650,7 @@ class Scan(Obj):
         values, base = self.heat_flow()
         # A column whose every sample is flagged (NaN) is no signal either:
         # a range made of it is NaN, and a NaN range made `_nice_step` raise
-        # inside paintEvent - an abort, not a message (review F11).
+        # inside paintEvent - an abort, not a message.
         if values is None or not _measured(values):
             return "heat flow in this segment"
         if axis is not None and not _measured(self.x_values(axis)):
@@ -681,8 +680,8 @@ class Scan(Obj):
         Returns `(None, None)` when the scan cannot be drawn in this unit -
         no mass, no molar mass - rather than substituting anything. The window
         then draws the scan's ABSENCE (see `ui/plot.py`), which is the honest
-        picture and the one Christian asked for: a scan that is waiting for a
-        molar mass must be visible as such, not quietly plotted wrong.
+        picture: a scan that is waiting for a molar mass must be visible as
+        such, not quietly plotted wrong.
         """
         key = (axis, unit, exo, self.offset, x_unit,
                self.sample.mass_g, self.molar_mass, self.sample.exo,
@@ -818,7 +817,7 @@ class Scan(Obj):
                 curve = _analysed_curve(entry, self.has_weight())
                 # A file's analysis goes to the scan of the curve it was
                 # made on: an SDT run's onsets of mass loss are the MASS
-                # scan's, never drawn at the heat flow (review F5).
+                # scan's, never drawn at the heat flow.
                 if curve == "weight" and not self.is_mass:
                     continue
                 if curve != "weight" and self.is_mass:
@@ -887,8 +886,8 @@ class Analysis(Obj):
     it has to be one here for two reasons.
 
     * **It is switched on and off individually.** They are off when a file
-      opens (Christian's ask: a run carries a dozen and a figure wants one or
-      two), and each is ticked on in the outliner or in the scan's settings.
+      opens (a run carries a dozen and a figure wants one or two), and each
+      is ticked on in the outliner or in the scan's settings.
     * **Its attribution is not always certain.** A `.tri` ties an analysis to
       the scan it was run on through the cached curve, which is exact. A
       `.txt` export only names the STEP, and three segments of a run share a
@@ -946,13 +945,16 @@ class Analysis(Obj):
         #: does. Meaningless for the other models, and ignored there.
         self.shade = True
         #: `style.SHADINGS`: translucent, or opaque in the colour the
-        #: translucent fill makes over the page (Christian, 2026-09-29).
+        #: translucent fill makes over the page.
         #: None follows the house style; read it through `style.value`.
         self.shading = None
         #: `style.PEAKS`: the peak temperature after an integration's
         #: enthalpy in its label ("on"), or not; None follows the house
         #: style. `{Tp}` in a label puts it anywhere (`core/labels.py`).
         self.show_peak = None
+        #: Half the length of its interval's dashes, figure units; None
+        #: follows the house style ("Interval marks").
+        self.interval_size = None
         #: The dashes at the two ends of the interval, so the figure says
         #: which interval an analysis covers. The dashes only: the lines of
         #: an onset, endset or Tg are `construction`.
@@ -964,7 +966,7 @@ class Analysis(Obj):
         #: The lines of an onset, endset or glass transition
         #: (`marks_a_point`): "tangents" (the tangent construction, TRIOS's
         #: own for a `.tri`'s analysis, see `measure.tangent_points`),
-        #: "chords" (straight lines bound -> point -> bound, round 10) or
+        #: "chords" (straight lines bound -> point -> bound) or
         #: "none"; None follows the house style (`core/style.py`,
         #: tangents built in). Read it through `style.value`.
         self.construction = None
@@ -983,7 +985,7 @@ class Analysis(Obj):
         self.number_format = None
         #: For an integration, WHERE along its interval the label's arrow
         #: meets the curve (degC), or None for the peak. G, then X, slides
-        #: it (Christian, round 19); it never leaves the interval.
+        #: it; it never leaves the interval.
         self.label_at = None
 
     @property
@@ -997,8 +999,8 @@ class Analysis(Obj):
 
         An onset, an endset, a glass transition's midpoint - as opposed to an
         area (integration) or a height. These get LINES as well as the
-        interval's dashes (`construction`): the tangent construction, or the
-        round-10 chords from each bound of the interval to the result point.
+        interval's dashes (`construction`): the tangent construction, or
+        chords from each bound of the interval to the result point.
         """
         return any(name in self.model_name for name in POINT_MODELS)
 
@@ -1180,8 +1182,7 @@ class Axis(Obj):
     everything else on the figure works that way.
 
     The defaults are the DSC_Plotter template's `style()`: ticks pointing IN,
-    minor ticks between them, no grid at all. The panel used to draw a grid
-    because the PXRD window does; a DSC figure does not.
+    minor ticks between them, no grid at all.
     """
 
     kind = "axis"
@@ -1189,7 +1190,7 @@ class Axis(Obj):
     def __init__(self, oid, which):
         Obj.__init__(self, oid, "{} axis".format(which.upper()))
         self.which = which               # "x", "y", or "y2" (the weight)
-        #: A LOCKED range (Christian, 2026-09-29: "Lock current framing"):
+        #: A LOCKED range ("Lock current framing"):
         #: `[low, high]` that F and an unframed view return to instead of
         #: the fit, or None. Kept with what it was measured in
         #: (`lock_context`, `PlotWidget.axis_context`): a range in W/g says
@@ -1221,9 +1222,16 @@ class Axis(Obj):
         #: How its numbers are written (`core/numbers.py`), or None for
         #: "as few digits as the tick spacing needs".
         self.number_format = None
+        #: Numbers NOT written, as values in the axis's unit (their ticks
+        #: stay): the 50 at the very corner of the box that needs a margin
+        #: of its own. Kept with what they were chosen in
+        #: (`hidden_context`, like `lock_context`): a 50 hidden in degC is
+        #: not a 50 in K. Always REPLACED, never changed in place, or a
+        #: settings window's snapshot would change with it.
+        self.hidden_numbers = []
+        self.hidden_context = None
         #: A line on the OPPOSITE side of the axes box, closing the frame,
-        #: and ticks on it (no numbers): Origin's look, and the default
-        #: (Christian, round 18).
+        #: and ticks on it (no numbers): Origin's look, and the default.
         self.mirror = True
         self.mirror_ticks = True
         #: The numbered ticks' spacing in the axis's unit, or None for a
@@ -1282,8 +1290,8 @@ class TextLabel(Artist):
         #: The scan this label belongs to - its PARENT - or None for a free
         #: one. An owned label takes that scan's colour while its own is
         #: "auto", is listed under it in the outliner, goes when the scan
-        #: goes, and MOVES WITH IT (Christian, round 23: "a parenting
-        #: operation"): see `parent_offset`.
+        #: goes, and MOVES WITH IT (a parenting operation): see
+        #: `parent_offset`.
         self.scan = scan
         #: The scan's offset when the label's position was last set, in the
         #: axis unit. The label is drawn `scan.offset - parent_offset` higher,
@@ -1292,32 +1300,29 @@ class TextLabel(Artist):
         #: "keep transform"). None for a free label.
         self.parent_offset = (float(scan.offset) if scan is not None
                               else None)
-        #: A NOTE's leader arrow (Christian, round 24): `[celsius, heat
-        #: flow]`, the point it points at - the temperature in degC like
-        #: every stored temperature, the heat flow in the axis unit - or None
-        #: for a plain label. With a parent it follows the scan like the
-        #: text does (stored at `parent_offset`).
+        #: A NOTE's leader arrow: `[celsius, heat flow]`, the point it points
+        #: at - the temperature in degC like every stored temperature, the heat
+        #: flow in the axis unit - or None for a plain label. With a parent it
+        #: follows the scan like the text does (stored at `parent_offset`).
         self.leader = None
         #: Where on the text's box the arrow starts: "auto" (the edge
-        #: nearest the point) or one of `ANCHORS` (Christian, 2026-09-28).
+        #: nearest the point) or one of `ANCHORS`.
         self.leader_from = "auto"
         #: The arrow's own colour, or "auto" for the text's.
         self.leader_colour = "auto"
         #: How its lines line up: "left", "right", "center", or None for by
         #: the side of its anchor. Ctrl+L / R / M set it.
         self.flush = None
-        #: A MARKER LINE (Christian, 2026-09-28, his `mark_peak`): the
-        #: temperature, in degC, of a vertical line across the axes that
-        #: this label sits on, turned upright on a background box - or None
-        #: for an ordinary label. Its `y` is still its place along the
-        #: line; its `x` follows the line.
+        #: A MARKER LINE: the temperature, in degC, of a vertical line across
+        #: the axes that this label sits on, turned upright on a background box
+        #: - or None for an ordinary label. Its `y` is still its place along
+        #: the line; its `x` follows the line.
         self.vline = None
-        #: The line dashed (his `ls='--'`) or solid.
+        #: The line dashed (`ls='--'`) or solid.
         self.line_dashed = True
         #: A label that belongs to a scan HANGS FROM ITS CURVE like an
-        #: analysis label (Christian, 2026-09-29: "can't they just behave
-        #: like an analysis arrow plus its label?"): `at` is the sample,
-        #: `("i", n)` in the segment's own numbering, and `dx`, `dy` are
+        #: analysis label and its arrow: `at` is the sample, `("i", n)` in
+        #: the segment's own numbering, and `dx`, `dy` are
         #: figure units from that point to the label's anchor (up is
         #: negative). A note's arrow drops straight onto the point, so its
         #: `dx` is 0. None until attached (`PlotWidget.attach`): a label
@@ -1349,10 +1354,10 @@ class TextLabel(Artist):
 class Legend(Artist):
     """Which colour is which scan, in a corner of the figure.
 
-    The one thing Christian's matplotlib figures carry that the panel had no
-    equivalent for: the names beside the curves are a READOUT, they come and
-    go with the cursor, and a figure that leaves the program needs the key
-    written into it.
+    A matplotlib figure made with the template carries one, and nothing
+    else here stands in for it: the names beside the curves are a READOUT,
+    they come and go with the cursor, and a figure that leaves the program
+    needs the key written into it.
 
     An artist like the rest, so it is dragged, anchored, coloured and hidden
     the same way. Off by default: a stack of three scans is often clearer
@@ -1371,7 +1376,7 @@ class Legend(Artist):
         #: None follows the house style (`core/style.py`).
         self.size = None
         #: A box behind it. Off by default, as the template's
-        #: `frameon=False` (Christian, round 17).
+        #: `frameon=False`.
         self.show_frame = False
         #: Length of the colour sample in front of each name, in pixels.
         self.sample = 22.0
@@ -1430,7 +1435,7 @@ class OffsetMarker(Obj):
 class ImageArtist(Artist):
     """A picture on the figure, pasted or dropped: a structure, a photo of
     the pan. Furniture, not data - moved, scaled (S), rotated (R), layered
-    and aligned like any artist, never measured (Christian, round 19)."""
+    and aligned like any artist, never measured."""
 
     kind = "image"
     can_scale = True
@@ -1441,6 +1446,10 @@ class ImageArtist(Artist):
         #: The picture as PNG, base64 text: what the session stores, so a
         #: figure never depends on a file that may move.
         self.png = str(png)
+        #: Mirrored left-right and / or top-bottom (Ctrl+Shift+H / V),
+        #: applied when it is drawn.
+        self.mirror_h = False
+        self.mirror_v = False
         #: How wide it is drawn, in figure units; the height keeps the
         #: picture's own proportions.
         self.width = float(width)
@@ -1449,7 +1458,7 @@ class ImageArtist(Artist):
 
 
 class MoleculeArtist(Artist):
-    """A skeletal structure, from a pasted SMILES (Christian, round 20).
+    """A skeletal structure, from a pasted SMILES.
 
     Drawn by the plot as lines and text - vector in every export - from the
     layout `core/chem.py` made, which is STORED here, so the figure opens
@@ -1479,8 +1488,8 @@ class MoleculeArtist(Artist):
         #: (`structure_font`: Arial Rounded MT built in).
         self.label_font = None
         #: Colour each element label by its element (N blue, O red...);
-        #: the bonds keep the structure's colour. On for a new structure
-        #: (Christian, round 23); an older session keeps what it had.
+        #: the bonds keep the structure's colour. On for a new structure;
+        #: an older session keeps what it had.
         self.colour_by_element = True
 
 
@@ -1504,8 +1513,8 @@ class HeatFlowArrow(Artist):
     `direction` decide which way the data is drawn, through
     `units.orientation`. Relabelling it "endo up" leaves the curves alone
     because that means the same thing as "exo down"; relabelling it "exo up"
-    flips them, and the y axis with them. That is Christian's rule, and it is
-    the only way a figure's arrow cannot end up contradicting its data.
+    flips them, and the y axis with them. That rule is the only way a
+    figure's arrow cannot end up contradicting its data.
     """
 
     kind = "arrow"
@@ -1591,8 +1600,8 @@ class Document(object):
                      "y2": Axis(self._next_id(), "y2")}
         # The mass axis of SDT/TGA runs. It takes the MAIN side (the heat
         # flow axis's `side`) whenever a mass scan is drawn, and the heat
-        # flow, if drawn too, goes to the other (Christian, 2026-09-28: "m%
-        # left"). Its settings are otherwise its own.
+        # flow, if drawn too, goes to the other. Its settings are otherwise
+        # its own.
         self.axes["y2"].name = "Mass axis"
         #: What the mass axis shows: "%" of the sample mass, or "mg".
         self.weight_unit = WEIGHT_PCT
@@ -1616,10 +1625,16 @@ class Document(object):
         #: "blender-default" is the dark screen theme; "light" is the one
         #: every export uses whatever this says.
         self.theme = "blender-default"
-        #: The page's colour, or None for the theme's (Christian,
-        #: 2026-09-29: white and the theme's one click away). The ink
-        #: follows it: a light page is drawn with the light theme's.
+        #: The page's colour, or None for the theme's (white and the
+        #: theme's one click away). The ink follows it: a light page is
+        #: drawn with the light theme's.
         self.background = None
+        #: Decorators placed on the page MOVE WITH THE DATA when zoomed
+        #: (their places fractions of the home frame, `PlotWidget.
+        #: rel_to_px`) - or, False, stay where they are on the page: the
+        #: default, because an arrow or a structure that follows the zoom
+        #: is easily lost. An F3 toggle, per figure, saved.
+        self.follow_zoom = False
         #: This figure's own sizes and alignments, between an object's and
         #: the user's defaults. Saved with the session; see `core/style.py`.
         self.style = style.FigureStyle()
@@ -1691,11 +1706,10 @@ class Document(object):
     def add_sample(self, sample, segments=None):
         """Add a file and make scans for the segments named (or the default).
 
-        The default follows the rule the DSC_Plotter template already uses and
-        Christian already expects: one file shows every segment, several files
-        show the first heating scan of each. Applied by the caller, which is
-        the only place that knows how many files are open - see
-        `default_segments`.
+        The default follows the rule the DSC_Plotter template already uses:
+        one file shows every segment, several files show the first heating
+        scan of each. Applied by the caller, which is the only place that
+        knows how many files are open - see `default_segments`.
         """
         self.samples.append(sample)
         chosen = (range(sample.segment_count()) if segments is None
@@ -1786,10 +1800,10 @@ class Document(object):
         return [s for s in self.scans if s.visible]
 
     # ---------------------------------------------------------- the order
-    # The OUTLINER's order is the figure's (Christian, 2026-09-29): files
-    # top to bottom as listed (dragged into place), a file's curves in its
-    # row order. S and "Stack evenly" stack in it, the top of the list at
-    # the top of the stack; the legend lists in it.
+    # The OUTLINER's order is the figure's: files top to bottom as listed
+    # (dragged into place), a file's curves in its row order. S and "Stack
+    # evenly" stack in it, the top of the list at the top of the stack; the
+    # legend lists in it.
     def outliner_key(self, scan):
         """Where `scan` stands in the outliner: file, segment, curve."""
         sample = scan.sample
@@ -1946,13 +1960,11 @@ def default_segments(sample, file_count=1):
     shows every segment of a lone file, and that is right for a quick look at
     one run; this panel is for STACKED comparisons, where seven curves from
     the first file and one from each of the others is a mess to undo by hand.
-    Christian, 2026-09-23: "only showing the first scan for the first file too
-    should be the default".
 
     Everything else is one tick away in the outliner, which lists every
     segment of every open file. An SDT run opens with the MASS of its first
-    heating (Christian, 2026-09-28: the heat flow of SDT data "is usually
-    just the bonus, the m% data is the meat").
+    heating: in SDT data the m% curve is the main result, and the heat flow
+    usually a bonus.
     """
     seg = first_upscan(sample)
     numdata = (sample.data or {}).get("numdata", [])

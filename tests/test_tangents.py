@@ -1,8 +1,7 @@
-"""Tangent constructions for onset, endset and glass transition (PLAN.md
-"Next" 1, Christian's decisions of 2026-09-28).
+"""Tangent constructions for onset, endset and glass transition.
 
 * The lines are TANGENTS by default; each analysis may choose tangents,
-  chords (round 10's bound -> point -> bound) or none, and the house style
+  chords (bound -> point -> bound) or none, and the house style
   holds the default.
 * A `.tri`'s own analysis draws TRIOS's STORED construction; one made here
   draws the Python construction of its own cursors; a `.txt` export's has
@@ -27,6 +26,10 @@ from PySide6.QtCore import QPointF
 from conftest import local_file, make_data
 from dscpanel.core import measure, model, session, style, trios_analysis
 from dscpanel.core import trios_io, units
+
+#: The DSC25 reference run (TRIOS 5.1.1, seven segments, 16 stored
+#: analyses), named by a hash of its file name (`conftest.hashed_name`).
+DSC_REFERENCE = "sha:b2303c243b22"
 
 STEP_AT = 140.0
 
@@ -132,13 +135,13 @@ def test_measured_along_the_curve_the_samples_say_which_came_first():
         == (170.0, 110.0)
 
 
-def test_the_panel_endset_matches_trios_on_oj12():
-    """OJ-12's first heating, on the cursors of its stored endset
-    (Transition 93.465, Onset cursor 116.637): TRIOS says 108.024. The
+def test_the_panel_endset_matches_trios_on_the_reference_run():
+    """The DSC reference run's first heating, on the cursors of its stored
+    endset (Transition 93.465, Onset cursor 116.637): TRIOS says 108.024. The
     panel said 94.83 - its onset - under the name of an endset."""
-    path = local_file("OJ-12-DSC-2-07012026.tri")
+    path = local_file(DSC_REFERENCE)
     if path is None:
-        pytest.skip("OJ-12 is not on this machine")
+        pytest.skip("the DSC reference run is not on this machine")
     sample = model.Sample(path, trios_io.read_tri(path))
     scan = model.Scan(1, sample, 0, "#000000")
     endset = measure.compute("Endset point", scan, 93.4654, 116.6373)
@@ -173,9 +176,11 @@ def test_the_python_construction_has_trioss_shape():
         assert far[1] == pytest.approx(slope * far[0] + intercept, rel=1e-9)
 
 
-@pytest.mark.parametrize("name", ["OJ-12-DSC-2-07012026.tri",
-                                  "SES-2-ag-16092026.tri",
-                                  "SES-4-15092026.tri"])
+@pytest.mark.parametrize("name", [
+    DSC_REFERENCE,
+    "sha:9f0ad8af1175",    # a TRIOS 6.0 DSC25 run with its own export
+    "sha:5f4207088616",    # a TRIOS 6.0 DSC25 run with an audit line
+])
 def test_python_and_trios_draw_the_same_construction(name):
     """On the reference files: every stored onset and endset is drawn from
     TRIOS's own points (the crossing IS the stored result, the flat point
@@ -424,7 +429,7 @@ def test_an_onset_is_drawn_as_two_tangents_meeting_at_its_number(
     trace = _trace(window, scan)
     plot = window.plot
     rect = plot.plot_rect()
-    # built in, the tangents meet exactly (Christian, 2026-09-29)
+    # built in, the tangents meet exactly
     dashes, lines = plot.interval_marks(trace, onset, rect)
     assert len(dashes) == 2 and len(lines) == 2
     assert _distance(lines[0][1], lines[1][0]) < 1e-9
@@ -489,13 +494,13 @@ def test_a_glass_transition_is_drawn_as_three_tangents(window):
                                                                 abs=1e-6)
 
 
-def test_oj12s_lines_cross_at_trioss_numbers_in_w_g_and_mw(qapp):
-    """The real thing: OJ-12's endset (first heating) and its Tg (the 50
-    K/min heating, given an offset), drawn from TRIOS's points, cross at the
-    numbers TRIOS reported - in W/g and in mW."""
-    path = local_file("OJ-12-DSC-2-07012026.tri")
+def test_the_reference_runs_lines_cross_at_trioss_numbers(qapp):
+    """The real thing: the DSC reference run's endset (first heating) and its
+    Tg (the 50 K/min heating, given an offset), drawn from TRIOS's points,
+    cross at the numbers TRIOS reported - in W/g and in mW."""
+    path = local_file(DSC_REFERENCE)
     if path is None:
-        pytest.skip("OJ-12 is not on this machine")
+        pytest.skip("the DSC reference run is not on this machine")
     from dscpanel.ui.window import MainWindow
     sample = model.Sample(path, trios_io.read_tri(path))
     win = MainWindow()
@@ -777,7 +782,7 @@ def test_the_lines_survive_a_session(document, sample, tmp_path):
 
 def test_an_older_session_without_markers_opens_without_lines(
         document, sample, tmp_path):
-    """Before 2026-09-28 "Show interval markers" was the dashes AND the
+    """"Show interval markers" was once the dashes AND the
     lines. A session from then with it off had no lines, and keeps none;
     with it on the lines follow the house style."""
     scan = document.scans[0]

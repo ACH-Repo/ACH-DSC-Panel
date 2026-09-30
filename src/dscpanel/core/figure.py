@@ -1,6 +1,6 @@
 """The figure's size: free with the window, a fixed aspect ratio, or EXACT.
 
-Christian's case (2026-09-25): a stack of first up-scans in one session file,
+The case in point: a stack of first up-scans in one session file,
 second up-scans in another, both dropped into Word side by side - and they
 have to be the same size, with their axes boxes the same size and in the
 same place, without fiddling. That rules out any layout that sizes itself:
@@ -34,7 +34,7 @@ UNITS = (UNIT_CM, UNIT_IN)
 PER_INCH = {UNIT_CM: 2.54, UNIT_IN: 1.0}
 
 #: Drawing units per inch: Qt's logical DPI for fonts on screen and in a
-#: QImage (checked on this machine at 150 % scaling: 96, with the device
+#: QImage (checked at 150 % display scaling: 96, with the device
 #: pixel ratio doing the rest). An SVG generator defaults to 72 and is set to
 #: this explicitly on export.
 DESIGN_DPI = 96.0
@@ -65,6 +65,13 @@ class FigureLayout(object):
         self.aspect_h = 3.0
         #: Pixels per inch of a PNG export. An SVG is exact at any size.
         self.dpi = 600
+        #: Room the PROGRAM grew a margin by for an axis that appeared on
+        #: its side (`MainWindow._room_for_axes`): `{side: [before, after]}`
+        #: in `unit`. When that axis goes, the margin goes back to `before`
+        #: (never below what is still drawn there) - unless it was set by
+        #: hand since, when it is no longer `after`. Not part of a
+        #: preset.
+        self.grown = {}
 
     # ------------------------------------------------------------ lengths
     def to_px(self, value):
@@ -102,6 +109,8 @@ class FigureLayout(object):
         factor = PER_INCH[unit] / PER_INCH[self.unit]
         for name in LENGTHS:
             setattr(self, name, getattr(self, name) * factor)
+        self.grown = dict((side, [pair[0] * factor, pair[1] * factor])
+                          for side, pair in self.grown.items())
         self.unit = unit
 
     def is_valid(self):
@@ -138,4 +147,25 @@ class FigureLayout(object):
         return self
 
     def copy(self):
-        return FigureLayout().load_state(self.to_state())
+        made = FigureLayout().load_state(self.to_state())
+        made.grown = clean_grown(self.grown)
+        return made
+
+
+#: The page's four margins, as `FigureLayout` names them.
+MARGIN_SIDES = ("left", "right", "top", "bottom")
+
+
+def clean_grown(value):
+    """A `FigureLayout.grown` read from a file: what is legal of it."""
+    out = {}
+    if not isinstance(value, dict):
+        return out
+    for side, pair in value.items():
+        try:
+            before, after = float(pair[0]), float(pair[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        if side in MARGIN_SIDES and 0 <= before <= after:
+            out[side] = [before, after]
+    return out

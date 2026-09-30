@@ -256,8 +256,8 @@ MASS_AT = "Mass at temperature"
 
 
 def mass_at(scan, x0, x1=None, span=None):
-    """The mass of a MASS scan at one temperature (Christian's
-    `add_annot`, 2026-09-28): the first MEASURED sample at or past `x0` degC
+    """The mass of a MASS scan at one temperature (the template's
+    `add_annot`): the first MEASURED sample at or past `x0` degC
     in the order the run went (heating: the first at or above it), its
     temperature, and its mass in % and in mg where the file has them. The
     offset is not in it: this is the measurement."""
@@ -397,8 +397,7 @@ def compute(name, scan, x0, x1, span=None):
 #: short line why there are no points, for the analysis window.
 Construction = collections.namedtuple("Construction", "points base reason")
 
-#: The reasons, one line each (Christian, 2026-09-28: the settings say so
-#: "in one short line").
+#: The reasons, one short line each, as the settings say them.
 NO_TANGENTS_EXPORT = "A TRIOS export stores no tangents: drawn as chords."
 NO_TANGENTS_FILE = "The file stores no tangents for it: drawn as chords."
 ON_THE_WEIGHT = "Made on the weight curve: drawn as chords."
@@ -419,8 +418,7 @@ _BASE_OF = {"Heat Flow (Normalized)": units.UNIT_W_G,
 def tangent_points(analysis, scan=None):
     """The tangent construction of an onset, endset or Tg: a `Construction`.
 
-    Whose construction it is follows who made the number (Christian,
-    2026-09-28):
+    Whose construction it is follows who made the number:
 
     * **a `.tri`'s own analysis** draws TRIOS's STORED points (the reader's
       `construction`, `Analysis.stored_construction`), never a Python
@@ -454,9 +452,9 @@ def tangent_points(analysis, scan=None):
 
 def lines_note(analysis, doc=None):
     """Why an analysis that is to be drawn with tangents gets chords, in one
-    short line, or "" - for its settings (Christian: "say so in one short
-    line"). Besides `tangent_points`' reasons, the one the axes add: points
-    in W/g on an mW axis need the sample mass, which is never made up."""
+    short line, or "" - for its settings. Besides `tangent_points`'
+    reasons, the one the axes add: points in W/g on an mW axis need the
+    sample mass, which is never made up."""
     if not analysis.marks_a_point or style.value(
             doc, analysis, "construction") != style.LINES_TANGENTS:
         return ""
@@ -553,7 +551,7 @@ def relabelled(analysis, fields):
 
 
 def legacy_label(analysis):
-    """The label a panel analysis was GIVEN before round 15, number and all
+    """The label an older panel analysis was GIVEN, number and all
     ("*T*_{onset} = 61.1 degC"), or None.
 
     Only for reading old sessions: a label equal to this was never the
@@ -623,8 +621,8 @@ def walk_to(values, start, target, lo=0, hi=None, slack=0.5):
 
 
 def is_legacy_label(label):
-    """True for a caption in the exact shape the panel GENERATED before
-    round 15 - its default words, a number, the old unit - whatever the
+    """True for a caption in the exact shape the panel once GENERATED -
+    its default words, a number, the old unit - whatever the
     number. Such a label was never typed, and its number may be stale."""
     import re
     if not label:

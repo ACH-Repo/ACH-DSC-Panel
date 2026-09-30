@@ -1,8 +1,8 @@
-"""The entry point: `dsc-panel`, `dsc-panel-gui`, or `python -m dscpanel`.
+"""The entry point: `triplot`, `triplot-gui`, or `python -m dscpanel`.
 
 Files named on the command line are opened, so the program can be the "open
 with" target for a `.tri` and can be started from a data folder with
-`dsc-panel *.tri`.
+`triplot *.tri`.
 
 Two subcommands sit beside that, and neither of them starts a window:
 `register` puts the program in the Start Menu (and `--remove` takes it out
@@ -94,7 +94,7 @@ def _alias(args):
     if args.list or not args.name:
         found = register.aliases()
         print("\n".join(found) if found
-              else "no aliases (try: {} alias dscp)".format(branding.EXE_NAME))
+              else "no aliases (try: {} alias tp)".format(branding.EXE_NAME))
         return 0
     path = register.alias(args.name, remove=args.remove, dry_run=args.dry_run)
     verb = "would remove" if (args.remove and args.dry_run) else (
@@ -108,6 +108,10 @@ def _alias(args):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    # The first start under a new name brings the old name's preferences,
+    # presets and registration manifest along (`branding.py`), BEFORE the
+    # log, the style or `register --clean-legacy` read that folder.
+    branding.adopt_legacy_dir()
     if argv and argv[0] in COMMANDS:
         args = build_command_parser().parse_args(argv)
         return _register(args) if args.command == "register" else _alias(args)
@@ -132,7 +136,7 @@ def main(argv=None):
     app.setApplicationDisplayName(branding.APP_NAME)
     window = MainWindow()
     log.on_error = window.show_error
-    # Where it was last time; maximized the first time (rounds 18, 19).
+    # Where it was last time; maximized the first time.
     if window.restore_layout():
         window.show()
     else:

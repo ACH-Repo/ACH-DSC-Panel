@@ -1,6 +1,6 @@
-"""Round 27 (Christian, 2026-09-29): margin gizmos, the colour picker, sums
-in number boxes, the crosshair's colour, opaque shading, colour gradients,
-DTG. The requests are in docs/NEXT.md and PLAN.md round 27.
+"""Margin gizmos, the colour picker, sums in number boxes, the crosshair's
+colour, opaque shading, colour gradients, DTG, page margins, mirroring,
+labels hanging from hidden curves.
 """
 
 import numpy as np
@@ -9,7 +9,7 @@ import pytest
 from dscpanel.core import dtg, model, numbers, session, shades, style, units
 
 from conftest import make_data
-from test_weight import _path, _window, sdt_data, CN81_TRI
+from test_weight import _path, _window, sdt_data, SDT_REFERENCE
 
 
 @pytest.fixture
@@ -106,8 +106,7 @@ def test_the_wheel_is_hue_by_angle_and_white_in_the_middle(qapp):
 
 # ------------------------------------------------------------- crosshair
 def test_the_reticle_keeps_the_theme_accent_on_a_light_page(window):
-    """Boombox on a white page drew the light theme's amber reticle
-    (Christian, 2026-09-29)."""
+    """Boombox on a white page drew the light theme's amber reticle."""
     from dscpanel.ui import plot as plot_module
     window.set_theme(plot_module.THEME_BOOMBOX)
     window.set_background("#ffffff")
@@ -261,7 +260,7 @@ def test_a_typed_margin_and_a_refused_one(window):
 
 
 def test_ctrl_z_never_becomes_the_zoom_modes(window):
-    """Christian, 2026-09-29: Ctrl+Z "just goes to zoom"."""
+    """Ctrl+Z went to the zoom modes."""
     from PySide6.QtCore import QEvent, Qt
     from PySide6.QtGui import QKeyEvent
     plot = window.plot
@@ -326,7 +325,7 @@ def test_a_dtg_survives_a_session(qapp, tmp_path):
 
 def test_the_dtg_of_a_real_sdt_run(qapp):
     from dscpanel.core import loader
-    sample = loader.read_sample(_path(CN81_TRI))
+    sample = loader.read_sample(_path(SDT_REFERENCE))
     win = _window(qapp, sample)
     win.toggle_signal(model.SIGNAL_DTG)
     scan = [s for s in win.doc.scans if s.is_dtg][0]
@@ -345,8 +344,7 @@ def test_the_dtg_of_a_real_sdt_run(qapp):
 
 # ------------------------------------------------------------ closing
 def test_a_file_with_no_curve_can_be_closed(window):
-    """CN-58 in Christian's figure: a file with no curve on it could not be
-    taken off (2026-09-29)."""
+    """A file with no curve on it could not be taken off the figure."""
     doc = window.doc
     sample = doc.samples[0]
     for scan in list(sample.scans):
@@ -431,6 +429,7 @@ def test_lock_the_current_framing(window):
 def test_decorators_move_with_the_data_when_zoomed(window):
     from PySide6.QtCore import QPointF
     plot, doc = window.plot, window.doc
+    doc.follow_zoom = True                     # the F3 toggle's way
     label = window.add_label("free", at=QPointF(300.0, 200.0))
     plot.grab()
     rect = plot.plot_rect()
@@ -484,6 +483,7 @@ def test_an_older_session_keeps_its_decorators_where_they_were(
         window, tmp_path, sample):
     import json
     plot, doc = window.plot, window.doc
+    doc.follow_zoom = True
     label = window.add_label("free", at=None)
     lo, hi = plot.view_x()
     plot.set_axis_view("x", lo, hi + (hi - lo))       # framed wider
@@ -509,7 +509,7 @@ def test_an_older_session_keeps_its_decorators_where_they_were(
 
 
 def test_f_resets_every_axis_at_once(window):
-    """DSC's F is one press (`profile.FIT_STAGED`, Christian 2026-09-29)."""
+    """DSC's F is one press (`profile.FIT_STAGED`)."""
     from dscpanel.core import profile
     plot = window.plot
     assert profile.FIT_STAGED is False
@@ -592,11 +592,11 @@ def test_a_file_is_renamed_and_its_curves_follow(window, tmp_path):
     doc = window.doc
     sample = doc.samples[0]
     old = sample.scans[0].display_name()
-    window.rename_sample(sample, "Hbc (pure)")
-    assert sample.name == "Hbc (pure)"
-    assert sample.scans[0].display_name().startswith("Hbc (pure)")
+    window.rename_sample(sample, "Reference (pure)")
+    assert sample.name == "Reference (pure)"
+    assert sample.scans[0].display_name().startswith("Reference (pure)")
     state = session.to_state(doc)
-    assert state["samples"][0]["title"] == "Hbc (pure)"
+    assert state["samples"][0]["title"] == "Reference (pure)"
     window.undo_step()
     assert sample.scans[0].display_name() == old
     menu = window.context_menu_for(sample)
@@ -697,9 +697,9 @@ def test_f2_renames_a_file_in_place(window):
 
 
 def test_s_keeps_the_order_the_offsets_have(qapp):
-    """"If you just prearrange the scans a little bit" (2026-09-29): the
-    offsets decide the order, the outliner only breaks ties, and the
-    lowest scan is the neutral line."""
+    """Prearranging the scans a little chooses the order: the offsets decide
+    it, the outliner only breaks ties, and the lowest scan is the neutral
+    line."""
     win = _two_files(qapp)
     doc, plot = win.doc, win.plot
     a, b, c = doc.scans
@@ -780,7 +780,7 @@ def test_an_integration_can_give_its_peak_temperature(window, tmp_path):
     shown = labels.render(analysis, doc)
     peak = model.number(analysis.fields["Peak temperature"])
     assert shown.text.startswith(plain + ", *T*_{p} = ")
-    assert shown.text.endswith("{:.0f} °C".format(peak))
+    assert shown.text.endswith("{:.0f} \u00b0C".format(peak))
     assert shown.problems == []
     # in K on a K axis, and anywhere a label says {Tp}
     doc.x_unit = units.TEMP_K
@@ -799,3 +799,711 @@ def test_an_integration_can_give_its_peak_temperature(window, tmp_path):
     saved = [a for s in state["scans"] for a in s["analyses"]
              if a.get("source") == "panel"]
     assert saved and saved[0]["show_peak"] == style.PEAK_OFF
+
+
+# ------------------------------------------------ molar masses (27d)
+def test_the_molar_mass_calculator_reads_three_ways():
+    from dscpanel.core import molar
+    if not molar.available():
+        pytest.skip("RDKit is not installed")
+    # values an independent calculation prints
+    for text, formula, mass in (
+            ("(Hbc)1.00+Zn(im)1.70(bim)0.30", "C14.2H12.6N4O2Zn", 336.67),
+            ("(Hbc)0.75+Zn(im)1.70(bim)0.30", "C12.45H11.1N4O1.5Zn", 306.14),
+            ("Hbc", "C7H6O2", 122.12),
+            ("Zn(im)2", "C6H6N4Zn", 199.53)):
+        found = molar.calculate(text)
+        assert found.read == molar.COMPOSITION, text
+        assert (found.formula, round(found.mass, 2)) == (formula, mass), text
+    for text, read, formula in (
+            ("C6H6", molar.FORMULA, "C6H6"),
+            ("CH3COOH", molar.FORMULA, "C2H4O2"),
+            ("Zn(C3H3N2)2", molar.FORMULA, "C6H6N4Zn"),
+            ("C14.2H12.6N4O2Zn", molar.FORMULA, "C14.2H12.6N4O2Zn"),
+            ("CuSO4*5H2O", molar.FORMULA, "CuH10O9S"),
+            ("O=C(O)c1ccccc1", molar.SMILES, "C7H6O2"),
+            ("CCO", molar.SMILES, "C2H6O"),
+            ("CO", molar.FORMULA, "CO")):
+        found = molar.calculate(text)
+        assert (found.read, found.formula) == (read, formula), text
+    assert molar.calculate("CO", molar.SMILES).formula == "CH4O"
+    assert not molar.calculate("xyz").ok
+    assert not molar.calculate("C6H6", molar.SMILES).ok
+
+
+def test_the_calculator_fills_the_molar_mass(window, monkeypatch):
+    from dscpanel.core import molar
+    from dscpanel.ui import dialogs
+    if not molar.available():
+        pytest.skip("RDKit is not installed")
+    scan = window.doc.scans[0]
+    settings = dialogs.ScanSettings(window, scan,
+                                    window.doc.unit_for(scan))
+    assert not hasattr(settings, "own_molar")         # one M per file
+
+    def answered(calculator):
+        calculator.entry.setText("C6H6")
+        assert calculator.mass() == pytest.approx(78.114, abs=1e-3)
+        return 1
+    monkeypatch.setattr(dialogs.MolarMassDialog, "exec", answered)
+    settings.calculate_molar()
+    assert scan.sample.molar_mass == pytest.approx(78.114, abs=1e-3)
+    assert scan.sample.composition == "C6H6"
+    assert all(s.molar_mass == scan.sample.molar_mass
+               for s in scan.sample.scans)
+
+
+def test_an_old_scan_molar_mass_goes_to_its_file(window, tmp_path, sample):
+    import json
+    doc = window.doc
+    path = tmp_path / "m.dscpanel"
+    session.save(doc, str(path))
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["scans"][0]["molar_mass_override"] = 150.0
+    path.write_text(json.dumps(state), encoding="utf-8")
+    again, _problems = session.load(
+        str(path), lambda _p: model.Sample(sample.path, sample.data))
+    assert again.samples[0].molar_mass == 150.0
+    assert all(s.molar_mass == 150.0 for s in again.scans)
+
+
+# ------------------------------------------------------------- the rest
+def test_every_axis_window_has_its_side(window):
+    from dscpanel.ui.dialogs import CaptionSettings, NumberSettings
+    doc = window.doc
+    axis = doc.axes["y"]
+    caption = CaptionSettings(window, axis, doc)
+    assert caption.side.currentData() == "left"
+    caption.side.setCurrentIndex(caption.side.findData("right"))
+    assert axis.side == "right"
+    assert window.plot.axis_side(axis) == "right"
+    window.undo_step()
+    assert axis.side == "left"
+    numbers_window = NumberSettings(window, doc.axes["x"], doc)
+    numbers_window.side.setCurrentIndex(
+        numbers_window.side.findData("top"))
+    assert doc.axes["x"].side == "top"
+
+
+def test_a_label_on_a_curve_offers_its_parents_colour(window):
+    from PySide6.QtCore import QPointF
+    from dscpanel.ui.dialogs import LabelSettings
+    scan = window.doc.scans[0]
+    owned = window.add_label("owned", at=QPointF(300.0, 200.0), scan=scan)
+    free = window.add_label("free", at=QPointF(300.0, 150.0))
+    assert LabelSettings(window, owned).auto.text() == "Same as parent"
+    assert LabelSettings(window, free).auto.text() == "Follow the theme"
+    owned.colour = "auto"
+    assert window.plot.label_colour(owned).name() == \
+        window.plot.label_colour(owned).name()
+    assert window.doc.labels_for(scan) == [owned]
+
+
+def test_a_file_takes_another_source(window, monkeypatch):
+    from dscpanel.core import loader
+    doc = window.doc
+    sample = doc.samples[0]
+    first, second = doc.scans
+    first.offset, second.offset = 0.4, 1.2
+    first.colour = "#123456"
+    sample.molar_mass = 99.0
+    other = make_data(segments=1)
+    monkeypatch.setattr(loader, "read_sample",
+                        lambda path: model.Sample(path, other))
+    old_path = sample.path
+    problems = window.change_source(sample, "C:/nowhere/OTHER.tri")
+    assert sample.path == "C:/nowhere/OTHER.tri"
+    assert sample.name == "OTHER" and sample.molar_mass is None
+    # the curve of segment 1 kept its place; segment 2 is not in the file
+    assert first in doc.scans and first.offset == 0.4
+    assert first.colour == "#123456"
+    assert second not in doc.scans and problems
+    window.undo_step()
+    assert sample.path == old_path and sample.molar_mass == 99.0
+    assert second in doc.scans and second.offset == 1.2
+    menu = window.context_menu_for(sample)
+    assert "Change the source file..." in [a.text() for a in menu.actions()]
+
+
+# ------------------------------------------ the page's margins (27e)
+def _exact(win):
+    from dscpanel.core import figure as figure_module
+    layout = win.doc.figure
+    layout.mode = figure_module.MODE_SIZE
+    layout.unit = "cm"
+    layout.width, layout.height = 12.0, 9.0
+    layout.margin_left, layout.margin_right = 4.0, 0.3
+    layout.margin_top, layout.margin_bottom = 0.3, 1.5
+    win.refresh()
+    win.plot.fit_page()
+    return layout
+
+
+def test_room_grown_for_an_axis_is_given_back(qapp):
+    """Room grown for an axis is given back: the heat flow's axis joining an
+    SDT run's mass grows the right margin; hiding it again gives the room back
+    - unless the margin was set by hand meanwhile."""
+    win = _window(qapp, model.Sample("C:/nowhere/SDT-1.tri", sdt_data()))
+    layout = _exact(win)
+    win.toggle_signal(model.SIGNAL_HEAT)
+    assert layout.margin_right > 0.3
+    assert layout.grown["right"][0] == pytest.approx(0.3)
+    win.toggle_signal(model.SIGNAL_HEAT)                 # hidden again
+    assert layout.margin_right == pytest.approx(0.3)
+    assert "right" not in layout.grown
+    # grown, then set by hand: it stays when the axis goes
+    win.toggle_signal(model.SIGNAL_HEAT)
+    win.set_page_margin("right", 2.0)
+    win.toggle_signal(model.SIGNAL_HEAT)
+    assert layout.margin_right == pytest.approx(2.0)
+    # the record travels in the session, and not in a preset
+    win.toggle_signal(model.SIGNAL_HEAT)
+    state = session.to_state(win.doc)
+    assert state["figure_grown"] == {} or "right" in state["figure_grown"]
+    assert "grown" not in layout.to_state()
+
+
+def test_the_page_margins_tighten_to_what_they_hold(window):
+    layout = _exact(window)
+    plot = window.plot
+    least = plot.least_page_margins()
+    assert least[0] < 4.0                     # 4 cm is more than needed
+    changes = window.tighten_page_margins()
+    assert changes
+    assert (layout.margin_left, layout.margin_right, layout.margin_top,
+            layout.margin_bottom) == pytest.approx(least)
+    assert plot.overflow() == []              # nothing is cut off
+    assert layout.width < 12.0                # the white space is cut off
+    window.undo_step()
+    assert layout.margin_left == pytest.approx(4.0)
+    # not for a figure that sizes its margins itself
+    from dscpanel.core import figure as figure_module
+    layout.mode = figure_module.MODE_ASPECT
+    window.refresh()
+    assert window.tighten_page_margins() == []
+    assert not window.ops.get("figure.tighten_margins").enabled(window)
+
+
+def test_the_page_margin_blades(window):
+    """A blade stands at the page's corner, at its
+    very edge; pulled in it cuts white space off, out it adds some - the
+    page grows or shrinks and the axes box keeps its size."""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    layout = _exact(window)
+    window.show()
+    QTest.qWaitForWindowExposed(window)
+    plot = window.plot
+    plot._page_handles_shown = True
+    plot.grab()
+    page = plot.page_on_pane()
+    out = plot.BLADE_OUT
+    # at the corners: right and top at the upper right, left and bottom at
+    # the lower left, just outside the page
+    right = plot.page_margin_blade("right").boundingRect().center()
+    top = plot.page_margin_blade("top").boundingRect().center()
+    left = plot.page_margin_blade("left").boundingRect().center()
+    bottom = plot.page_margin_blade("bottom").boundingRect().center()
+    assert (right.x(), right.y()) == (pytest.approx(page.right(), abs=1.0),
+                                      pytest.approx(page.top() - out, abs=1.0))
+    assert (top.x(), top.y()) == (pytest.approx(page.right() + out, abs=1.0),
+                                  pytest.approx(page.top(), abs=1.0))
+    assert (left.x(), left.y()) == (pytest.approx(page.left(), abs=1.0),
+                                    pytest.approx(page.bottom() + out,
+                                                  abs=1.0))
+    assert (bottom.x(), bottom.y()) == (pytest.approx(page.left() - out,
+                                                      abs=1.0),
+                                        pytest.approx(page.bottom(), abs=1.0))
+    axes = layout.axes_size()
+    # pulled OUT, white space is added: the page grows, the box stays
+    k = plot.page()[2]
+    start = right.toPoint()
+    QTest.mousePress(plot, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(plot, start + QPoint(int(40 * k), 0))
+    QTest.mouseRelease(plot, Qt.LeftButton, Qt.NoModifier,
+                       start + QPoint(int(40 * k), 0))
+    assert layout.margin_right > 0.3 + 0.5
+    assert layout.width > 12.0
+    assert layout.axes_size() == pytest.approx(axes)
+    window.undo_step()
+    assert (layout.margin_right, layout.width) == pytest.approx((0.3, 12.0))
+    # pulled IN, it is cut off - never into what the margin holds
+    plot._page_handles_shown = True
+    plot.grab()
+    start = plot.page_margin_blade("left").boundingRect().center().toPoint()
+    QTest.mousePress(plot, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(plot, start + QPoint(2000, 0))
+    QTest.mouseRelease(plot, Qt.LeftButton, Qt.NoModifier,
+                       start + QPoint(2000, 0))
+    least = plot.least_page_margin("left")
+    assert layout.margin_left == pytest.approx(least)
+    assert layout.width == pytest.approx(12.0 - (4.0 - least), abs=1e-3)
+    assert layout.axes_size() == pytest.approx(axes)
+    window.undo_step()
+    # clicked, a typed number; one that would cut something off is refused
+    plot._page_handles_shown = True
+    plot.grab()
+    where = plot.page_margin_blade("left").boundingRect().center().toPoint()
+    QTest.mouseClick(plot, Qt.LeftButton, Qt.NoModifier, where)
+    assert plot.page_margin_selected() == "left"
+    wanted = round(plot.least_page_margin("left") + 0.5, 2)
+    QTest.keyClicks(plot, str(wanted))
+    QTest.keyClick(plot, Qt.Key_Return)
+    assert layout.margin_left == pytest.approx(wanted)
+    assert plot.type_page_margin("0.1") is False
+    assert layout.margin_left == pytest.approx(wanted)
+    assert plot._page_margin_state()["flash"] is not None
+
+
+def test_the_margins_in_numbers(window):
+    """Double-clicked, a blade opens the page's margins and an arrow the
+    data's."""
+    from PySide6.QtWidgets import QDialogButtonBox
+    layout = _exact(window)
+    plot = window.plot
+    asked = []
+    window.ask_page_margins = lambda: asked.append("page")
+    window.ask_data_margins = lambda: asked.append("data")
+    plot.page_margins_asked.emit()
+    plot.data_margins_asked.emit()
+    assert asked == ["page", "data"]
+    dialog = window.page_margins_dialog()
+    least = plot.least_page_margins()
+    assert dialog.boxes["left"].minimum() == pytest.approx(least[0])
+    dialog.boxes["top"].setValue(1.0)
+    dialog.tighten()
+    assert dialog.values()["left"] == pytest.approx(least[0])
+    axes = layout.axes_size()
+    window.set_page_margins(dialog.values())
+    assert layout.axes_size() == pytest.approx(axes)
+    assert layout.margin_left == pytest.approx(least[0])
+    data = window.data_margins_dialog()
+    data.boxes["left"].setValue(0.6)
+    data.boxes["right"].setValue(0.5)
+    assert not data.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    data.boxes["right"].setValue(0.1)
+    assert data.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    window.set_fit_margins(data.values())
+    assert window.doc.style.fit_left == pytest.approx(0.6)
+    assert plot.margin_share("left") == pytest.approx(0.6, abs=1e-3)
+
+
+def test_no_blades_where_the_margins_size_themselves(window):
+    plot = window.plot
+    plot._page_handles_shown = True
+    plot.grab()
+    assert not plot.page_margins_editable()
+    assert plot.page_margin_blade_at(plot.page_on_pane().center()) is None
+
+
+def test_a_hair_from_home_is_not_zoomed(window):
+    plot = window.plot
+    window.doc.follow_zoom = True
+    lo, hi = plot.view_y()
+    span = hi - lo
+    plot.set_axis_view("y", lo + 0.005 * span, hi + 0.006 * span)
+    assert not plot.zoomed()
+    plot.set_axis_view("y", lo, lo + span / 2.0)
+    assert plot.zoomed()
+
+
+
+def test_decorators_stay_on_the_page_by_default(window):
+    """Decorators stay on the page by default, so a heat flow arrow or a
+    structure is not lost off the view; the F3 toggle makes them follow
+    the zoom, nothing jumping either way."""
+    from PySide6.QtCore import QPointF
+    plot, doc = window.plot, window.doc
+    assert doc.follow_zoom is False
+    label = window.add_label("free", at=QPointF(300.0, 200.0))
+    plot.grab()
+    rect = plot.plot_rect()
+    home = plot.artist_point(label, rect)
+    arrow = plot.artist_point(doc.arrow, rect)
+    lo, hi = plot.view_x()
+    plot.set_axis_view("x", lo, lo + (hi - lo) / 2.0)
+    assert plot.artist_point(label, rect) == pytest.approx(home)
+    assert plot.artist_point(doc.arrow, rect) == pytest.approx(arrow)
+    assert not plot.zoomed()                   # never cut at the axes
+    # toggled while zoomed: nothing moves, and then it follows
+    assert window.run_op("view.follow_zoom")
+    assert doc.follow_zoom is True
+    assert plot.artist_point(label, rect) == pytest.approx(home, abs=0.5)
+    plot.reset_view()
+    assert plot.artist_point(label, rect) != pytest.approx(home, abs=0.5)
+    window.undo_step()                         # the F
+    window.undo_step()                         # the toggle
+    assert doc.follow_zoom is False
+    # saved with the figure
+    assert session.to_state(doc)["follow_zoom"] is False
+
+
+def test_a_version_7_session_opens_with_its_decorators_in_place(
+        window, tmp_path, monkeypatch):
+    import json
+    from dscpanel.core import loader
+    plot, doc = window.plot, window.doc
+    # the synthetic file exists nowhere: the session is handed it back
+    data = doc.samples[0].data
+    monkeypatch.setattr(loader, "read_sample",
+                        lambda path: model.Sample(path, data))
+    doc.follow_zoom = True
+    label = window.add_label("free", at=None)
+    lo, hi = plot.view_x()
+    plot.set_axis_view("x", lo, hi + (hi - lo))
+    plot.grab()
+    rect = plot.plot_rect()
+    drawn = plot.artist_point(label, rect)
+    path = tmp_path / "seven.dscpanel"
+    window.save_session(path=str(path))        # with its framing
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["version"] = 7
+    del state["follow_zoom"]
+    path.write_text(json.dumps(state), encoding="utf-8")
+    window.open_session(str(path))
+    new = window.plot
+    new.grab()
+    assert window.doc.follow_zoom is False
+    again = window.doc.labels[0]
+    assert new.artist_point(again, new.plot_rect()) == pytest.approx(
+        drawn, abs=1.0)
+
+
+# ------------------------------------------------------------ 27f
+def test_tightened_margins_stop_at_the_last_drawn_pixel(window, tmp_path):
+    """Tightening left extra margin where there were axis captions: after
+    tightening, a PNG's ink reaches the page's edge on the sides with a
+    caption."""
+    from PySide6.QtGui import QColor, QImage
+    layout = _exact(window)
+    window.set_background("#ffffff")
+    window.tighten_page_margins()
+    path = str(tmp_path / "tight.png")
+    window.export_image(path, light=True)
+    image = QImage(path)
+
+    def inked(x, y):
+        c = QColor(image.pixel(x, y))
+        return c.red() + c.green() + c.blue() < 600
+
+    width, height = image.width(), image.height()
+    cols = [x for x in range(0, width) if any(inked(x, y)
+                                              for y in range(0, height, 3))]
+    rows = [y for y in range(0, height) if any(inked(x, y)
+                                               for x in range(0, width, 3))]
+    per_mm = layout.dpi / 25.4
+    # at most the 0.01 rounding and the antialiasing (it was 0.7 mm)
+    assert cols[0] / per_mm < 0.3                    # the y caption
+    assert (height - 1 - rows[-1]) / per_mm < 0.3    # the x caption
+    assert window.plot.overflow() == []
+
+
+def test_interval_marks_have_a_length_of_their_own(window):
+    from dscpanel.core import measure
+    from dscpanel.ui.dialogs import AnalysisSettings
+    scan = window.doc.scans[0]
+    analysis = measure.run("Peak Integration (enthalpy)", scan, 80.0, 140.0)
+    window.refresh()
+    plot = window.plot
+    plot.grab()
+    trace = [t for t in plot.traces if t.scan is scan][0]
+    dashes, _lines = plot.interval_marks(trace, analysis)
+    (a, b) = dashes[0]
+    assert b.y() - a.y() == pytest.approx(2 * 3.0)      # built in: 3
+    dialog = AnalysisSettings(window, analysis)
+    assert dialog.interval_size.value() is None         # the house style's
+    analysis.interval_size = 6.0
+    dashes, _lines = plot.interval_marks(trace, analysis)
+    (a, b) = dashes[0]
+    assert b.y() - a.y() == pytest.approx(12.0)
+    window.doc.style.interval_tick = 2.0
+    analysis.interval_size = None
+    dashes, _lines = plot.interval_marks(trace, analysis)
+    assert dashes[0][1].y() - dashes[0][0].y() == pytest.approx(4.0)
+
+
+def test_an_analysis_following_its_curve_is_one_solid_colour(window):
+    from PySide6.QtGui import QColor
+    from dscpanel.core import measure
+    scan = window.doc.scans[0]
+    analysis = measure.run("Peak Integration (enthalpy)", scan, 80.0, 140.0)
+    colour = window.plot.analysis_colour(analysis)
+    assert colour.alpha() == 255
+    # the shade 75 % of the curve's colour made over the page
+    page = window.plot.page_colour()
+    curve = QColor(scan.colour)
+    share = 190 / 255.0
+    assert colour.redF() == pytest.approx(
+        share * curve.redF() + (1 - share) * page.redF(), abs=0.01)
+
+
+def test_the_offset_readout_has_two_significant_figures(window):
+    from PySide6.QtCore import QPointF
+    plot, doc = window.plot, window.doc
+    scan = doc.scans[0]
+    scan.offset = 4.6543
+    window.refresh()
+    plot.grab()
+    doc.select_only([scan])
+    assert plot.start_grab([scan])
+    plot._update_move(QPointF(plot._move["start"].x(),
+                              plot._move["start"].y() - 17.0))
+    text = plot._move_readout()
+    moved = scan.offset - 4.6543
+    assert numbers.write(moved, "%+.2g") in text
+    plot._finish_move(cancel=True)
+
+
+def test_set_the_molar_mass_offers_the_calculator(window, monkeypatch):
+    from dscpanel.core import molar
+    from dscpanel.ui import dialogs
+    if not molar.available():
+        pytest.skip("RDKit is not installed")
+    scan = window.doc.scans[0]
+
+    def answered(prompt):
+        assert hasattr(prompt, "calculate_molar")        # the button
+        prompt.molar.setValue(122.12)
+        return 1
+    monkeypatch.setattr(dialogs.MolarMassPrompt, "exec", answered)
+    assert window.ask_molar_mass([scan]) == pytest.approx(122.12)
+    assert scan.sample.molar_mass == pytest.approx(122.12)
+    window.undo_step()
+    assert scan.sample.molar_mass is None
+
+
+def test_pictures_and_structures_mirror(window):
+    from dscpanel.core import chem
+    atoms = [{"el": "C", "x": 0.0, "y": 0.0}, {"el": "O", "x": 2.0,
+                                                "y": 1.0}]
+    bonds = [{"a": 0, "b": 1, "order": 1, "stereo": "wedge"}]
+    new_atoms, new_bonds = chem.mirrored_layout(atoms, bonds, True)
+    assert [a["x"] for a in new_atoms] == [2.0, 0.0]
+    assert [a["y"] for a in new_atoms] == [0.0, 1.0]
+    assert new_bonds[0]["stereo"] == "hash"      # the same molecule
+    assert atoms[0]["x"] == 0.0                  # the originals untouched
+    up_atoms, _b = chem.mirrored_layout(atoms, bonds, False)
+    assert [a["y"] for a in up_atoms] == [1.0, 0.0]
+    # a picture's mirror is two flags, saved
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    from PySide6.QtGui import QImage
+    picture = QImage(4, 2, QImage.Format_ARGB32)
+    picture.fill(0xff0000ff)
+    buffer = QBuffer()
+    buffer.open(QIODevice.WriteOnly)
+    picture.save(buffer, "PNG")
+    image = model.ImageArtist(990, bytes(QByteArray(buffer.data()).toBase64()
+                                         ).decode("ascii"), 0.5, 0.5, 40.0)
+    window.doc.images.append(image)
+    window.doc.select_only([image])
+    assert window.ops.get("object.mirror_h").key == "Ctrl+Shift+H"
+    assert window.ops.get("object.mirror_v").key == "Ctrl+Shift+V"
+    assert window.ops.get("edit.paste_text").key == "Ctrl+Alt+V"
+    assert window.run_op("object.mirror_h")
+    assert image.mirror_h and not image.mirror_v
+    window.plot.grab()
+    saved = session.to_state(window.doc)["images"][0]
+    assert saved["mirror_h"] is True
+    window.undo_step()
+    assert not image.mirror_h
+
+
+def test_a_mirrored_ring_keeps_its_double_bonds_inside(window):
+    """After a mirror the ring's double bonds were
+    drawn outside it - their ring's stored centre had not moved."""
+    from dscpanel.core import chem
+    atoms = [{"el": "C", "x": 1.0, "y": 0.0}, {"el": "C", "x": 2.0,
+                                                "y": 0.0}]
+    bonds = [{"a": 0, "b": 1, "order": 2, "ring": [1.5, 1.0],
+              "stereo": None}]
+    new_atoms, new_bonds = chem.mirrored_layout(atoms, bonds, True)
+    # mirrored about the atoms' middle, x = 1.5: the centre stays over them
+    assert new_bonds[0]["ring"] == pytest.approx([1.5, 1.0])
+    atoms = [{"el": "C", "x": 0.0, "y": 0.0}, {"el": "C", "x": 4.0,
+                                                "y": 0.0}]
+    bonds = [{"a": 0, "b": 1, "order": 2, "ring": [1.0, -1.0],
+              "stereo": None}]
+    _atoms, new_bonds = chem.mirrored_layout(atoms, bonds, True)
+    assert new_bonds[0]["ring"] == pytest.approx([3.0, -1.0])
+    _atoms, new_bonds = chem.mirrored_layout(atoms, bonds, False)
+    assert new_bonds[0]["ring"] == pytest.approx([1.0, 1.0])
+
+
+def test_a_turned_structures_box_holds_its_level_labels(window):
+    """The OH's H stuck out of a turned structure's selection: level labels
+    are laid out after the turn, and the box now takes them so. Checked on
+    the pixels: every red (oxygen) pixel lies inside the turned box."""
+    from PySide6.QtGui import QColor, QPolygonF
+    from dscpanel.core import chem
+    if not chem.available():
+        pytest.skip("RDKit is not installed")
+    window.show()
+    molecule = window.add_molecule("O=C(O)c1ccccc1")
+    molecule.bond_length = 40.0
+    molecule.label_size = 18.0
+    plot = window.plot
+    for angle in (90.0, 270.0):
+        molecule.rotation = angle
+        window.refresh()
+        image = plot.grab().toImage()
+        rect = plot.plot_rect()
+        box = plot._molecule_layout(molecule, rect)[0]
+        turned = plot._turn_of(molecule, rect).map(QPolygonF(box))
+        corners = [plot.to_widget(turned[k]) for k in range(turned.size())]
+        ratio = image.devicePixelRatio()
+        left = min(c.x() for c in corners) * ratio - 1
+        right = max(c.x() for c in corners) * ratio + 1
+        top = min(c.y() for c in corners) * ratio - 1
+        bottom = max(c.y() for c in corners) * ratio + 1
+        reds = []
+        for y in range(0, image.height(), 1):
+            for x in range(0, image.width(), 1):
+                c = QColor(image.pixel(x, y))
+                if c.red() > 200 and c.green() < 140 and c.blue() < 140:
+                    reds.append((x, y))
+        assert reds, "no oxygen drawn"
+        assert all(left <= x <= right and top <= y <= bottom
+                   for x, y in reds), angle
+
+
+def test_mirroring_a_turned_structure_is_left_right_on_screen(window):
+    from dscpanel.core import chem
+    if not chem.available():
+        pytest.skip("RDKit is not installed")
+    molecule = window.add_molecule("O=C(O)c1ccccc1")
+    molecule.rotation = 270.0
+    window.doc.select_only([molecule])
+    window.mirror_selected(True)
+    assert molecule.rotation == pytest.approx(90.0)
+    window.undo_step()
+    assert molecule.rotation == pytest.approx(270.0)
+
+
+def _hang_a_label(window):
+    """A label hanging from the first curve, 30 units above it."""
+    from PySide6.QtCore import QPointF
+    plot = window.plot
+    plot.grab()
+    trace = plot.traces[0]
+    i = len(trace.px) // 2
+    point = QPointF(float(trace.px[i]), float(trace.py[i]) - 30.0)
+    label = window.add_label("name", at=point, scan=trace.scan)
+    plot.grab()
+    return label, trace.scan
+
+
+def _drag_from(plot, start, dx, dy):
+    """Press at `start` (figure units), drag by (dx, dy) PANE pixels, let
+    go - through the handlers, so an error fails the test."""
+    from PySide6.QtCore import QPointF
+    from test_window import _move, _press, _release
+    at = plot.to_widget(QPointF(*start))
+    plot.mousePressEvent(_press(plot, (at.x(), at.y())))
+    for k in range(1, 5):
+        plot.mouseMoveEvent(_move(plot, (at.x() + dx * k / 4.0,
+                                         at.y() + dy * k / 4.0)))
+    plot.mouseReleaseEvent(_release(plot, (at.x() + dx, at.y() + dy)))
+    plot.grab()
+
+
+def test_a_label_stays_where_it_hangs_when_its_curve_is_hidden(window):
+    """Swapping first upscans for later ones: hiding a curve dropped its labels
+    on the middle of the plot, and dragging one from there ended the program -
+    a TypeError inside a mouse handler, which PySide6 turns into an access
+    violation."""
+    plot = window.plot
+    label, scan = _hang_a_label(window)
+    window.lock_framing(True)       # hiding a curve would refit the view
+    plot.grab()
+    rect = plot.plot_rect()
+    before = plot.artist_point(label, rect)
+    window.undo.set_props([(scan, "visible", False)], "hide")
+    window.refresh()
+    plot.grab()
+    assert plot._trace_of(scan) is None
+    assert plot.artist_point(label, rect) == pytest.approx(before, abs=0.5)
+    _drag_from(plot, before, 20.0, 16.0)
+    k = plot.page()[2]
+    after = plot.artist_point(label, rect)
+    assert label.attached
+    assert after[0] - before[0] == pytest.approx(20.0 / k, abs=1.0)
+    assert after[1] - before[1] == pytest.approx(16.0 / k, abs=1.0)
+    # shown again, the curve has it where it was dragged to
+    window.undo.set_props([(scan, "visible", True)], "show")
+    window.refresh()
+    plot.grab()
+    assert plot.artist_point(label, rect) == pytest.approx(after, abs=0.5)
+
+
+def test_a_label_with_no_point_on_its_curve_still_drags(window,
+                                                        monkeypatch):
+    """No curve in this unit at all: it stands at its own x and y, and a
+    drag moves it from there instead of failing on the curve's index."""
+    plot = window.plot
+    label, _scan = _hang_a_label(window)
+    monkeypatch.setattr(plot, "_label_trace", lambda scan: None)
+    plot.invalidate()
+    plot.grab()
+    rect = plot.plot_rect()
+    before = plot.artist_point(label, rect)
+    _drag_from(plot, before, 24.0, -12.0)
+    k = plot.page()[2]
+    after = plot.artist_point(label, rect)
+    assert after[0] - before[0] == pytest.approx(24.0 / k, abs=1.0)
+    assert after[1] - before[1] == pytest.approx(-12.0 / k, abs=1.0)
+
+
+def test_every_qt_handler_in_the_ui_is_guarded():
+    """Each UI module ends with `log.guard_classes`: a method Qt calls by
+    itself that raises must reach the log, not end the program."""
+    import importlib
+    import inspect
+    import pkgutil
+    from dscpanel import ui
+    from dscpanel.core import log
+    missed = []
+    for info in pkgutil.iter_modules(ui.__path__):
+        module = importlib.import_module("dscpanel.ui." + info.name)
+        for cls in list(vars(module).values()):
+            if not inspect.isclass(cls) or cls.__module__ != module.__name__:
+                continue
+            for name, attr in vars(cls).items():
+                if ((name.endswith("Event") or name in log.HANDLERS)
+                        and inspect.isfunction(attr)
+                        and not getattr(attr, "guarded", False)):
+                    missed.append("{}.{}.{}".format(info.name,
+                                                    cls.__name__, name))
+    assert not missed, missed
+
+
+def test_an_error_in_a_handler_is_logged_and_survived(qapp, monkeypatch):
+    """PySide6 6.11 ends the process on an error in a method Qt calls by
+    itself, without asking `sys.excepthook`. Guarded, the program logs it
+    and carries on; a test (no hook) still sees the error."""
+    import sys
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication, QWidget
+    from dscpanel.core import log
+
+    class Faulty(QWidget):
+        def mouseMoveEvent(self, ev):
+            raise TypeError("a handler's error")
+
+    assert log.guard_classes({"Faulty": Faulty}, Faulty.__module__) == 1
+    with pytest.raises(TypeError):
+        Faulty.mouseMoveEvent(None, None)
+    heard = []
+    monkeypatch.setattr(log, "on_error", heard.append)
+    monkeypatch.setattr(sys, "excepthook", log._hook)
+    monkeypatch.setattr(log, "_last_guarded", [None, 0.0])
+    widget = Faulty()
+    widget.show()
+    point = QPointF(3.0, 3.0)
+    for _ in range(3):
+        QApplication.sendEvent(widget, QMouseEvent(
+            QMouseEvent.Type.MouseMove, point, point, Qt.NoButton,
+            Qt.LeftButton, Qt.NoModifier))
+    widget.close()
+    # reported once, not once per event
+    assert heard == ["TypeError: a handler's error"]

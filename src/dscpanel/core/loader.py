@@ -9,16 +9,14 @@ means the opposite thing upside down, and TRIOS stores its own convention:
 
 * a `.txt` export writes `Exotherm Direction   Down` in its header;
 * a `.tri` carries TRIOS's audit trail, where changing the setting leaves the
-  sentence `Sample - Exotherm changed to 'Exo Down' from '0'` (seen in
-  SES-4-15092026.tri, TRIOS 6.0). The last such sentence is the setting that
-  was in force.
+  sentence `Sample - Exotherm changed to 'Exo Down' from '0'` (seen in a
+  TRIOS 6.0 run). The last such sentence is the setting that was in force.
 
-Neither is guaranteed to be there - OJ-12 (TRIOS 5.1.1) has no audit sentence
-at all - so the fallback is "down", which is the TA default and what every
-file seen so far was recorded under. The fallback is REPORTED rather than
-silent (`Sample.exo_source`), because a file recorded the other way round
-would otherwise produce a figure that is upside down and says nothing about
-it.
+Neither is guaranteed to be there - a TRIOS 5.1.1 run may have no audit
+sentence at all - so the fallback is "down", which is the TA default and what
+every file seen so far was recorded under. The fallback is REPORTED rather than
+silent (`Sample.exo_source`), because a file recorded the other way round would
+otherwise produce a figure that is upside down and says nothing about it.
 
 Open item, and the cheapest way to settle it: an indium calibration run. Its
 melting peak is unambiguously endothermic, so which way it points in the
@@ -54,22 +52,9 @@ class ReadError(Exception):
 
 
 def reader_origin():
-    """Where the reader came from, for the About box.
-
-    Read off the reader's own first comment, so it says what is actually
-    installed rather than what somebody remembered to type. The reader has
-    lived here since ACH-DSC-Plotter was retired (2026-09-28).
-    """
-    try:
-        with open(trios_io.__file__, "r", encoding="utf-8") as fh:
-            head = fh.read(400)
-    except OSError:
-        return "unknown"
-    match = re.search(r"started in (\S+) \(([^)]+)\)", head)
-    if not match:
-        return "this program's own"
-    return "this program's own, from {} {}".format(match.group(1),
-                                                   match.group(2))
+    """Which TRIOS reader is in use, for the About box: the program's own
+    (`core/trios_io.py`)."""
+    return "this program's own"
 
 
 def looks_readable(path):
@@ -158,9 +143,9 @@ def sibling_export(path):
     calibration run it was 7 % out in heat flow and 0.29 K out in
     temperature, worse than the calibration is judged by). That indium ramp
     was the case this was written for, and it turned out to be RECORDED, in
-    arrays with a flags list the reader did not read before 2026-09-28
-    (TRI-FORMAT.md section 3); no segment on the development machine lacks
-    a heat flow now, but the mechanism stays for one that does.
+    arrays with a flags list (TRI-FORMAT.md section 3) that the reader once
+    did not read; no segment of the files tested lacks a heat flow now, but
+    the mechanism stays for one that does.
     """
     folder = os.path.dirname(os.path.abspath(str(path)))
     stem = os.path.splitext(os.path.basename(str(path)))[0].lower()

@@ -1,6 +1,6 @@
 """F3: the operator palette.
 
-Blender's command search, and MoloM's: type a few letters, see what exists,
+Blender's command search: type a few letters, see what exists,
 press Enter. Its value here is the same as there - the window stays quiet
 because the twenty things you do rarely are one keystroke away instead of in
 a menu - plus one thing that is specific to a plot: the list is filtered by
@@ -101,9 +101,8 @@ class MeasurePalette(QDialog):
     """Which analysis to run on the two cursors that are down.
 
     The same shape as the operator palette, on purpose: type to filter,
-    arrows to walk, Enter to run - Christian asked for "a quick-select menu
-    like in MoloM or Blender", and the one he already has is the one his
-    hands know.
+    arrows to walk, Enter to run - a quick-select menu as in Blender, and
+    the one the hands already know.
     """
 
     def __init__(self, models, parent=None, previous=""):
@@ -187,3 +186,8 @@ class MeasurePalette(QDialog):
             return
         self.chosen = item.data(0, Qt.UserRole)
         self.accept()
+
+# Qt calls the handlers here by itself; an error in one is logged and
+# survived rather than the end of the program (`core/log.py`).
+from ..core import log as _log
+_log.guard_classes(globals(), __name__)

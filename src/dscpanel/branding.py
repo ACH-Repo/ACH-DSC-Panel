@@ -1,7 +1,9 @@
 """Every place the program says its own name, in ONE module.
 
-The name is expected to change ("DSC-Panel" is a working title), and a name
-that is spelled out in twenty places is a name nobody dares to change. So:
+The name was expected to change, and it did: "DSC-Panel" was the working
+title until 1.1.0, the first release on PyPI, as Triplot. A
+name that is spelled out in twenty places is a name nobody dares to change.
+So:
 
 * the window title, the Start Menu shortcut, the file-type id, the settings
   folder and the manifest of what was registered all read from here;
@@ -14,10 +16,17 @@ What a rename costs, with this module in place:
 
 1. change `APP_NAME`, `EXE_NAME`, `PROG_ID` and `SETTINGS_ORG`/`SETTINGS_APP`
    here, and add the outgoing values to `LEGACY_NAMES`;
-2. change the two entry-point lines in `pyproject.toml`;
-3. `pip uninstall ach-dsc-panel` (this removes the old command), reinstall;
-4. run `dsc-panel register --clean-legacy`, which reads `LEGACY_NAMES` and the
-   registration manifest and removes what the old name left behind.
+2. change the two entry-point lines in `pyproject.toml` (and the
+   distribution's name there, if it goes too);
+3. uninstall the old distribution (this removes the old command), install
+   the new one;
+4. run `<new command> register --clean-legacy`, which reads `LEGACY_NAMES`
+   and the registration manifest and removes what the old name left behind.
+
+The user's folder (`app_dir`: preferences, presets, the manifest) is named
+after the program too, so the first start under a new name copies the old
+one's across (`adopt_legacy_dir`) - the house style, the presets and the
+window's place survive, and so does the manifest the cleanup reads.
 
 Nothing else in the program contains the name as a literal. A test enforces
 that (`tests/test_branding.py`).
@@ -27,18 +36,19 @@ import os
 import sys
 
 #: What the program calls itself in the window title and the Start Menu.
-APP_NAME = "DSC-Panel"
+APP_NAME = "Triplot"
 
 #: The command, and the base name of every shortcut and shim that is created.
-EXE_NAME = "dsc-panel"
+EXE_NAME = "triplot"
 
 #: The windowed entry point, which a shortcut prefers so no console appears.
-EXE_NAME_GUI = "dsc-panel-gui"
+EXE_NAME_GUI = "triplot-gui"
 
 #: The Explorer file-type id for the session file, under HKCU\Software\Classes.
-PROG_ID = "DscPanel.Session"
+PROG_ID = "Triplot.Session"
 
-#: The session file's extension.
+#: The session file's extension. Kept through the rename to Triplot: it names
+#: what the file holds (a DSC figure), and every saved figure has it.
 SESSION_EXT = ".dscpanel"
 
 #: A style preset's extension (`core/presets.py`): JSON inside, named so a
@@ -48,41 +58,72 @@ PRESET_EXT = ".dscstyle"
 #: QSettings coordinates. Changing these forgets the user's window geometry,
 #: which is why they are written down rather than derived from APP_NAME.
 SETTINGS_ORG = "ACH"
-SETTINGS_APP = "DSC-Panel"
+SETTINGS_APP = "Triplot"
 
 #: Names this program has gone by. (name, exe, prog_id) for each, oldest
 #: first. `register --clean-legacy` walks this list and removes anything it
 #: finds: Start Menu shortcuts, desktop shortcuts, PATH shims and the file
 #: association. Add the outgoing values here as part of a rename; never
 #: remove an entry, because somebody's machine may still be carrying it.
-LEGACY_NAMES = ()
+LEGACY_NAMES = (
+    ("DSC-Panel", "dsc-panel", "DscPanel.Session"),     # until 1.0.0
+)
 
 #: A one-line description, for shortcut tooltips and the About box.
 DESCRIPTION = "Stacked DSC scans from TRIOS files"
 
-#: Where the source lives, for the About box. It carries the name, so it is
-#: written here and nowhere else (and changes with a rename).
-REPOSITORY = "https://github.com/ACH-Repo/ACH-DSC-Panel"
+#: The program's public page, for the About box. It carries the name, so it
+#: is written here and nowhere else (and changes with a rename).
+HOMEPAGE = "https://pypi.org/project/triplot/"
 
 #: The copyright line from LICENSE, for the About box.
 COPYRIGHT = ("Christian Nelle (@p3rAsperaAdAstra), AG Henke, "
              "TU Dortmund. MIT licence.")
 
 
-def app_dir():
+def app_dir(app_name=None, exe_name=None):
     """Where the registration manifest and any user data live.
 
     Per user, never per install, so a reinstall does not lose track of the
-    shortcuts the last install made.
+    shortcuts the last install made. With a name, the folder a program of
+    that name used (a `LEGACY_NAMES` entry's first two).
     """
+    app_name = app_name or APP_NAME
+    exe_name = exe_name or EXE_NAME
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        return os.path.join(base, APP_NAME)
+        return os.path.join(base, app_name)
     if sys.platform == "darwin":
         return os.path.expanduser(
-            "~/Library/Application Support/" + APP_NAME)
+            "~/Library/Application Support/" + app_name)
     base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-    return os.path.join(base, EXE_NAME)
+    return os.path.join(base, exe_name)
+
+
+def adopt_legacy_dir():
+    """Copy the newest older name's folder to `app_dir()`, the first time.
+
+    Only when `app_dir()` does not exist yet: once it does, it is this
+    name's own and nothing is copied over it. The old folder stays where it
+    is (an older install may still be using it); its logs are not copied,
+    because a log is named after the program that wrote it. Returns the
+    folder copied from, or None. Never raises: a copy that fails leaves the
+    program starting with the built-in style, as on a new machine.
+    """
+    import shutil
+    target = app_dir()
+    try:
+        if os.path.exists(target):
+            return None
+        for app_name, exe_name, _prog_id in reversed(LEGACY_NAMES):
+            source = app_dir(app_name, exe_name)
+            if os.path.isdir(source) and source != target:
+                shutil.copytree(source, target, ignore=shutil.ignore_patterns(
+                    "*.log", "*.log.*"))
+                return source
+    except (OSError, shutil.Error):
+        return None
+    return None
 
 
 def manifest_path():

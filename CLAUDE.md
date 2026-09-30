@@ -1,4 +1,4 @@
-# Working on DSC-Panel
+# Working on Triplot (DSC-Panel until 1.0.0)
 
 Notes for whoever (or whatever) picks this up next. **Start with
 `docs/HANDOFF.md`**: the state of both repos, what is uncommitted, and what
@@ -11,10 +11,14 @@ going; this file is about how it is done here.
    undo stack, the session and the exports are plain Python and numpy, so
    they are testable without a window. Qt lives in `ui/` and in
    `register.py`. Same rule as MoloM and ORCA Workbench.
-2. **The name lives in `branding.py`.** A test fails if `DSC-Panel` or
-   `dsc-panel` is written anywhere else outside prose. A rename is that
+2. **The name lives in `branding.py`.** A test fails if `Triplot` or
+   `triplot` is written anywhere else outside prose. A rename is that
    module, the two entry points in `pyproject.toml`, and
-   `register --clean-legacy`.
+   `register --clean-legacy`. Done once (1.1.0, 2026-09-30): DSC-Panel /
+   `ach-dsc-panel` became Triplot / `triplot` on PyPI. The import name
+   stays `dscpanel`, sessions stay `.dscpanel`, the old names are in
+   `LEGACY_NAMES`, and the first start copies the old user folder across
+   (`branding.adopt_legacy_dir`, called first in `__main__.main`).
 3. **Never write a parser fixture from memory.** The reader
    (`core/trios_io.py`, `core/trios_analysis.py`) is this repo's OWN since
    ACH-DSC-Plotter was retired (2026-09-28): fix it here, never "in the
@@ -57,6 +61,7 @@ going; this file is about how it is done here.
 | `core/numbers.py` | how a number is written: the `%.3g` formats; typed sums |
 | `core/dtg.py` | the DTG: the m% curve's derivative, its units and window |
 | `core/shades.py` | shades of one colour for a stack (the F3 gradient) |
+| `core/molar.py` | molar masses from a formula, a SMILES or a composition |
 | `core/export.py` | CSV, the driver bridge, and the export warnings |
 | `core/profile.py` | what is particular to DSC/SDT data (one-press F, ...) |
 | `core/ops.py` | the operator registry (copied from MoloM, keep in step) |
@@ -93,6 +98,14 @@ going; this file is about how it is done here.
   21): PySide6 hands it to `sys.excepthook`, which `core/log.py` sets in
   the real program only. Tests do not install it, so there the old rule
   below still holds - and a test must not rely on either.
+* **An error in a method Qt calls BY ITSELF never reaches the hook**
+  (2026-09-30): `mouseMoveEvent`, `paintEvent`, `event`... - PySide6 6.11
+  ends the process (an access violation, no line in the log). Every UI
+  module ends with `log.guard_classes(globals(), __name__)`, which wraps
+  each `...Event` and the methods in `log.HANDLERS` so the error is logged
+  and survived - only while the hook is installed, so a test still sees
+  it. A new UI module needs the line; `test_every_qt_handler_in_the_ui_is_
+  guarded` says so. Found by dragging a label whose curve was hidden.
 * **An exception inside a Qt slot is not a traceback, it is an abort.**
   PySide6 terminates the process. So a crash with no output is usually an
   ordinary Python error in a slot: the outliner's row keys come in two
@@ -337,7 +350,18 @@ going; this file is about how it is done here.
 * **An axis has three hit targets** - `axis_spine_rect` (line and ticks),
   `axis_numbers_rect`, the caption box - and `axis_hit()` says which.
   Spine and numbers are never SELECTED (`_frame_part`); `edit_object(axis,
-  part=...)` picks the window.
+  part=...)` picks the window. The axis's LINES and inward ticks are the
+  spine too (`frame_line_gap`), ranked behind anything within the pick
+  distance. `Axis.visible` is the CAPTION's: never skip the spine or the
+  numbers on it (round 28: a hidden y caption made the y axis unopenable).
+* **A margin holds the numbers at the box's CORNERS** (round 28,
+  `_numbers_overhang` in `page_needs`): a number is centred on its tick,
+  so one on the corner hangs half over the margin beside. Where numbers
+  are written is `numbered_ticks` / `_number_box`, shared with
+  `_paint_grid`; a hidden number (`number_hidden`, kept with its unit
+  like a lock) keeps its tick.
+* **An axis switching sides goes through `window._to_side`**: on an exact
+  figure both margins keep their white space beyond what they hold.
 * **A scale's pivot is MEASURED, not predicted**: after changing the sizes
   the anchor goes back, the box is measured, and the anchor is moved by the
   pivot's error. A box does not grow in proportion to its font.
@@ -457,6 +481,12 @@ going; this file is about how it is done here.
   home (the lock, else the fit: `PlotWidget.home`) that is the old
   arithmetic; zoomed, decorators move with the data. `_home_frames`
   must not be asked while a fit is being worked out (`_fitting`).
+* **A hidden curve still holds its labels** (`PlotWidget._ghosts`,
+  `_label_trace`, 2026-09-30): a trace is built for a hidden scan that a
+  label hangs from, for the labels ONLY - never drawn, picked, fitted or
+  exported. Without it the label fell back on its stored x and y (the
+  middle of the plot). An attached label's move carries x and y as well
+  (`_fields_of`, `_value_of`), for when there is no curve point at all.
 * **A label on a curve is NOT placed by x and y** (`TextLabel.attached`:
   `at`, `dx`, `dy`). Its curve point comes from the drawn TRACE, so an
   offset set without a rebuild does not move it yet - go through the
@@ -474,6 +504,27 @@ going; this file is about how it is done here.
   (`Sample.name` is the title, else the file name).
 * **`undo.CallCommand` applies itself when built**: calling the action
   first as well runs it twice (closing a file lost its labels that way).
+* **What a page margin HOLDS is `PlotWidget.page_needs`** (round 27e):
+  the tightest a margin may go (blades, F3 "Tighten"), and what
+  `overflow` checks. `needed_margins` is the AUTOMATIC layout's (with
+  breathing room) and only sizes the non-exact figures.
+* **A caption's box may hang over the page by its EMPTY rows**
+  (`_ink_blank`, round 27f): its letters stop at the page's edge when a
+  margin is tight. `page_needs` measures a caption's natural reach, never
+  the clamped box, or a too-narrow margin looks wide enough.
+* **Decorators follow the zoom only when `doc.follow_zoom`** (off by
+  default since round 27f): `rel_to_px` is plain fractions of the axes box
+  otherwise. Anything that flips it converts the places
+  (`PlotWidget.reframed`), or they jump.
+* **A structure's layout is atoms AND bonds' ring centres**: anything
+  that moves atoms (`chem.mirrored_layout`) moves `bond["ring"]` too, or
+  a ring's inner lines go outside it. Level labels on a turned structure
+  are laid out AFTER the turn; `_molecule_layout` and `_paint_molecule`
+  must decide the hydrogens' side the same way.
+* **Room the program grows is remembered** (`FigureLayout.grown`, per
+  side `[before, after]`, in the layout's unit) and given back by
+  `_room_for_axes` when the axis leaves; a margin changed by hand drops
+  its record. Wrap anything new that can hide a curve in it.
 * **Every colour pick goes through `colour.get_colour`** (modal, live,
   Revert gives an invalid QColor); `QColorDialog` is no longer used.
 * **The driver export is FROZEN** (Christian, 2026-09-28). New features go
@@ -488,5 +539,8 @@ python -m dscpanel <file.tri>        # from a source checkout
 
 A quick look at the real thing, without a window on screen, is
 `QT_QPA_PLATFORM=offscreen` plus `window.plot.grab().save(...)`. Text renders
-as boxes under the offscreen platform on this machine; that is a font
-question in the platform plugin, not a bug in the drawing.
+as boxes under the offscreen platform unless it is told where the fonts
+are: `QT_QPA_FONTDIR=C:/Windows/Fonts` gives it the real ones (and real
+metrics - a box glyph is 16 units wide at 10 pt, so margins measured
+offscreen without it are far too big). The test suite runs WITHOUT it, so
+a test about sizes must hold for box glyphs too.

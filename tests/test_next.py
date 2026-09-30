@@ -1,7 +1,7 @@
-"""Christian's requests of 2026-09-28 (docs/NEXT.md): the unit of an
-analysis's number, settings windows that scroll on a small screen, typed
-distances for moving decorators, notes that point where they should and
-slide along their curve, and a SMILES pasted without RDKit.
+"""The unit of an analysis's number, settings windows that scroll on a
+small screen, typed distances for moving decorators, notes that point
+where they should and slide along their curve, and a SMILES pasted
+without RDKit.
 """
 
 import pytest
@@ -72,7 +72,7 @@ def test_the_unit_survives_a_session(window, tmp_path):
 
 # ------------------------------------------- settings that scroll
 def test_a_tall_settings_window_scrolls_its_rows(window, monkeypatch):
-    """On a small screen (his T14s) the rows scroll past a share of the
+    """On a small laptop screen the rows scroll past a share of the
     screen's height; the buttons stay in view; small windows never do."""
     from dscpanel.ui import dialogs
     from PySide6.QtWidgets import QDialogButtonBox
@@ -230,7 +230,7 @@ def test_g_then_x_slides_a_note_along_its_curve(window):
     assert text[0] - text_before[0] == pytest.approx(
         tip.x() - tip_before.x(), abs=1.0)
     plot._finish_move()
-    # on its curve the note slides by its sample (2026-09-29)
+    # on its curve the note slides by its sample
     assert note.attached and tuple(note.at) != at_before
     window.undo.undo()
     assert plot.leader_tip(note, rect).x() == pytest.approx(
@@ -268,11 +268,11 @@ def test_a_smiles_pasted_without_rdkit_says_so(window, monkeypatch):
     assert told == [True]
 
 
-# ------------------------------------ step 5: a marker line (round 26)
+# ------------------------------------------------------- a marker line
 def test_a_marker_line_stands_at_a_temperature(window, tmp_path):
-    """His `mark_peak`: a dashed vertical line across the axes at a
-    temperature, its text upright on it; sideways moves the line, up and
-    down slides the text; picked anywhere along the line."""
+    """The template's `mark_peak`: a dashed vertical line across the axes
+    at a temperature, its text upright on it; sideways moves the line, up
+    and down slides the text; picked anywhere along the line."""
     plot, doc = window.plot, window.doc
     plot.grab()
     rect = plot.plot_rect()
@@ -316,7 +316,7 @@ def test_a_marker_line_stands_at_a_temperature(window, tmp_path):
     plot.grab()
 
 
-# ------------------------------------------------- 2026-09-29 requests
+# --------------------------------------------------- fit margins and more
 def _sdt_window(qapp):
     from test_weight import _sample, _window, sdt_data
     return _window(qapp, _sample(sdt_data(segments=2)))
@@ -359,9 +359,9 @@ def test_a_right_click_marks_every_selected_mass_curve(qapp):
     assert t0 == pytest.approx(t1, abs=2.0)
 
 
-def test_the_fit_margins_are_the_side_margins_of_his_scripts(window):
-    """A margin is the SHARE OF THE AXIS left empty (Christian,
-    2026-09-29): left 0.1 is the first tenth of the x axis."""
+def test_the_fit_margins_are_the_templates_side_margins(window):
+    """A margin is the SHARE OF THE AXIS left empty: left 0.1 is the
+    first tenth of the x axis."""
     plot, doc = window.plot, window.doc
     doc.style.fit_left = doc.style.fit_right = 0.0
     lo, hi = plot.data_x()

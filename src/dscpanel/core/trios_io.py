@@ -1,14 +1,13 @@
-# The TRIOS reader. It started in ACH-DSC-Plotter (2.1.0) and lives HERE
-# since 2026-09-28, when that program was retired: fix it in this file. The
-# format is docs/TRI-FORMAT.md; tests/test_reader.py checks it against
-# TRIOS's own exports of real runs.
+# The TRIOS reader. Fix it in this file; the format is docs/TRI-FORMAT.md,
+# and tests/test_reader.py checks it against TRIOS's own exports of real
+# runs.
 
 """
 trios_io.py -- read TA Instruments TRIOS measurements (DSC, SDT, TGA ...).
 
-One reader for every TRIOS plotter in this folder. It takes either a native
-binary ``.tri`` or a TRIOS ``.txt`` export and returns the same structure, so
-the plotting code never has to care which it was handed::
+This program's one TRIOS reader. It takes either a native binary ``.tri``
+or a TRIOS ``.txt`` export and returns the same structure, so the plotting
+code never has to care which it was handed::
 
     data['head']     -> metadata (filename, sample name, operator, mass ...)
     data['numdata']  -> [ {prog, dims, units, nums (N x M ndarray)}, ... ]
@@ -53,7 +52,7 @@ versions and are worth keeping in mind:
    were these arrays not being read. An earlier fix matched the flagged form
    by 8 fixed bytes, 01102101 080d0200, and the 080d0200 in it is the list's
    byte LENGTH, 4 + 4 * 33601: it found the arrays of a 33601-sample segment
-   and of no other (CN-81, 39001 samples, drew its Weight in kg as the heat
+   and of no other (a 39001-sample SDT run drew its Weight in kg as the heat
    flow). Flagged samples are NaN. SDT signals are also stored in SI units -
    Weight in kg, Weight Corrected Heat Flow in W/kg, the gas flows in L/s -
    and the file has no sample-size field: the sample mass is the reference
@@ -91,7 +90,7 @@ ARRAY_SIG = bytes.fromhex('0110210104000000000000000100')   # the plain case
 # CALCULATED - the points of an analysis, an SDT run's Heat Flow
 # (Normalized) and Weight (%) - and those sit in the document region, where
 # one read as a signal would move the start of the analysis search past
-# the analyses (OJ-12 went from 18 analyses to 0).
+# the analyses (the reference file went from 18 analyses to 0).
 FLAG_CALCULATED = 0x10
 
 # The tag that introduces a step (segment) object, just before its program name.
@@ -187,7 +186,7 @@ def _signal_array(raw, i):
     curve TRIOS calculated (its flags carry FLAG_CALCULATED), and, in most
     files, TRIOS's own copy of each flagged signal of the final segment,
     which has three more bytes between the count and the tag. Where a copy
-    has no such gap (the DESY runs) it is read here and `_recordings`
+    has no such gap (some real runs) it is read here and `_recordings`
     drops it."""
     n = len(raw)
     if i < 4 or i + 12 > n:
@@ -249,7 +248,7 @@ def _step_name(run):
     itself PRINTABLE whenever the name is 32..126 bytes long: ' ' for 32, '!'
     for 33, '"' for 34 and so on, so the regex swallows it with the name. Only
     ' ' and '!' used to be stripped, which worked for exactly the 32- and
-    33-byte names of the files this was written on. CN-119 (2024) says "Ramp
+    33-byte names of the files this was written on. Another run says "Ramp
     10.00 degC/min to 210.0000 degC" - 34 bytes, prefix '"' - so every
     heating step was invisible and its arrays were merged into the cooling
     segment before it: 3 segments read out of 7. The byte is recognised by
@@ -563,13 +562,13 @@ def _resolve_signals(seg, mass_g):
         if k != 'Time':
             out[k] = v * SI_TO_UNITS.get(k, 1.0)
 
-    # A normalized heat flow is what every plotter actually wants on the y
-    # axis: watts over the sample mass, for DSC and SDT alike. TRIOS's own
-    # export of an SDT run says so (KC-122: 0.4163 W/g = 2.0107 mW / 4.830
-    # mg); "Weight Corrected Heat Flow" divides by the weight LEFT at each
-    # moment instead, and is only the fallback when there is no mass - and
-    # not even then when the recorded weight is not positive, because
-    # divided by a negative weight it is the heat flow upside down.
+    # A normalized heat flow is what a plot actually wants on the y axis:
+    # watts over the sample mass, for DSC and SDT alike. TRIOS's own export
+    # of an SDT run says so (0.4163 W/g = 2.0107 mW / 4.830 mg); "Weight
+    # Corrected Heat Flow" divides by the weight LEFT at each moment
+    # instead, and is only the fallback when there is no mass - and not even
+    # then when the recorded weight is not positive, because divided by a
+    # negative weight it is the heat flow upside down.
     if 'Heat Flow' in out and mass_g:
         out['Heat Flow (Normalized)'] = out['Heat Flow'] / mass_g
     elif ('Weight Corrected Heat Flow' in out
@@ -579,7 +578,7 @@ def _resolve_signals(seg, mass_g):
 
 
 # Signals a .tri stores in SI that UNITS names otherwise (SDT650). Checked
-# on KC-122/KC-127: Heat Flow (W) / Weight (kg) equals Weight Corrected Heat
+# on two real runs: Heat Flow (W) / Weight (kg) equals Weight Corrected Heat
 # Flow to 1e-4, so that one is W/kg; both gas flows read 1/600 L/s, the
 # instrument's 100 mL/min purge.
 SI_TO_UNITS = {
@@ -587,15 +586,15 @@ SI_TO_UNITS = {
     'Weight Corrected Heat Flow': 1e-3,     # W/kg -> W/g
     'Sample Flow': 60_000.0,                # L/s -> mL/min
     'Balance Flow': 60_000.0,
-    # A DSC25's purge is in L/s too: OJ-12's Full export writes it in
-    # mL/min, exactly 60000 times the stored value.
+    # A DSC25's purge is in L/s too: the reference file's Full export
+    # writes it in mL/min, exactly 60000 times the stored value.
     'Cell Purge': 60_000.0,
 }
 
 
 # How far Weight / (Weight Change / 100) may wander over a segment and still
-# be ONE reference mass: 1e-4 of it. On every SDT run on the development
-# machine (124 with a mass) it wanders by under 3.2e-7 of it, and it equals
+# be ONE reference mass: 1e-4 of it. On every SDT run it was checked on
+# (124 with a mass) it wanders by under 3.2e-7 of it, and it equals
 # the export's Sample Mass to the 6 figures the reader writes.
 MASS_SPREAD = 1e-4
 
@@ -607,12 +606,12 @@ def _mass_from_weight(sig):
 
     `(None, None)` when the segment has not both. `(None, reason)` when it
     has both and they do not describe a sample mass: a ratio that is not
-    positive at every sample - three DESY runs record -99.9 mg against a
+    positive at every sample - three real runs record -99.9 mg against a
     Weight Change of +99.99 %, and TRIOS's own normalised curve is upside
     down with them - or one that is not constant. Golden rule 4: such a file
     has NO sample mass, and the panel says so where one would be used. Both
     may end slightly below zero TOGETHER when the sample is all gone
-    (CN-H2bdc, which sublimes: 16.67 to -0.19 mg, 99.98 to -1.11 %); the
+    (a sample that sublimes: 16.67 to -0.19 mg, 99.98 to -1.11 %); the
     ratio is still the one mass, 16.6726 mg."""
     w, pct = sig.get('Weight'), sig.get('Weight Change')
     if w is None or pct is None:
@@ -746,7 +745,8 @@ def _analysis_chains(raw, doc_start):
         elif model in ONSET_MODELS:
             # Not +0: that is the construction's first point, which is the
             # flat cursor for an onset but a point on the inflection tangent
-            # for an endset (OJ-12: 93.8469 where the cursor is 93.4654).
+            # for an endset (the reference file: 93.8469 where the cursor
+            # is 93.4654).
             off1, off2 = 86, 132
         else:
             off2 = 132
@@ -799,7 +799,7 @@ REC_TAG2 = bytes.fromhex('102f02')       # at +15
 
 # TRIOS's own ids for the curves it CALCULATES (not in the signal list, so
 # not learned from the segments like the recorded ones). The same in every
-# file on the development machine, DSC25 and SDT650, TRIOS 5.1.1 to 6.0.
+# file tried, DSC25 and SDT650, TRIOS 5.1.1 to 6.0.
 # The names are this reader's: the Weight (%) curve is its "Weight Change".
 CALCULATED_IDS = {
     bytes.fromhex('2f85cc58bf1cb343a3f97135b826d88a'): 'Heat Flow (Normalized)',
@@ -812,11 +812,11 @@ POINTS_WINDOW = 4000
 
 # A record's y values are in TRIOS's DISPLAY unit of the analysed curve, and
 # this turns them into the unit of the reader's column of that name. Checked
-# on every onset/endset record on the development machine by the record's
+# on every onset/endset record in the files tried, by the record's
 # "curve y at the cursor" (+94, +140) against the curve there: Heat Flow
 # (Normalized) in W/g (764 cursors, within 6e-4 relative, the nearest sample
 # being up to 0.04 K off), Weight Change in % (366, within 2e-5), Heat Flow
-# in mW (CN-33, a run with no sample mass: 8 cursors, exactly 1000 x watts).
+# in mW (a run with no sample mass: 8 cursors, exactly 1000 x watts).
 RECORD_Y_SCALE = {'Heat Flow': 1e-3}          # mW -> W
 
 
@@ -827,7 +827,7 @@ def _record_variable(raw, rec, stop):
     arrays (flags 0x10, VALUE_TAG layout): x, then y, each carrying the id of
     its signal. x is Temperature's id; y's id is the analysed variable - the
     thing TRIOS's export calls "Analysed variables: Weight vs. Temperature".
-    Decoded on CN-81, where two onsets were made on the weight and the
+    Decoded on an SDT run where two onsets were made on the weight and the
     integration on the heat flow."""
     n = len(raw)
     stop = min(stop, rec + POINTS_WINDOW, n)
@@ -883,7 +883,7 @@ def attach_analyses(data, path, cache_by_chain=None, doc_start=None,
     """Recover the analyses from a .tri and recompute their results.
 
     Populates ``data['analyses']`` in the same shape the .txt export gives, so
-    the plotters' annotation helpers work identically for either source. Values
+    the annotation helpers work identically for either source. Values
     are recomputed from the curve (see trios_analysis), not read back from the
     binary -- only the model, the cursors and the scan attribution come from
     the file. `doc_start` (where the last recorded array starts), `raw` and
@@ -1005,11 +1005,11 @@ def _tg_fields(T, Q, points, y_unit='W/g'):
     crossing between them, which is what "Midpoint type: Half height" means
     and is NOT the mean of the two (0.06 K apart on the reference file).
 
-    Validated on OJ-12 (TRIOS 5.1.1, 50 K/min up-scan): the crossing comes out
-    at 78.911 degC and TRIOS's own export says 78,911 degC. The onset point's y
-    matches the curve to 2e-5 W/g; the end point's y is 0.025 W/g off the
-    curve, as it must be, because it sits on the END TANGENT rather than on
-    the data.
+    Validated on the reference file (TRIOS 5.1.1, 50 K/min up-scan): the
+    crossing comes out at 78.911 degC and TRIOS's own export says 78,911
+    degC. The onset point's y matches the curve to 2e-5 W/g; the end point's
+    y is 0.025 W/g off the curve, as it must be, because it sits on the END
+    TANGENT rather than on the data.
     """
     if not points or len(points) != 4:
         return {}
@@ -1073,7 +1073,8 @@ def _recompute(model, t, T, Q, c0, c1, stored=None, points=None,
         endset = 'End' in model
         # TRIOS's names, from its export: "Onset cursor x" is the cursor on
         # the FLAT side for both models - for an endset the one stored
-        # second (OJ-12: Transition cursor x 93,465, Onset cursor x 116,637).
+        # second (the reference file: Transition cursor x 93,465, Onset
+        # cursor x 116,637).
         flat, transition = (c1, c0) if endset else (c0, c1)
         if endset:
             out['Transition cursor x'] = f'{transition:.4f} °C'
@@ -1221,8 +1222,8 @@ def read_tri_text(path):
             # '%' (and some carry a second "Weight" in mg beside it). The
             # binary reader's names are the signal list's - "Weight" is mg,
             # "Weight Change" is % - and a consumer must not have to read the
-            # unit to know which it was handed: cn-81's 99.7 % came out as
-            # 99.7 mg, and as 462 % of a 21.5 mg sample.
+            # unit to know which it was handed: one export's 99.7 % came out
+            # as 99.7 mg, and as 462 % of a 21.5 mg sample.
             dims = [_text_dim(d, u) for d, u in zip(dims, units)] \
                 + dims[len(units):]
             rows = []

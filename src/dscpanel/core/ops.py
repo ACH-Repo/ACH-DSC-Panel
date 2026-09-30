@@ -1,10 +1,5 @@
 """Operator registry - the backbone of the F3 search (Blender-style).
 
-TAKEN FROM ACH-MoloM (`molom/core/ops.py`, same author, MIT) rather than
-rewritten: the F3 palette there is the behaviour Christian asked for here, and
-two registries that drift apart would mean two different palettes. Keep the
-two in step when either grows a feature.
-
 Every user-facing action registers here once, with an `enabled` predicate
 evaluated against the live app context, so the search can sieve by what is
 SELECTED - "Distribute offsets evenly" lights up with two or more scans

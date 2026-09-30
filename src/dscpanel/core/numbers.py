@@ -1,7 +1,7 @@
 """How a number is WRITTEN: the format strings of the house style.
 
 A format is Python's own percent format for ONE number - `%.2f`, `%+.1f`,
-`%.0f` - because that is what Christian already writes, and a second
+`%.0f` - because that is what a Python user already writes, and a second
 mini-language would be one more thing to learn. `{:.2f}` and a bare `.2f`
 are taken too and mean the same.
 
@@ -38,7 +38,7 @@ _LEAD = re.compile(r"^(%[-+ 0#]*\d*(?:\.\d+)?[fFeEgGd]"
 TEMPERATURE = "%.0f"        # an onset, an endset, a Tg: whole degrees
 VALUE = "%.3g"              # an enthalpy, a step: three significant figures
 OFFSET = "%+.1f"            # the template's add_yoffset_markers
-MASS = "%.0f"               # a mass at a temperature: "99 %", as he writes it
+MASS = "%.0f"               # a mass at a temperature: "99 %"
 
 
 def normalise(spec, unit_of=None):
@@ -151,8 +151,7 @@ def evaluate(text):
     """A typed number or simple sum as a float: "255-20", "3*(1,5+2)",
     "-4". None if it is not one (or divides by zero).
 
-    Christian, 2026-09-29: "just subtract 20 from 255 inside the box". Only
-    + - * / and brackets; walked from Python's parse tree, never `eval`.
+    Only + - * / and brackets; walked from Python's parse tree, never `eval`.
     """
     text = str(text or "").strip()
     if not text or not _SUM_CHARACTERS.match(text):
@@ -166,6 +165,23 @@ def evaluate(text):
     if value is None or not math.isfinite(value):
         return None
     return float(value)
+
+
+def values(text):
+    """Several typed numbers, as floats - `[]` for none, None when any is
+    not a number. Separated by ";", ", " or a space before the next number:
+    a comma with no space is a decimal point ("261,5"). Each may be a sum
+    (`evaluate`)."""
+    parts = [part for part in re.split(r"\s*;\s*|,\s+|\s+(?=[-+]?\d)",
+                                       str(text or "").strip())
+             if part.strip()]
+    out = []
+    for part in parts:
+        value = evaluate(part)
+        if value is None:
+            return None
+        out.append(value)
+    return out
 
 
 def is_sum(text):

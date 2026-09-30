@@ -45,7 +45,7 @@ from . import units
 TEMPERATURE = "temperature"
 ENTHALPY = "enthalpy"
 HEAT_FLOW = "heat flow"
-#: An SDT run's m% at a temperature (round 26): "%" of the sample mass, or
+#: An SDT run's m% at a temperature: "%" of the sample mass, or
 #: "mg" - which needs the sample mass unless the file recorded the mg.
 MASS = "mass"
 
@@ -53,7 +53,7 @@ MASS = "mass"
 #: model. Checked in order: a glass transition's fields also carry an
 #: "Onset x".
 DEFAULTS = (
-    # Christian's figure writes the bare number: "99%".
+    # The bare number: "99%".
     ("Mass at", "{}"),
     ("Glass", "*T*_{g} = {}"),
     ("Endset", "*T*_{end} = {}"),
@@ -262,8 +262,7 @@ def shows_peak(analysis, doc=None):
 def render(analysis, doc=None):
     """The label's text, with every `{}` filled in, and its problems."""
     template = template_of(analysis)
-    # Tp: where the label says `{Tp}`, else after it when asked for
-    # (Christian, 2026-09-29).
+    # Tp: where the label says `{Tp}`, else after it when asked for.
     if shows_peak(analysis, doc) and not _PEAK.search(template):
         template = template + ", " + PEAK_TEMPLATE
     value, quantity = result(analysis)
@@ -281,8 +280,8 @@ def render(analysis, doc=None):
             problems.append(("unit", "'{}' is not a unit of {}: shown in {}"
                                      .format(format_unit, quantity, natural)))
         format_unit = None
-    # The analysis's own unit, chosen in its settings (Christian,
-    # 2026-09-28: "I do not see how J/mol or kJ/mol can be set").
+    # The analysis's own unit, chosen in its settings (J/mol or kJ/mol
+    # could not be set any other way).
     own = canonical_unit(getattr(analysis, "unit", None))
     if own is not None and own not in wanted:
         problems.append(("unit", "'{}' is not a unit of {}: shown in {}"

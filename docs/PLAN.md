@@ -1060,9 +1060,157 @@ choices he made before they were built:
     arrangement, notes with their arrows; given to a curve afterwards
     (Ctrl+P, the outliner). The text goes to the system clipboard too.
   - **Version 1.0.0**, committed and tagged; not on PyPI.
+* After 1.0.0 (round 27d, uncommitted):
+  - **Change a file's source** ("Change the source file..." on its row,
+    PowerPoint's "Change picture"): the SAME sample takes another file's
+    data, so its curves keep places, offsets, colours, truncation and
+    labels; name, molar mass and exo direction are the new file's; the
+    panel's own analyses are measured again; a segment the new file lacks
+    takes its curve off. One undo step (`window.change_source`).
+  - **Side in every axis window** (spine, numbers, caption): the side the
+    axis is DRAWN on, set through the window (`set_axis_side`), which
+    knows the mass axis takes the heat flow axis's side.
+  - **The offset overlay is quiet**: one thin line with the same short
+    cap at both ends; the dashed line across to the axis is gone.
+  - **One molar mass per file**: a scan's own override is gone (an older
+    session's goes to its file where the file has none), and a
+    **calculator** sits beside it ("Calculate...", `core/molar.py`): a sum
+    formula (C6H6, brackets, decimals, `*` adducts; "." is a decimal
+    point), a SMILES, or a composition in the syntax of his
+    calculate_sum_formula.py with his building blocks - read as it fits,
+    or as chosen - with RDKit's atomic weights, so the numbers are his
+    script's. What it was worked out from is kept (`Sample.composition`).
+  - **"Same as parent"**: a label's automatic colour is its curve's, and
+    its window now says so.
+* Round 27e (2026-09-30, docs/NEXT.md 1, uncommitted): **the page's
+  white margins**.
+  - **Blades**: a pointed oval per margin of an EXACT figure, shown with
+    the page's handles, mostly outside the page's edge where the axes
+    box's edge meets it - the right and top margins at the upper right,
+    the left and bottom ones at the lower left (the fit-margin arrows have
+    the other two corners). Dragged, a dashed line across the page shows
+    the new edge of the axes box; clicked, a typed number in the figure's
+    unit; double-clicked, down to what the margin holds. Never below
+    that: a refused number flashes red. A press ON a page square is the
+    square's. One undo step each (`window.set_page_margin`).
+  - **What a margin holds** is measured once (`PlotWidget.page_needs`):
+    an axis's ticks, numbers and caption, whatever decorator reaches out
+    of the axes box, else the frame's line. `overflow` (the figure-size
+    window's warning) uses it too - it used to compare with the automatic
+    layout's breathing room, so a 0.3 cm right margin with no axis was
+    reported as cutting numbers off.
+  - **F3 "Tighten the page margins"**: all four down to what they hold.
+  - **Room grown for an axis is given back** when that axis leaves its
+    side (`FigureLayout.grown`, saved with the session, never in a
+    preset), unless the margin was set by hand in between. Every path
+    that can hide a curve goes through `_room_for_axes` now (hiding a
+    signal, removing curves, closing files).
+  - Found on his figure: the white space was NOT grown room. An exact
+    figure's margins are its own numbers - 1.9 cm left by default, where
+    a 12 pt y axis with its caption holds 1.35 cm - and nothing ever
+    tightened them. The blades and F3 do.
+  - **A view within 2 % of home is not "zoomed"** (`HOME_TOLERANCE`): his
+    session's saved framing, a hair from today's fit, cut decorators at
+    the axes. Their places still follow the view exactly.
+* Round 27f (2026-09-30, from his testing; uncommitted):
+  - **The corner squares are gone**; the page keeps its four edge ones.
+  - **Blades stand at the page's EDGE, at its corners**, just outside it
+    (right and top at the upper right, left and bottom at the lower
+    left): pulled in they cut white space off, out they add some - the
+    page grows or shrinks, the axes box keeps its size - and they end at
+    the new corner. `window.set_page_margins` does it for the blades, the
+    dialog and F3 "Tighten" alike.
+  - **Tightening reaches the last drawn pixel**: what a margin holds is
+    the caption's natural reach minus the empty rows of its box facing
+    the page's edge (`_ink_blank`, drawn once at 4x), and a caption's box
+    may hang over the page by that much (`axis_label_rect`) - it was kept
+    a unit inside, which pushed it back. Measured on his figure: 0.04 mm
+    of white left of the y caption, 0.08 mm under the x caption.
+  - **Margins in numbers**: a blade double-clicked opens "Page margins"
+    (each at least what it holds, a Tighten button), an arrow "Data
+    margins" (shares, two on an axis must leave the data room).
+  - **Interval marks have a length** ("Marker length" in an analysis,
+    house style "Interval marks", 3 built in, was a fixed 4).
+  - **Set the molar mass** (F3, a scan's menu) has the calculator.
+  - **The offset shown while moving** has two significant figures.
+  - **Decorators stay on the page again by default**; F3 "Decorators
+    follow the zoom (on / off)" per figure (`Document.follow_zoom`,
+    saved; session version 8). Toggling keeps every one where it is
+    drawn (`PlotWidget.reframed`); a version-7 figure is converted to
+    page places on opening.
+  - **Arrows are one solid colour**: an analysis following its curve is
+    the shade 75 % of that colour makes over the page (`mixed`), not a
+    translucent 75 %, and a head has no outline of its own (the shaft
+    ends at it) - analysis labels, notes, offset markers.
+  - **Mirror** pictures and structures: Ctrl+Shift+H left-right,
+    Ctrl+Shift+V top-bottom (a structure's wedges and hashes swap, so it
+    stays the same molecule). Paste as text moved to Ctrl+Alt+V.
+  - From his testing of the mirror: a ring's double bonds went OUTSIDE
+    the ring - each stores its ring's centre (`bond["ring"]`), which did
+    not mirror with the atoms; now it does. A turned structure is mirrored
+    left-right ON SCREEN (along its own axis, its rotation reversed), not
+    along its own axis alone. And a turned structure's box missed the H of
+    an OH: labels are kept level, so their hydrogens' side is decided
+    after the turn - `_molecule_layout` now takes each label as drawn and
+    turns it back (a pixel test checks every oxygen pixel is inside).
   - **A file with no curve can be closed** ("Close ..." on its row, one
     undo step; `window.close_sample`): CN-58 in his figure could not be
     taken off at all.
+
+### Round 28 (2026-09-30): the axes and the page margins
+
+From his testing of 1.1.0 before the upload, on `Hbc_Tgs.dscpanel` (y axis
+on the right, 0.17 cm left margin). `tests/test_round28.py`.
+
+* **Double-clicking the y axis**: nothing failed in a clean state, so three
+  causes that each made it do nothing were fixed. `Axis.visible` is the
+  CAPTION's, and `objects_at` skipped the spine and the numbers whenever
+  the caption was hidden. The line itself and the ticks pointing in (the
+  default) were inside the box, where the spine band does not reach: now
+  the axis's lines - its own and the mirrored one - and its inward ticks
+  are the spine too (`frame_line_gap`), but only when nothing else is
+  within the pick distance, so a curve along the frame stays a curve. And
+  a double-click slower than 0.35 s is a layer step, which leaves axes
+  out, so on an axis it did nothing: on an axis it now opens. A click on
+  the spine or the numbers clears the selection like a click on nothing
+  (it left the selection alone), and a right-click there no longer
+  selects the axis.
+* **An axis moved to its other side takes its room with it**
+  (`window._to_side`): on an exact figure the two margins keep their
+  WHITE space - what each had beyond what it held - so the side the axis
+  comes to grows to hold it and the side it leaves shrinks, in the same
+  undo step; the axes box keeps its size. The margins used to stay, and
+  the numbers were cut off until a blade was touched.
+* **Numbers at the corners of the box are never cut off**
+  (`_numbers_overhang`, part of `page_needs`): an x number on the box's
+  corner is centred on it, so half of it hangs over the margin beside -
+  which, with the y axis on the right, held nothing else, and a blade or
+  Tighten cut the 50 in two. Likewise a y number above or below the box.
+  To the last drawn pixel (`tightBoundingRect`).
+* **Hidden numbers**: right-click a number, "Hide the number 50" (its tick
+  stays); "Show every number" brings them back. The Numbers window has a
+  "Hidden" field (typed like several temperatures: ";", ", " or a space).
+  `Axis.hidden_numbers` with `hidden_context` - the unit they were chosen
+  in, like a locked range: a 50 hidden in degC is not a 50 in K. In the
+  session, not in presets. A number shown again on an exact figure gets
+  its margin back (`_hold_margins`).
+* **X and Y lock a caption's move** (G or a drag): X was refused ("A scan
+  does not move along x") because an axis is not an artist. Both are
+  screen directions: X keeps an x caption at its height and a y caption
+  at its distance from the axis.
+* **Offset markers per selection**: "Show or hide the y-offset markers"
+  acts on the selected scans, every scan when none is selected - shown
+  when any of them has none, hidden when all have one; the figure's switch
+  goes off with the last marker. H on a marker already worked (his figure
+  had five hidden); the toggle is now the way to bring one back.
+* **The Format box of the numbers** is `number_format` (`%.0f`, `%.1f`,
+  `%.2g`; empty is "as few digits as the tick spacing needs"). Its tooltip
+  spoke of units, which an axis's numbers cannot carry; it now explains
+  the format, and a "Written" row shows what the axis writes with it.
+* Found on the way: `QT_QPA_FONTDIR=C:/Windows/Fonts` gives the offscreen
+  platform real fonts (CLAUDE.md, "Running it"). And in his figure the
+  "ZIF-62" label hangs from CN-103's HIDDEN first up-scan, above the page:
+  Tighten would make the top margin 2.26 cm to hold it. Not changed.
 
 ## Next
 

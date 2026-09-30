@@ -33,7 +33,7 @@ FORMAT = "dscpanel-session"
 #: figure carries its own `style`, and analyses have a `flush`.
 #: 3: an axis's `label_gap` is measured from its NUMBERS (it was from the
 #: axis line for x and from the window's edge for y), None until chosen.
-VERSION = 7
+VERSION = 8
 
 
 def view_to_state(view):
@@ -44,8 +44,8 @@ def view_to_state(view):
             "y": list(view["y"]) if view.get("y") else None,
             "y2": list(view["y2"]) if view.get("y2") else None,
             # The weight range is a number of % or of mg: which, beside it
-            # (the plot restores it only in that unit). Round 25 wrote the
-            # range and not this, so it never came back (review F4).
+            # (the plot restores it only in that unit). A range saved
+            # without it never came back.
             "y2_unit": view.get("y2_unit") if view.get("y2") else None,
             "context": list(view.get("context") or ())}
 
@@ -130,6 +130,7 @@ def _analysis_state(analysis):
              "shading": analysis.shading,
              "label_size": analysis.label_size, "flush": analysis.flush,
              "show_interval": analysis.show_interval,
+             "interval_size": analysis.interval_size,
              "construction": analysis.construction,
              "show_peak": analysis.show_peak,
              "number_format": analysis.number_format,
@@ -160,14 +161,16 @@ def _restore_analysis(analysis, saved, version):
     flush = saved.get("flush")
     analysis.flush = flush if flush in style.FLUSHES else None
     analysis.show_interval = bool(saved.get("show_interval", True))
+    analysis.interval_size = style.BY_KEY["interval_tick"].clean(
+        saved.get("interval_size"))
     if "construction" in saved:
         lines = saved.get("construction")
         analysis.construction = lines if lines in style.LINES else None
     else:
-        # Saved before an onset's lines had a switch of their own
-        # (2026-09-28): "Show interval markers" was the dashes AND the
-        # lines, so one saved with it off had no lines either, and opens
-        # that way. No version bump: the missing key says it.
+        # Saved before an onset's lines had a switch of their own:
+        # "Show interval markers" was the dashes AND the lines, so one saved
+        # with it off had no lines either, and opens that way. No version
+        # bump: the missing key says it.
         analysis.construction = (None if analysis.show_interval
                                  else style.LINES_NONE)
     if analysis.attribution != model.CURVE_NOT_STATED:
@@ -184,11 +187,11 @@ def _restore_analysis(analysis, saved, version):
     analysis.unit = (unit if unit in labels.units_of(analysis.quantity)
                      else None)
     if version < 5 and measure.is_legacy_label(analysis.label):
-        # Before round 15 a panel analysis was GIVEN a label with its
-        # number written in ("*T*_{onset} = 61.1 degC"), and a version-4
-        # file can still hold one whose number went stale. Nobody typed
-        # that shape, so it goes back to the default template, whose number
-        # follows the measurement; any other label stays the user's.
+        # A panel analysis was once GIVEN a label with its number written
+        # in ("*T*_{onset} = 61.1 degC"), and a file before version 5 can
+        # still hold one whose number went stale. Nobody typed that shape,
+        # so it goes back to the default template, whose number follows the
+        # measurement; any other label stays the user's.
         analysis.label = None
 
 
@@ -202,6 +205,7 @@ def to_state(doc):
             "exo": sample.exo,
             "exo_source": sample.exo_source,
             "title": sample.title,
+            "composition": sample.composition,
         })
     scans = []
     for scan in doc.scans:
@@ -217,7 +221,6 @@ def to_state(doc):
             "label": scan.label,
             "visible": scan.visible,
             "analyses": [_analysis_state(a) for a in scan.analysis_objects],
-            "molar_mass_override": scan.molar_mass_override,
             "z": scan.z,
             "marker": {"z": scan.marker.z,"at": (list(scan.marker.at) if scan.marker.at
                               else None),
@@ -249,7 +252,12 @@ def to_state(doc):
                        "label_gap": axis.label_gap,
                        "lock": (list(axis.lock) if axis.lock else None),
                        "lock_context": (list(axis.lock_context)
-                                        if axis.lock_context else None)}
+                                        if axis.lock_context else None),
+                       "hidden_numbers": [float(v) for v in
+                                          axis.hidden_numbers or ()],
+                       "hidden_context": (list(axis.hidden_context)
+                                          if axis.hidden_numbers
+                                          and axis.hidden_context else None)}
     labels = []
     for lb in doc.labels:
         labels.append({"text": lb.text, "x": lb.x, "y": lb.y,
@@ -287,7 +295,8 @@ def to_state(doc):
         "images": [{"png": im.png, "x": im.x, "y": im.y,
                     "space": im.space, "anchor": im.anchor,
                     "rotation": im.rotation, "width": im.width,
-                    "z": im.z, "visible": im.visible}
+                    "z": im.z, "visible": im.visible,
+                    "mirror_h": im.mirror_h, "mirror_v": im.mirror_v}
                    for im in doc.images],
         "x_axis": doc.x_axis,
         "x_unit": doc.x_unit,
@@ -296,10 +305,12 @@ def to_state(doc):
         "dtg_unit": doc.dtg_unit,
         "theme": doc.theme,
         "background": doc.background,
+        "follow_zoom": bool(doc.follow_zoom),
         "offset_markers": bool(doc.offset_markers),
         "view": view_to_state(doc.view),
         "style": doc.style.chosen(),
         "figure": doc.figure.to_state(),
+        "figure_grown": dict(doc.figure.grown),
         "legend": {"visible": doc.legend.visible, "size": doc.legend.size,
                    "show_frame": doc.legend.show_frame,
                    "sample": doc.legend.sample,
@@ -361,6 +372,7 @@ def load(path, read_sample):
     # a thing follows the window, as it did then - not today's default.
     doc.figure = figure_module.FigureLayout().load_state(
         state.get("figure") or {"mode": figure_module.MODE_WINDOW})
+    doc.figure.grown = figure_module.clean_grown(state.get("figure_grown"))
     for entry in state.get("samples", []):
         try:
             sample = read_sample(entry["path"])
@@ -375,11 +387,13 @@ def load(path, read_sample):
             sample.exo_source = entry.get("exo_source", sample.exo_source)
         title = entry.get("title")
         sample.title = str(title) if title else None
+        made_of = entry.get("composition")
+        sample.composition = str(made_of) if made_of else None
         doc.samples.append(sample)
         by_path[os.path.normcase(sample.path)] = sample
-    # Round 25 kept a scan's weight as a dashed extra on it; a weight shown
-    # then opens as a mass scan of its own, AFTER the saved scans (labels
-    # name their scan by its place in the list).
+    # An older session kept a scan's weight as a dashed extra on it; a
+    # weight shown there opens as a mass scan of its own, AFTER the saved
+    # scans (labels name their scan by its place in the list).
     legacy_mass = []
     for entry in state.get("scans", []):
         sample = by_path.get(os.path.normcase(entry.get("path", "")))
@@ -436,7 +450,11 @@ def load(path, read_sample):
                     scan.display_name(), saved.get("model", "an analysis")))
                 continue
             _restore_analysis(made, saved, version)
-        scan.molar_mass_override = entry.get("molar_mass_override")
+        # A scan has no molar mass of its own: one an older session gave
+        # a scan goes to its file, if the file had none.
+        own = _number_or_none(entry.get("molar_mass_override"))
+        if own and own > 0 and not sample.molar_mass:
+            sample.molar_mass = float(own)
         scan.z = _number_or_none(entry.get("z"))
         marker = entry.get("marker") or {}
         scan.marker.at = _marker_at(marker.get("at"))
@@ -463,7 +481,7 @@ def load(path, read_sample):
     doc.arrow.direction = arrow.get("direction", doc.arrow.direction)
     doc.arrow.x = float(arrow.get("x", doc.arrow.x))
     doc.arrow.y = float(arrow.get("y", doc.arrow.y))
-    # Its dimensions in points since round 14. An older session's `length`
+    # Its dimensions are in points. An older session's `length`
     # (a fraction of the plot height) has no honest conversion, so the
     # template's proportions are what it opens with.
     for name in ("head_length", "head_width", "tail_width", "tail_length"):
@@ -517,6 +535,16 @@ def load(path, read_sample):
         context = saved.get("lock_context")
         axis.lock_context = (list(context) if axis.lock and
                              isinstance(context, list) else None)
+        hidden = []
+        for value in saved.get("hidden_numbers") or ():
+            value = _number_or_none(value)
+            if value is not None and value == value and abs(value) != \
+                    float("inf"):
+                hidden.append(value)
+        context = saved.get("hidden_context")
+        axis.hidden_context = (list(context) if hidden
+                               and isinstance(context, list) else None)
+        axis.hidden_numbers = hidden if axis.hidden_context else []
     for saved in state.get("labels") or []:
         owner = None
         owned = saved.get("scan")
@@ -554,7 +582,7 @@ def load(path, read_sample):
         flush = saved.get("flush")
         label.flush = flush if flush in ("left", "right", "center") else None
         label.vline = _number_or_none(saved.get("vline"))
-        # Hanging from its curve (2026-09-29); an older one is attached
+        # Hanging from its curve; an older one is attached
         # where it is drawn once the session is on screen.
         at = saved.get("at")
         if (owner is not None and isinstance(at, (list, tuple))
@@ -597,6 +625,8 @@ def load(path, read_sample):
         image.rotation = float(_number_or_none(saved.get("rotation")) or 0.0)
         image.z = _number_or_none(saved.get("z"))
         image.visible = bool(saved.get("visible", True))
+        image.mirror_h = bool(saved.get("mirror_h", False))
+        image.mirror_v = bool(saved.get("mirror_v", False))
         doc.images.append(image)
     for name, value in (state.get("legend") or {}).items():
         if hasattr(doc.legend, name):
@@ -605,7 +635,7 @@ def load(path, read_sample):
         _number_or_none((state.get("legend") or {}).get("rotation")) or 0.0)
     doc.legend.z = _number_or_none((state.get("legend") or {}).get("z"))
     if version < 5:
-        # The frame was on by default until round 17, so an older file's
+        # The frame was on by default before version 5, so an older file's
         # True was the default and not a choice; it follows the new one.
         doc.legend.show_frame = False
     doc.legend.size = _chosen((state.get("legend") or {}).get("size"),
@@ -620,13 +650,17 @@ def load(path, read_sample):
         doc.dtg_unit = state["dtg_unit"]
     doc.theme = state.get("theme", doc.theme)
     background = state.get("background")
+    # Version 7 placed decorators in the home frame (they followed the
+    # zoom, the only way then); 8 says which. The window converts a
+    # version-7 figure's places to the page's once it is on screen.
+    doc.follow_zoom = bool(state.get("follow_zoom", False))
     doc.background = (str(background) if isinstance(background, str)
                       and background.startswith("#") else None)
     doc.offset_markers = bool(state.get("offset_markers", False))
     doc.view = _view_from(state.get("view"))
     if doc.view and doc.view.get("y2") and not doc.view.get("y2_unit"):
-        # Written by round 25, which kept the range and not its unit: it was
-        # the weight unit saved with it (a change of unit fits the range
+        # Written with the range and not its unit: it was the weight unit
+        # saved with it (a change of unit fits the range
         # again, so a range is always in the unit in force).
         doc.view["y2_unit"] = doc.weight_unit
     doc.path = str(path)

@@ -1,7 +1,7 @@
 """The house style: what a size is when nobody has chosen one.
 
-Christian asked for defaults that persist between sessions and can still be
-overridden for one figure. That is three places a value can come from, and a
+Defaults persist between sessions and can still be overridden for one
+figure. That is three places a value can come from, and a
 fourth that is written here, looked up most specific first:
 
 1. **the object.** A size typed into one analysis's own settings is a
@@ -52,9 +52,9 @@ FLUSH_TITLES = {
 }
 
 #: The lines an onset, endset or glass transition is drawn with
-#: (`Analysis.construction`, Christian, 2026-09-28): the tangent
-#: construction - TRIOS's own for a `.tri`'s analysis - or the round-10
-#: chords from the interval's bounds to the point, or none. The interval's
+#: (`Analysis.construction`): the tangent construction - TRIOS's own for
+#: a `.tri`'s analysis - or chords from the interval's bounds to the
+#: point, or none. The interval's
 #: dashes are a separate switch (`Analysis.show_interval`).
 LINES_TANGENTS = "tangents"
 LINES_CHORDS = "chords"
@@ -67,8 +67,8 @@ LINES_TITLES = {
     LINES_NONE: "none",
 }
 
-#: How an integration's area is shaded (`Analysis.shading`, Christian,
-#: 2026-09-29): translucent, or opaque in the colour the translucent fill
+#: How an integration's area is shaded (`Analysis.shading`):
+#: translucent, or opaque in the colour the translucent fill
 #: makes over the page, so nothing behind it shows through.
 SHADING_TRANSLUCENT = "translucent"
 SHADING_OPAQUE = "opaque"
@@ -77,7 +77,7 @@ SHADING_TITLES = {SHADING_TRANSLUCENT: "translucent",
                   SHADING_OPAQUE: "opaque (as seen over the page)"}
 
 #: Whether an integration's label also gives its peak temperature, Tp
-#: (`Analysis.show_peak`, Christian, 2026-09-29).
+#: (`Analysis.show_peak`).
 PEAK_OFF = "off"
 PEAK_ON = "on"
 PEAKS = (PEAK_OFF, PEAK_ON)
@@ -141,18 +141,17 @@ class Setting(object):
 
 #: Every value that falls back on the house style, in the order the settings
 #: page lists them. The built-in values for the analysis labels, the
-#: captions and the numbers are the ones Christian settled on for his own
-#: install (2026-09-25); the rest are what the objects carried before there
-#: was a house style.
+#: captions and the numbers were settled on in use; the rest are what the
+#: objects carried before there was a house style.
 SETTINGS = (
     # The typeface of everything on the figure. Sizes stay per element
     # below, and italic is per character (the `*T*` markup), so the one
     # thing all text shares is the family. Empty is the system's own.
     Setting("font_family", "Font family", "Bahnschrift", kind="font",
             note="Typeface of all figure text."),
-    # The element labels of a structure (Christian, round 23): a rounded
-    # face reads as a drawing rather than as running text. Empty is the
-    # figure's font family.
+    # The element labels of a structure: a rounded face reads as a
+    # drawing rather than as running text. Empty is the figure's font
+    # family.
     Setting("structure_font", "Structure labels", "Arial Rounded MT",
             kind="font", note="Typeface of element labels in structures; "
                               "empty: the figure's."),
@@ -161,8 +160,8 @@ SETTINGS = (
     Setting("analysis_flush", "Analysis label alignment", FLUSH_LEFT,
             kind="choice", choices=(FLUSH_AUTO,) + FLUSHES,
             titles=FLUSH_TITLES, note="Edge of the label on its arrow."),
-    # Christian, 2026-09-28: tangents by default, drawn solid in the axis
-    # colour, each running this far past where it crosses the other.
+    # Tangents by default, drawn solid in the axis colour, each running
+    # this far past where it crosses the other.
     Setting("analysis_construction", "Onset, endset and Tg lines",
             LINES_TANGENTS, kind="choice", choices=LINES, titles=LINES_TITLES,
             note="Tangent construction, chords to the point, or none."),
@@ -170,11 +169,17 @@ SETTINGS = (
             kind="choice", choices=PEAKS, titles=PEAK_TITLES,
             note="Shown after the enthalpy: \u0394H = 141 J/g, "
                  "Tp = 124 \u00b0C."),
+    # Half the length of the dash at each end of an analysis's interval
+    # (4 was a bit too long).
+    Setting("interval_tick", "Interval marks", 3.0, low=0.5, high=30.0,
+            step=0.5, decimals=1, suffix=" px",
+            note="Half the length of the dash at each end of an "
+                 "analysis's interval."),
     Setting("analysis_shading", "Integration shading", SHADING_TRANSLUCENT,
             kind="choice", choices=SHADINGS, titles=SHADING_TITLES,
             note="Opaque: the colour the translucent fill makes over the "
                  "page, with nothing showing through."),
-    # 0 built in (Christian, 2026-09-29: the tangents should meet exactly).
+    # 0 built in: the tangents meet exactly.
     Setting("tangent_overshoot", "Tangent overshoot", 0.0, low=0.0,
             high=72.0, step=1.0, decimals=1, suffix=" pt",
             note="How far a tangent runs past its crossing."),
@@ -212,10 +217,10 @@ SETTINGS = (
             note="%.0f whole percent; %.1f mg converts."),
     Setting("line_width", "Curve width", 1.0, low=0.2, high=8.0, step=0.2,
             decimals=2),
-    # How much room F leaves round the data on each side - his scripts'
-    # `set_side_margins` (Christian, 2026-09-29) - as the SHARE OF THE AXIS
-    # left empty: left 0.1 is the first tenth of the x axis. The margin
-    # gizmos on the page edges set them for one figure.
+    # How much room F leaves round the data on each side - the template's
+    # `set_side_margins` - as the SHARE OF THE AXIS left empty: left 0.1
+    # is the first tenth of the x axis. The margin gizmos on the page
+    # edges set them for one figure.
     Setting("fit_left", "Fit margin, left", 0.0, low=0.0, high=0.9,
             step=0.01, decimals=3,
             note="Share of the x axis left empty left of the data: "
@@ -230,9 +235,9 @@ SETTINGS = (
             step=0.01, decimals=3,
             note="Share of the y axis left empty above the curves."),
     # How close a press must be to a curve or a label to act on it (mark an
-    # interval, move the label) rather than start a box select. Christian
-    # found 60 px grabbed a neighbouring scan where curves run close; 14 is
-    # the old fixed value, and the hand that uses it decides.
+    # interval, move the label) rather than start a box select. 60 px
+    # grabbed a neighbouring scan where curves run close; 14 is the old
+    # fixed value, and the hand that uses it decides.
     Setting("pick_radius", "Pick distance", 14.0, low=2.0, high=60.0,
             step=1.0, decimals=0, figure=False, suffix=" px",
             note="How near a press acts on an object; further away "
@@ -251,6 +256,7 @@ FIELDS = {
     ("analysis", "construction"): "analysis_construction",
     ("analysis", "shading"): "analysis_shading",
     ("analysis", "show_peak"): "analysis_peak",
+    ("analysis", "interval_size"): "interval_tick",
     ("axis", "label_size"): "caption_size",
     ("axis", "tick_size"): "tick_size",
     ("axis", "label_gap"): "caption_gap",
@@ -313,7 +319,7 @@ _OLD_FIT_PERCENT = {"left": 0.0, "right": 0.0, "bottom": 6.0, "top": 6.0}
 
 def convert_old_fit(entries):
     """Fit margins written as PERCENT OF THE DATA's range (the house style
-    before 2026-09-29, preferences version 1 and sessions before version 6)
+    of preferences version 1 and of sessions before version 6)
     as shares of the axis, in place: p % on each side of a range D makes an
     axis D (1 + (pa + pb) / 100) long, of which p / 100 D is empty."""
     old = dict(_OLD_FIT_PERCENT)

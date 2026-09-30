@@ -6,7 +6,7 @@ Three exports, and each answers a different question.
   spreadsheet, or a plot in something else entirely.
 * `driver_source` / `write_driver` - the arrangement as a
   `DSC_Plotter.py` driver. **This panel is not trying to become the figure
-  engine.** ACH-DSC-Plotter already draws publication figures in matplotlib,
+  engine.** The template already draws publication figures in matplotlib,
   with tangents, shaded integrals, molecule images and a run record; what it
   does not have is a way to arrange eight scans by hand. So the panel does
   the arranging and hands the result over: the paths, the segments, the
@@ -14,9 +14,8 @@ Three exports, and each answers a different question.
 * `warnings_for` - what an export must not be allowed to hide. A figure drawn
   while a scan was waiting for its molar mass, or with a scan scaled by a
   factor, is a figure that misleads unless it says so. These lines are
-  printed AND stamped into the image, which is Christian's rule: the blinking
-  label can be ignored in the window, so the export has to carry the notice
-  with it.
+  printed AND stamped into the image: the blinking label can be ignored in
+  the window, so the export has to carry the notice with it.
 """
 
 import os
@@ -37,7 +36,7 @@ def warnings_for(doc, exo=True):
     """Everything an export has to admit to, as short lines.
 
     `exo=False` leaves out the assumed exotherm direction: an image is not
-    stamped with it (Christian, round 14), the console and the driver are.
+    stamped with it, the console and the driver are.
     """
     out = []
     for scan, missing in doc.scans_missing():
@@ -146,9 +145,9 @@ def driver_source(doc):
     their truncation and offsets, the x range, the arrow and the style with
     the panel's font sizes and axis sides.
 
-    It used to call `start_plot()` and `finish_plot()`, which the template
-    has never had, and to leave `datas` undefined: the exported "runnable"
-    driver stopped at its second line.
+    The template has no `start_plot()` or `finish_plot()`, and `datas` is
+    defined here: a driver that called those or left `datas` undefined
+    stopped at its second line.
     """
     paths, index = [], {}
     for scan in doc.visible_scans():
@@ -268,7 +267,7 @@ def driver_source(doc):
 
 def _weight_lines(doc, index, x_dim):
     """The weight curves of SDT/TGA runs on a second y axis, `ax2`, as the
-    panel draws them (round 25): the template's own `add_line` with the
+    panel draws them: the template's own `add_line` with the
     reader's "Weight Change" (%) or "Weight" (mg), dashed, truncated like
     their scan, at the panel's range and on its side."""
     scans = [s for s in doc.visible_scans() if s.is_mass]

@@ -1,11 +1,11 @@
 """
 The binary .tri reader against TRIOS's own .txt export of the same run.
 
-Moved here from ACH-DSC-Plotter when that program was retired (2026-09-28),
-with the reader itself. The rule from docs/TRI-FORMAT.md: never trust a
-decode because it looks plausible, compare it value by value with an export.
+The reader is this program's own. The rule from docs/TRI-FORMAT.md: never
+trust a decode because it looks plausible, compare it value by value with an
+export.
 Measurement data is not committed, so these tests look for (.tri, .txt
-export) pairs in the folders `tests/local_testdata.txt` and ACHDSC_TESTDATA
+export) pairs in the folders `tests/local_testdata.txt` and TRIOS_TESTDATA
 name (see `conftest._local_entries`; a file named there stands for its
 folder) and skip when there are none.
 
@@ -23,6 +23,14 @@ import pytest
 
 from conftest import _local_entries, local_file
 from dscpanel.core import trios_io
+
+# Real files, named by a hash of their file name (`conftest.hashed_name`).
+#: The DSC25 reference run: TRIOS 5.1.1, seven segments, 16 stored
+#: analyses, a Full .txt export beside it.
+DSC_REFERENCE = 'sha:b2303c243b22'
+#: The SDT650 reference run: TRIOS 5.1.1, 39001 samples, and its export.
+SDT_REFERENCE = 'sha:6ceef94fd7ce'
+SDT_REFERENCE_TXT = 'sha:ac9b497e666c'
 
 
 def _dirs():
@@ -185,7 +193,7 @@ def test_recovered_analyses_sit_on_their_scan(tri):
     """Every decoded analysis must lie on the scan it is attributed to: its
     cursors inside that scan's temperature range, and TRIOS's stored onset
     between its two cursors. A record read from the wrong offset fails this
-    (SES-4 had an onset at 0 degC on a scan spanning 54-248 degC). And the
+    (one run had an onset at 0 degC on a scan spanning 54-248 degC). And the
     construction TRIOS stored is its own: the middle point IS the result,
     and the flat cursor is where the baseline tangent starts - the first
     point of an onset, the last of an endset."""
@@ -249,11 +257,12 @@ def _matched(tri, txt):
 @pytest.mark.parametrize('tri,txt', PAIRS)
 def test_onset_and_endset_cursors_are_named_as_trios_names_them(tri, txt):
     """For an endset TRIOS's "Onset cursor x" is the FLAT cursor, stored
-    SECOND (+132), and "Transition cursor x" the one stored first (+86). The
-    reader took +0 for the first cursor, which for an endset is a point of
-    the construction (OJ-12: 93.8469 where the cursor is 93.465), and gave
-    the two the other way round; its Python endset then came out 13 K off.
-    The analysed variable is the export's too."""
+    SECOND (+132), and "Transition cursor x" the one stored first (+86).
+    The reader took +0 for the first cursor, which for an endset is a
+    point of the construction (the DSC reference run: 93.8469 where the
+    cursor is 93.465), and gave the two the other way round; its Python
+    endset then came out 13 K off. The analysed variable is the export's
+    too."""
     variables = {'Heat Flow (Normalized) vs. Temperature':
                  'Heat Flow (Normalized)',
                  'Weight vs. Temperature': 'Weight Change'}
@@ -267,13 +276,13 @@ def test_onset_and_endset_cursors_are_named_as_trios_names_them(tri, txt):
 
 
 def test_the_endset_is_read_flat_cursor_second():
-    """OJ-12's one endset, against its export (Transition cursor x 93,465,
-    Onset cursor x 116,637, Endset x 108,024): with the flat cursor handed
-    to the Python construction first it agrees with TRIOS to 0.05 K; it used
-    to say 95.12."""
-    path = local_file('OJ-12-DSC-2-07012026.tri')
+    """The DSC reference run's one endset, against its export (Transition
+    cursor x 93,465, Onset cursor x 116,637, Endset x 108,024): with the flat
+    cursor handed to the Python construction first it agrees with TRIOS to
+    0.05 K; it used to say 95.12."""
+    path = local_file(DSC_REFERENCE)
     if path is None:
-        pytest.skip('OJ-12 is not on this machine')
+        pytest.skip('the DSC reference run is not on this machine')
     data = trios_io.read_tri(path)
     (endset,) = [e for ms in data['analyses'].values()
                  for m, es in ms.items() for e in es if m == 'Endset point']
@@ -295,15 +304,15 @@ def test_the_endset_is_read_flat_cursor_second():
     assert p0[1] == pytest.approx(q[at], abs=2e-3)     # W/g, not W
 
 
-def test_cn81_is_read_whole():
-    """CN-81 (SDT650, TRIOS 5.1.1, 39001 samples) is the file that showed
-    the flagged tag was a byte count: it found 8 of 13 signals and drew the
-    Weight, in kg, as the heat flow. Read by the layout, all 13 are there,
-    the mass is TRIOS's own 21.54732 mg to 1e-6, derived and said so, and
-    the two onsets TRIOS made on the WEIGHT say so."""
-    path = local_file('CN-81-I-0.45-SDT.tri')
+def test_the_sdt_reference_run_is_read_whole():
+    """The SDT reference run (SDT650, TRIOS 5.1.1, 39001 samples) is the file
+    that showed the flagged tag was a byte count: it found 8 of 13 signals and
+    drew the Weight, in kg, as the heat flow. Read by the layout, all 13 are
+    there, the mass is TRIOS's own 21.54732 mg to 1e-6, derived and said so,
+    and the two onsets TRIOS made on the WEIGHT say so."""
+    path = local_file(SDT_REFERENCE)
     if path is None:
-        pytest.skip('CN-81 is not on this machine')
+        pytest.skip('the SDT reference run is not on this machine')
     data = trios_io.read_tri(path)
     (seg,) = data['numdata']
     names = trios_io.signal_list(Path(path).read_bytes())
@@ -329,15 +338,17 @@ def test_cn81_is_read_whole():
 
 
 @pytest.mark.parametrize('name,mass', [
-    ('CN-119-EXAFS-SDT_OPEN.tri', 27.3594),
-    ('CN-123-EXAFS-SDT_OPEN.tri', 28.1122),
-    ('CN-131-EXAFS-SDT_OPEN.tri', 35.7817),
-    ('CN-112_119-EXAFS-ag-SDT.tri', None),
-    ('CN-122_123-EXAFS-SDT.tri', None),
-    ('CN-130_131-EXAFS-SDT.tri', None),
+    # SDT runs in open pans: the mass derived from the weight
+    ('sha:5f9cf91d758e', 27.3594),
+    ('sha:06ac54ff3719', 28.1122),
+    ('sha:05d84cbf2b9d', 35.7817),
+    # SDT runs whose recorded weight is negative: no mass
+    ('sha:76aeb809d9b5', None),
+    ('sha:4a9933231194', None),
+    ('sha:16d2f754d99d', None),
 ])
 def test_a_negative_weight_is_no_sample_mass(name, mass):
-    """Three DESY runs record a Weight of about -99 mg against a Weight
+    """Three real runs record a Weight of about -99 mg against a Weight
     Change of +99.99 %: Weight / Weight Change is a NEGATIVE mass, TRIOS's
     own normalised curve is upside down with it, and so was the reader's.
     Golden rule 4: such a file has no sample mass, and no normalised heat
@@ -370,9 +381,9 @@ def test_an_sdt_export_names_its_percentage_weight_change():
     assert trios_io._text_dim('Weight', '%') == 'Weight Change'
     assert trios_io._text_dim('Weight', 'mg') == 'Weight'
     assert trios_io._text_dim('Temperature', '%') == 'Temperature'
-    path = local_file('cn-81-i-0.45-sdt.txt')
+    path = local_file(SDT_REFERENCE_TXT)
     if path is None:
-        pytest.skip('the CN-81 export is not on this machine')
+        pytest.skip('the SDT reference export is not on this machine')
     data = trios_io.read_tri_text(path)
     (step,) = data['numdata']
     assert step['dims'] == ['Time', 'Temperature', 'Heat Flow (Normalized)',
@@ -391,13 +402,13 @@ def test_an_sdt_export_names_its_percentage_weight_change():
 
 
 def test_record_is_read_at_its_fixed_offset():
-    """The SES-4 trap, rebuilt byte for byte: the header ends in the u32 2,
-    and a cursor of 60.799126 degC (a float32 widened to float64) begins with
-    00 00 00 c0. Read 4 bytes early, those 8 bytes are the float64 -2.0, a
+    """The audited run's trap, rebuilt byte for byte: the header ends in
+    the u32 2, and a cursor of 60.799126 degC (a float32 widened to
+    float64) begins with 00 00 00 c0. Read 4 bytes early, those 8 bytes are the float64 -2.0, a
     'plausible temperature', and so was the second cursor. Only the fixed
     offset reads 60.80 / 86.03.
 
-    Changed 2026-09-28: an onset's cursors are read at +86 and +132, where
+    An onset's cursors are read at +86 and +132, where
     TRIOS keeps them as (x, curve y); +0 is the construction's first point,
     which for an ONSET has the flat cursor's x too (so both are written)."""
     head = bytes.fromhex('01000100 03000000 0f2f014d000000 102f0244000000 '
@@ -500,7 +511,7 @@ def test_a_calculated_curve_is_not_a_signal():
     """A list with 0x10 in it is a curve TRIOS CALCULATED - an analysis's
     points, an SDT run's Heat Flow (Normalized) - which sits in the document
     region; read as a signal it moved the start of the analysis search past
-    the analyses (OJ-12: 18 analyses to 0)."""
+    the analyses (the DSC reference run: 18 analyses to 0)."""
     raw = (b'\x00' * 64 + _array([1.0, 2.0, 3.0], [0x10, 0x10, 0x10])
            + b'\x00' * 9 + _array([1.0, 2.0], [0x10, 0x08000010]))
     assert trios_io._arrays(raw) == []
@@ -509,7 +520,7 @@ def test_a_calculated_curve_is_not_a_signal():
 def test_a_later_copy_is_not_a_recording():
     """TRIOS writes each flagged signal of the final segment again in the
     document region, one sample longer with a 1.0 in front. With no gap
-    before its tag (the DESY runs, many DSC25 runs) it reads as an array,
+    before its tag (some SDT runs, many DSC25 runs) it reads as an array,
     carries the signal's id, and would move the analysis search past
     everything before it."""
     rec = np.array([323.758, 323.774, np.nan])
@@ -526,7 +537,7 @@ def test_a_mass_from_the_weight_must_be_one():
     """Weight / Weight Change is the sample mass only when it is positive -
     the two of one sign at every sample - and the same at every sample;
     otherwise there is none, and the reason is given. A sample that is all
-    gone ends slightly BELOW zero in both (CN-H2bdc, which sublimes: 16.67
+    gone ends slightly BELOW zero in both (a sample that sublimes: 16.67
     mg to -0.19 mg, 99.98 % to -1.11 %), which is still one mass."""
     pct = np.array([100.0, 99.5, 99.0, 98.0])
     good = {'Weight': pct / 100.0 * 21.5, 'Weight Change': pct}

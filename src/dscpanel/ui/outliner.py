@@ -4,7 +4,7 @@ Once scans can be hidden, dragged anywhere and given a molar mass one at a
 time, the plot alone stops being able to say what is in the figure - a hidden
 scan is invisible by definition, and "which of these eight is still waiting
 for its M" is not a question a curve can answer. So there is a list, as in
-Blender and as in MoloM.
+Blender.
 
 It is a TREE because the data is one: a sample is a file with a mass, a molar
 mass and an exotherm direction, and its scans are the segments of it. Putting
@@ -14,7 +14,7 @@ between typing it once and typing it seven times.
 Selection is shared with the plot in both directions: clicking a row selects
 the curve, and clicking a curve highlights the row.
 
-Two parts, with a line between them (Christian, round 22): the DATA on top -
+Two parts, with a line between them: the DATA on top -
 each file, its segments, and under each scan what belongs to that trace (its
 analyses, its own labels, its offset marker while the markers are shown) -
 and below the line the DECORATORS, everything drawn on the figure that
@@ -22,7 +22,7 @@ belongs to no trace: the heat-flow arrow, the legend, free labels, pictures
 and structures.
 
 A label row can be DRAGGED onto a scan (or anything under one) to give the
-label to that scan - parenting, round 23 - and onto the Decorators to free
+label to that scan - parenting - and onto the Decorators to free
 it again. The window does the work (`MainWindow.parent_labels`).
 """
 
@@ -79,7 +79,7 @@ def _signals_of(sample, seg):
 
 def first_line(text, limit=60):
     """A label's text as one row: its first line, and a mark if there is
-    more (a label runs over several lines since round 20)."""
+    more (a label can run over several lines)."""
     lines = str(text).strip().splitlines() or [""]
     head = lines[0].strip()
     if len(lines) > 1:
@@ -131,8 +131,8 @@ class Outliner(QTreeWidget):
         self.setUniformRowHeights(True)
         self.setIndentation(14)
         # The names take the room there is and the state column is always
-        # whole: it used to sit past a fixed 230-pixel first column, cut off
-        # however wide the dock was (Christian, round 18).
+        # whole: past a fixed 230-pixel first column it was cut off however
+        # wide the dock was.
         header = self.header()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QHeaderView.Stretch)
@@ -145,7 +145,7 @@ class Outliner(QTreeWidget):
         self.doc = None
         self._filling = False
         #: While a sweep is live, the state it paints onto every box it
-        #: passes (ORCA Workbench's, Blender's), else None.
+        #: passes (as in Blender), else None.
         self._sweep = None
         # Label rows drag onto scans. The tree never moves its own rows:
         # a drop is a request to the window, and the rows are rebuilt.
@@ -158,7 +158,7 @@ class Outliner(QTreeWidget):
         #: The row a drag is over and would drop on, framed by `_Rows`.
         self._drop_item = None
         #: Where dragged FILES would land: the index of the gap, drawn as a
-        #: thin line between two files (ORCA Workbench's Transform list).
+        #: thin line between two files.
         self._drop_gap = None
         # F2 renames a file in place; a double-click still opens settings.
         self.setEditTriggers(QAbstractItemView.EditKeyPressed)
@@ -203,9 +203,9 @@ class Outliner(QTreeWidget):
                         sample.sample_name))
                 # Its own box shows and hides all its curves on the figure
                 # (ticked: all shown, half: some); a file with none has no
-                # box. Before 2026-09-29 the row had none, but Qt makes a
-                # row checkable by default, so a press there made an empty
-                # box that did nothing.
+                # box. Qt makes a row checkable by default, so without
+                # clearing the flag a press there makes an empty box that
+                # does nothing.
                 flags = row.flags() | Qt.ItemIsEditable
                 mine = [s for s in doc.scans if s.sample is sample]
                 if mine:
@@ -231,8 +231,8 @@ class Outliner(QTreeWidget):
                 shown = {(scan.seg, scan.signal): scan for scan in doc.scans
                          if scan.sample is sample}
                 for seg in range(sample.segment_count()):
-                    # An SDT segment is two curves, the mass first (the
-                    # "meat", Christian, 2026-09-28), each its own row.
+                    # An SDT segment is two curves, the mass first (its main
+                    # curve), each its own row.
                     for signal in _signals_of(sample, seg):
                         scan = shown.get((seg, signal))
                         if scan is not None:
@@ -322,9 +322,9 @@ class Outliner(QTreeWidget):
                 len(scan.visible_analyses()), len(analyses)))
         item.setText(1, "  ".join(state))
         item.setSelected(scan.selected)
-        # The analyses hang under their scan, each with its own box. This is
-        # the "switch that one on" Christian asked for, and it is also where
-        # an uncertain attribution is visible without opening anything.
+        # The analyses hang under their scan, each with its own box: one can
+        # be switched on by itself, and an uncertain attribution is visible
+        # without opening anything.
         for analysis in analyses:
             self._add_analysis(item, analysis)
         for label in (self.doc.labels_for(scan) if self.doc else ()):
@@ -404,7 +404,7 @@ class Outliner(QTreeWidget):
 
     # --------------------------------------------------- sweeping the boxes
     # Press a box and drag down the list: every box the pointer passes takes
-    # the state the first one was given - as in ORCA Workbench and Blender.
+    # the state the first one was given - as in Blender.
     # A tap-and-drag on a touchpad and a double-click-drag both start one.
     def _on_box(self, item, pos):
         """True when `pos` is on the tick box of `item`."""
@@ -719,8 +719,8 @@ class Outliner(QTreeWidget):
         **Deferred by a zero timer on purpose.** Acting at once means the
         window rebuilds this tree while Qt is still inside the click that
         ticked the box, so `clear()` deletes the very item the view is
-        holding, and the program vanishes without a traceback. Christian hit
-        exactly that: hide the only visible scan, then tick another segment.
+        holding, and the program vanishes without a traceback. Hiding the
+        only visible scan and then ticking another segment did exactly that.
 
         A zero-delay `singleShot` runs as soon as the event loop is free,
         which is after the click is finished and before anything is drawn.
@@ -811,3 +811,8 @@ class Outliner(QTreeWidget):
     def _menu(self, pos):
         item = self.itemAt(pos)
         self.menu_for.emit(self._object(item), self.viewport().mapToGlobal(pos))
+
+# Qt calls the handlers here by itself; an error in one is logged and
+# survived rather than the end of the program (`core/log.py`).
+from ..core import log as _log
+_log.guard_classes(globals(), __name__)

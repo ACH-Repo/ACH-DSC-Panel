@@ -1,6 +1,6 @@
 """The colour picker: a hue wheel, a value bar, typed numbers, a dropper.
 
-Christian, 2026-09-29: Qt's own picker has a bar that runs to DARKER shades,
+Qt's own picker has a bar that runs to DARKER shades,
 while the usual wish is a saturated colour made paler. Here the wheel is
 hue by angle and saturation by radius with WHITE at the centre, so paler is
 a move inwards, and darker is the bar beside it. Every number box takes a
@@ -9,8 +9,8 @@ on a whole colour says nothing about which channel it means.
 
 `get_colour` is the entry point, like `QColorDialog.getColor`: modal,
 returning an invalid QColor when nothing was chosen. Like every pop-up here
-it keeps its change however it is closed (round 11); Revert puts back the
-colour it opened with.
+it keeps its change however it is closed; Revert puts back the colour it
+opened with.
 """
 
 import math
@@ -276,7 +276,7 @@ class ColourDialog(QDialog):
         side.addLayout(grid)
         self.boxes = {}
         rows = (("R", 255, ""), ("G", 255, ""), ("B", 255, ""),
-                ("H", 359, "°"), ("S", 100, " %"), ("V", 100, " %"))
+                ("H", 359, "\u00b0"), ("S", 100, " %"), ("V", 100, " %"))
         for row, (name, high, suffix) in enumerate(rows):
             box = WholeBox(self)
             box.setRange(0, high)
@@ -470,7 +470,7 @@ class ColourDialog(QDialog):
 
     # ------------------------------------------------------------ closing
     def reject(self):
-        """X or Esc keep the colour, as every pop-up does (round 11)."""
+        """X or Esc keep the colour, as every pop-up does."""
         if self._picking is not None:
             self.stop_picking(False)
             return
@@ -497,9 +497,9 @@ def get_colour(initial, parent=None, title="Pick a colour", live=None):
 
 
 class GradientDialog(QDialog):
-    """Shades of one colour on the selected curves, live (F3, Christian,
-    2026-09-29): a base colour, how dark the darkest and how light the
-    lightest, darkest at the top of the stack unless reversed.
+    """Shades of one colour on the selected curves, live (F3): a base
+    colour, how dark the darkest and how light the lightest, darkest at
+    the top of the stack unless reversed.
 
     Built here and shown by the window (`MainWindow.colour_gradient`),
     which makes the one undo step when it closes. Closing keeps the colours
@@ -609,7 +609,7 @@ class GradientDialog(QDialog):
         QDialog.keyPressEvent(self, ev)
 
     def reject(self):
-        """X or Esc keep the colours (round 11)."""
+        """X or Esc keep the colours, as every pop-up does."""
         self.accept()
 
     def revert(self):
@@ -622,3 +622,8 @@ class GradientDialog(QDialog):
 
     def reverted(self):
         return self._reverted
+
+# Qt calls the handlers here by itself; an error in one is logged and
+# survived rather than the end of the program (`core/log.py`).
+from ..core import log as _log
+_log.guard_classes(globals(), __name__)

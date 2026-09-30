@@ -1,12 +1,11 @@
 """Putting the program in the Start Menu, and taking it out again.
 
-Two rules, both borrowed from MoloM's file-association script, where they
-were argued out once:
+Two rules:
 
 1. **It is opt-in and you run it yourself.** A program that quietly claims a
    file type or writes a shortcut the first time it runs is a program people
-   learn to distrust. So nothing here happens at start-up; `dsc-panel
-   register` does it and `dsc-panel register --remove` undoes it.
+   learn to distrust. So nothing here happens at start-up; `triplot
+   register` does it and `triplot register --remove` undoes it.
 2. **It writes a manifest of everything it created.** Removal then takes away
    exactly what was added, rather than guessing at paths a later version
    might get wrong - and that manifest, together with
@@ -19,7 +18,7 @@ written outside the user's own profile, and no registry key outside
 `HKCU\\Software\\Classes`.
 
 Aliases are the same machinery pointed at a name the user picks:
-`dsc-panel alias dscp` makes `dscp` work in a terminal on any platform - a
+`triplot alias tp` makes `tp` work in a terminal on any platform - a
 `.cmd` shim beside the installed command on Windows, a symlink in
 `~/.local/bin` elsewhere - and records it so `--remove` can take it away.
 """
@@ -114,8 +113,7 @@ def _windows_scripts_dir():
     own: a Python under `C:\\Program Files` has a Scripts folder that needs
     administrator rights to write to, so an alias written there fails for
     exactly the people who did not install Python themselves. The user
-    scheme is where `pip install --user` puts a command anyway, which is
-    where `molom.exe` lives on this machine.
+    scheme is where `pip install --user` puts a command anyway.
     """
     found = shutil.which(branding.EXE_NAME) or shutil.which(
         branding.EXE_NAME_GUI)

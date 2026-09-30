@@ -1,11 +1,11 @@
-"""The three real files Christian supplied on 2026-09-23, and what each proved.
+"""Three real files, and what each proved.
 
-Every test here is a fact about a file on his machine, so they skip when the
-file is not there. Between them they pin the three things that were guesses
+Every test here is a fact about a real file, so they skip when the file is
+not there. Between them they pin the three things that were guesses
 until those files existed: which way exotherms point, what a glass-transition
 record holds, and what happens to a segment the instrument recorded without a
-heat flow - which the indium ramp turned out not to be (2026-09-28: its heat
-flow is stored with a flags list), so that last one is pinned on the
+heat flow - which the indium ramp turned out not to be (its heat flow is
+stored with a flags list), so that last one is pinned on the
 reader's shape now, and the ramp's own melt beside it.
 """
 
@@ -18,12 +18,18 @@ from dscpanel.core import export, loader, measure, model, units
 
 from conftest import local_file, make_data
 
-# By NAME only. Where each one lives is listed in the uncommitted
-# tests/local_testdata.txt (see `conftest.local_file`).
-INDIUM = "Indium-03082026(1).tri"
-SES2_TRI = "SES-2-ag-16092026.tri"
-SES2_TXT = "ses-2-ag-16092026.txt"
-OJ12 = "OJ-12-DSC-2-07012026.tri"
+# By a hash of the file name only (`conftest.hashed_name`). Where each one
+# lives is listed in the uncommitted tests/local_testdata.txt (see
+# `conftest.local_file`).
+#: The indium calibration run.
+INDIUM = "sha:2af8730daad0"
+#: A TRIOS 6.0 DSC25 run with its own .txt export beside it: the pair the
+#: reader is validated against.
+DSC_PAIR = "sha:9f0ad8af1175"
+DSC_PAIR_TXT = "sha:f2c2ed49c3ab"      # its export
+#: The DSC25 reference run: TRIOS 5.1.1, seven segments, 16 stored
+#: analyses, a Full .txt export beside it.
+DSC_REFERENCE = "sha:b2303c243b22"
 
 
 def _path(name):
@@ -80,9 +86,9 @@ def test_the_panel_points_at_the_export_when_a_segment_is_unusable(
     the same run is the other place one can come from, so the note line
     says so rather than leaving somebody to wonder.
 
-    The indium ramp was the real case until 2026-09-28, when its heat flow
-    turned out to be recorded in flagged arrays (TRI-FORMAT.md section 3,
-    and the test below). No file on the development machine lacks one now,
+    The indium ramp was the real case until its heat flow turned out to be
+    recorded in flagged arrays (TRI-FORMAT.md section 3, and the test
+    below). No file tried lacks one now,
     so this is the reader's SHAPE with the column taken out, and an export
     file of the same name beside it."""
     data = make_data()
@@ -132,7 +138,7 @@ def test_the_indium_export_gives_the_melt_too():
 
 
 def test_the_indium_ramp_is_recorded_and_melts_at_indiums_enthalpy():
-    """The ramp was read as "records no heat flow" until 2026-09-28: its
+    """The ramp was once read as "records no heat flow": its
     Temperature, Heat Flow, Heat Flow Phase and Total Heat Capacity are
     stored with a flags list (the last 5 / 35 samples flagged), which the
     reader did not read (TRI-FORMAT.md section 3). Read, the .tri alone
@@ -172,13 +178,14 @@ def test_the_indium_ramp_is_recorded_and_melts_at_indiums_enthalpy():
 
 # ------------------------------------------------- the glass transition
 def test_the_glass_transition_matches_trios():
-    """Decoded 2026-09-23 from OJ-12, whose export says Midpoint 78,911 degC.
+    """Decoded from the DSC reference run, whose export says Midpoint
+    78,911 degC.
 
     The record holds four (x, y) pairs; the midpoint is the half-height
     crossing between the middle two, not their mean (78.849, which is 0.06 K
     out and would look right).
     """
-    sample = _sample(OJ12)
+    sample = _sample(DSC_REFERENCE)
     doc = model.Document()
     doc.add_sample(sample)
     found = [a for scan in doc.scans for a in scan.analyses()
@@ -200,11 +207,11 @@ def test_the_glass_transition_is_drawn():
     assert label.startswith("Tg") and value == pytest.approx(78.9109)
 
 
-# ------------------------------------------------------ the SES-2 pair
+# ------------------------------------------- a .tri and its own export
 def test_the_tri_and_its_export_agree():
     """Same run, both readers: the segments and the onsets have to match."""
-    from_tri = _sample(SES2_TRI)
-    from_txt = _sample(SES2_TXT)
+    from_tri = _sample(DSC_PAIR)
+    from_txt = _sample(DSC_PAIR_TXT)
     assert from_tri.segment_count() == from_txt.segment_count()
     for seg in range(from_tri.segment_count()):
         a = from_tri.data["numdata"][seg]["nums"]
@@ -230,7 +237,7 @@ def test_the_tri_and_its_export_agree():
 def test_an_export_carries_its_mass_and_draws_in_every_unit():
     """A TRIOS export stores W/g and no watts, and puts the mass in
     [Procedure]. Both used to make it undrawable."""
-    sample = _sample(SES2_TXT)
+    sample = _sample(DSC_PAIR_TXT)
     assert sample.mass_g == pytest.approx(0.0047)
     doc = model.Document()
     doc.add_sample(sample)
@@ -244,7 +251,7 @@ def test_an_export_carries_its_mass_and_draws_in_every_unit():
     assert scan.curve(doc.x_axis, units.UNIT_W_MOL, doc.exo)[1] is not None
 
 
-# ------------------------------------- the driver, run for real (round 12)
+# ------------------------------------------- the driver, run for real
 def test_the_exported_driver_runs_and_builds_the_same_figure(qapp, tmp_path):
     """Export the DSC_Plotter.py driver for a figure of exact size, RUN it
     with matplotlib, and measure its SVG: 8 x 6 cm, the axes box at the
@@ -257,7 +264,7 @@ def test_the_exported_driver_runs_and_builds_the_same_figure(qapp, tmp_path):
     pytest.importorskip("matplotlib")
     from dscpanel.core import figure
     from dscpanel.ui.window import MainWindow
-    path = _path(OJ12)
+    path = _path(DSC_REFERENCE)
     win = MainWindow()
     win.resize(900, 560)
     win._sample_loaded(loader.read_sample(path))
@@ -267,7 +274,7 @@ def test_the_exported_driver_runs_and_builds_the_same_figure(qapp, tmp_path):
     layout.margin_left, layout.margin_right = 1.8, 0.4
     layout.margin_top, layout.margin_bottom = 0.4, 1.5
     win.doc.offset_markers = True      # the template's own call, run
-    # the legend and a label with markup, run through matplotlib (round 19)
+    # the legend and a label with markup, run through matplotlib
     from PySide6.QtCore import QPointF
     win.doc.legend.visible = True
     win.doc.legend.line_width = 2.0

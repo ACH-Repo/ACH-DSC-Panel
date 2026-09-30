@@ -1,15 +1,14 @@
 """Per-object settings, applied as they are touched.
 
-Live-apply with a snapshot for Cancel, which is the PXRD window's rule and
-the right one for anything judged by eye: a dialog you have to close before
-you can see what it did makes a knob unusable. Cancel puts back what was
-there when the dialog opened, because by then the object has already been
-changed a dozen times.
+Live-apply with a snapshot for Cancel, which is the right rule for anything
+judged by eye: a dialog you have to close before you can see what it did
+makes a knob unusable. Cancel puts back what was there when the dialog
+opened, because by then the object has already been changed a dozen times.
 
-`NumberBox` is MoloM's, for the same reason it exists there: Christian is on
-a German locale, where Qt's decimal separator is a comma, so a typed "0.15"
-is not a number and the box quietly keeps its old value. Both forms are taken
-and the typed text is left alone while it is being typed.
+`NumberBox` exists because on a German locale Qt's decimal separator is a
+comma, so a typed "0.15" is not a number and the box quietly keeps its old
+value. Both forms are taken and the typed text is left alone while it is
+being typed.
 """
 
 from PySide6.QtCore import QLocale, QPointF, Qt, Signal
@@ -23,8 +22,8 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QColorDialog,
                                QVBoxLayout, QWidget)
 
 #: How much of the screen's height a settings window may take before its
-#: rows scroll (Christian, 2026-09-28: an integration's settings ran off a
-#: T14s screen). Small ones never reach it.
+#: rows scroll (an integration's settings ran off a small screen). Small
+#: ones never reach it.
 SCREEN_SHARE = 0.85
 
 import html
@@ -33,6 +32,7 @@ import os
 from ..core import figure as figure_module
 from ..core import labels
 from ..core import measure
+from ..core import molar
 from ..core import model as units_module
 from ..core import numbers
 from ..core import style
@@ -73,8 +73,8 @@ class RangeDialog(QDialog):
         row.addWidget(self.high_edit)
         if unit:
             row.addWidget(QLabel(unit, self))
-        # The y range, AFTER the x one (Christian, round 19): Tab reaches it
-        # only when wanted, and Enter after the x pair leaves it as it is.
+        # The y range, AFTER the x one: Tab reaches it only when wanted,
+        # and Enter after the x pair leaves it as it is.
         self.y_low_edit = self.y_high_edit = None
         y_row = None
         if y is not None:
@@ -92,7 +92,7 @@ class RangeDialog(QDialog):
             y_row.addWidget(self.y_high_edit)
             if y_unit:
                 y_row.addWidget(QLabel(y_unit, self))
-        # The weight axis of an SDT run, last (round 25).
+        # The weight axis of an SDT run, last.
         self.y2_low_edit = self.y2_high_edit = None
         y2_row = None
         if y2 is not None:
@@ -188,8 +188,7 @@ class RangeDialog(QDialog):
 
 
 class PageSizeDialog(QDialog):
-    """The figure's size in numbers: a double-click on a page handle
-    (Christian, round 23).
+    """The figure's size in numbers: a double-click on a page handle.
 
     Width and height, in cm or inches. With "Keep the aspect ratio" on (the
     default) typing one fills in the other at the page's present
@@ -457,8 +456,8 @@ def enter_stays(dialog, ev):
     These windows apply as they are touched, and their values are tuned
     against each other - the arrow's head against its tail, a size against
     a distance. Enter closing the window after every value meant reopening
-    it for the next one (Christian, round 15). A spin box has already taken
-    its value when the key reaches the window; this only stops the window
+    it for the next one. A spin box has already taken its value when the
+    key reaches the window; this only stops the window
     from treating the same key as its OK button, and selects the field's
     text so the next number can be typed straight over it. A focused
     button still takes Enter. Returns True when the key was handled.
@@ -859,10 +858,10 @@ def screen_limit(widget):
 class _LiveDialog(QDialog):
     """Common machinery: snapshot on open, restore on reject.
 
-    One dialog can edit SEVERAL objects of its kind at once (`set_group`,
-    Christian, round 14: select three onsets, open the settings, set the
-    size of all three). It shows the object it was opened on and MIRRORS
-    every change onto the others: whatever field of the shown object just
+    One dialog can edit SEVERAL objects of its kind at once (`set_group`:
+    select three onsets, open the settings, set the size of all three). It
+    shows the object it was opened on and MIRRORS every change onto the
+    others: whatever field of the shown object just
     changed is copied to the rest, and nothing else is touched, so their
     own values of every other field stay theirs. Fields that belong to one
     object alone (`INDIVIDUAL`: a label's text, a position) are not mirrored
@@ -895,7 +894,7 @@ class _LiveDialog(QDialog):
         # NOT MODAL. These dialogs apply as they are touched and are meant to
         # be worked beside: a dialog that blocks the plot blocks the
         # measurement cursors it is describing, which is exactly what
-        # Christian hit when adjusting an analysis. `Qt.Tool` keeps it above
+        # goes wrong when adjusting an analysis. `Qt.Tool` keeps it above
         # the window it belongs to without taking the focus away from it.
         self.setModal(False)
         self.setWindowFlag(Qt.Tool, True)
@@ -1014,9 +1013,9 @@ class _LiveDialog(QDialog):
     def reject(self):
         """Closed without OK - its X, Esc, Ctrl+W: KEEP what was changed.
 
-        Christian: these apply as they are touched, and "a change is a
-        change". Closing used to put everything back, which after a minute
-        of adjusting by eye is exactly the loss nobody expects. Only the
+        These apply as they are touched, and a change is a change.
+        Putting everything back on closing would, after a minute of
+        adjusting by eye, be exactly the loss nobody expects. Only the
         Revert button puts things back (`revert`); either way an undo step
         is made, so Ctrl+Z still takes the whole dialog back afterwards.
         """
@@ -1037,7 +1036,7 @@ class _LiveDialog(QDialog):
 
     def _layer_row(self, form):
         """Layer: where the object is drawn in the stack, as a number -
-        the same order Ctrl+PgUp and Ctrl+PgDown move it in (round 20)."""
+        the same order Ctrl+PgUp and Ctrl+PgDown move it in."""
         self.layer = NumberBox()
         self.layer.setDecimals(1)
         self.layer.setRange(-10000.0, 10000.0)
@@ -1117,9 +1116,9 @@ class ScanSettings(_LiveDialog):
     """Everything about one scan, plus its sample's molar mass."""
 
     FIELDS = ("colour", "label", "offset", "line_width", "keep",
-              "molar_mass_override", "dtg_window")
-    INDIVIDUAL = ("label", "offset", "molar_mass_override")
-    GROUP_DISABLED = ("label", "offset", "molar", "own_molar", "analyses")
+              "dtg_window")
+    INDIVIDUAL = ("label", "offset")
+    GROUP_DISABLED = ("label", "offset", "molar", "analyses")
 
     def __init__(self, parent, scan, unit, on_change=None):
         _LiveDialog.__init__(self, parent, scan, on_change)
@@ -1229,29 +1228,14 @@ class ScanSettings(_LiveDialog):
         self.molar.setSuffix(" g/mol")
         self.molar.setValue(float(scan.sample.molar_mass or 0.0))
         self.molar.setToolTip("Needed for W/mol and kJ/mol. Never "
-                              "assumed.")
-        form.addRow("Molar mass (sample)", self.molar)
-
-        self.own_molar = NumberBox()
-        self.own_molar.setDecimals(4)
-        self.own_molar.setRange(0.0, 1e7)
-        self.own_molar.setSpecialValueText("use the sample's")
-        self.own_molar.setSuffix(" g/mol")
-        self.own_molar.setValue(float(scan.molar_mass_override or 0.0))
-        self.own_molar.setToolTip("Overrides the sample's, for this scan.")
-        form.addRow("Molar mass (this scan)", self.own_molar)
-
-        note = QLabel("Scans of one file share its molar mass unless "
-                      "given their own.")
-        note.setWordWrap(True)
-        note.setStyleSheet("color: #9a9a9a;")
-        layout.addWidget(note)
+                              "assumed. Every scan of the file has it.")
+        form.addRow("Molar mass", molar_row(self, self.molar, scan.sample))
 
         buttons = self._buttons()
         layout.addWidget(buttons)
 
         self.label.textChanged.connect(self._apply)
-        for box in (self.offset, self.molar, self.own_molar):
+        for box in (self.offset, self.molar):
             box.valueChanged.connect(self._apply)
         self.line_width.changed.connect(self._apply)
         self.cut_start.valueChanged.connect(self._apply)
@@ -1320,8 +1304,6 @@ class ScanSettings(_LiveDialog):
         scan.keep = (round(self.cut_start.value() / 100.0, 6),
                      round(1.0 - self.cut_end.value() / 100.0, 6))
         self._describe_cut()
-        scan.molar_mass_override = (float(self.own_molar.value())
-                                    if self.own_molar.value() > 0 else None)
         if getattr(scan, "is_dtg", False):
             scan.dtg_window = float(self.dtg_window.value())
         scan.sample.molar_mass = (float(self.molar.value())
@@ -1332,6 +1314,256 @@ class ScanSettings(_LiveDialog):
     def revert(self):
         self.obj.sample.molar_mass = self._sample_molar_mass
         _LiveDialog.revert(self)
+
+
+def molar_row(dialog, box, sample):
+    """A molar mass box with its calculator beside it."""
+    row = QWidget(dialog)
+    line = QHBoxLayout(row)
+    line.setContentsMargins(0, 0, 0, 0)
+    line.addWidget(box, 1)
+    button = QPushButton("Calculate...", row)
+    button.setAutoDefault(False)
+    button.setToolTip("From a sum formula, a SMILES or a composition "
+                      "(Hbc)0.75+Zn(im)1.70(bim)0.30.")
+
+    def calculate(_checked=False):
+        calculator = MolarMassDialog(sample.composition or "", dialog)
+        if calculator.exec() and calculator.mass() is not None:
+            sample.composition = calculator.text() or None
+            box.setValue(round(calculator.mass(), 4))
+
+    button.clicked.connect(calculate)
+    line.addWidget(button, 0)
+    dialog.calculate_molar = calculate
+    return row
+
+
+class MolarMassDialog(QDialog):
+    """The molar mass calculator: a sum formula (C6H6), a SMILES, or a
+    composition of (key)coefficient parts joined by +, read the way that
+    fits or as chosen, with the formula and the mass shown as it is typed.
+    `core/molar.py` does the chemistry."""
+
+    def __init__(self, text="", parent=None):
+        QDialog.__init__(self, parent)
+        self.setWindowTitle("Molar mass")
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        layout.addLayout(form)
+        self.entry = QLineEdit(text, self)
+        self.entry.setPlaceholderText("C6H6, O=C(O)c1ccccc1, or "
+                                      "(Hbc)0.75+Zn(im)1.70(bim)0.30")
+        self.entry.setToolTip("A sum formula (brackets, decimals, * for an "
+                              "adduct), a SMILES, or a composition: "
+                              "(key)coefficient parts joined by +.")
+        form.addRow("From", self.entry)
+        self.reading = QComboBox(self)
+        for name in molar.READINGS:
+            self.reading.addItem(molar.TITLES[name], name)
+        self.reading.setToolTip("CO is carbon monoxide as a formula and "
+                                "methanol as a SMILES: choose when it "
+                                "matters.")
+        form.addRow("Read as", self.reading)
+        self.formula = QLabel("", self)
+        self.formula.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        form.addRow("Formula", self.formula)
+        self.mass_text = QLabel("", self)
+        self.mass_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        form.addRow("Molar mass", self.mass_text)
+        blocks = QLabel("Building blocks: " + ", ".join(
+            molar.BUILDING_BLOCKS), self)
+        blocks.setWordWrap(True)
+        blocks.setStyleSheet("color: #9a9a9a;")
+        layout.addWidget(blocks)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok
+                                   | QDialogButtonBox.Cancel)
+        self.use = buttons.button(QDialogButtonBox.Ok)
+        self.use.setText("Use")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.entry.textChanged.connect(lambda _t: self.work_out())
+        self.reading.currentIndexChanged.connect(lambda _i: self.work_out())
+        self._found = None
+        self.work_out()
+        self.resize(460, self.sizeHint().height())
+
+    def text(self):
+        return self.entry.text().strip()
+
+    def work_out(self):
+        text = self.text()
+        if not text:
+            self._found = None
+            self.formula.setText("")
+            self.mass_text.setText("")
+            self.use.setEnabled(False)
+            return None
+        found = molar.calculate(text, self.reading.currentData())
+        self._found = found
+        if found.ok:
+            self.formula.setText("{}  (read as {})".format(
+                found.formula, molar.TITLES.get(found.read, found.read)))
+            self.formula.setStyleSheet("")
+            self.mass_text.setText("{:.2f} g/mol".format(found.mass))
+        else:
+            self.formula.setText(found.error or "")
+            self.formula.setStyleSheet("color: #d04040;")
+            self.mass_text.setText("")
+        self.use.setEnabled(found.ok)
+        return found
+
+    def mass(self):
+        found = self._found
+        return found.mass if found is not None and found.ok else None
+
+
+class _MarginsDialog(QDialog):
+    """Four margins in numbers, left / right / top / bottom: the page's
+    white margins or the data's inside the axes box. Built here, shown and
+    applied by the window, one undo step."""
+
+    TITLE = "Margins"
+    SIDES = (("left", "Left"), ("right", "Right"), ("top", "Top"),
+             ("bottom", "Bottom"))
+
+    def __init__(self, values, parent=None):
+        QDialog.__init__(self, parent)
+        self.setWindowTitle(self.TITLE)
+        layout = QVBoxLayout(self)
+        self.form = QFormLayout()
+        layout.addLayout(self.form)
+        self.boxes = {}
+        for side, words in self.SIDES:
+            box = NumberBox(self)
+            self._shape(box, side)
+            box.setValue(float(values.get(side, 0.0)))
+            box.valueChanged.connect(lambda _v: self._check())
+            self.form.addRow(words, box)
+            self.boxes[side] = box
+        self.note = QLabel("", self)
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet("color: #9a9a9a;")
+        layout.addWidget(self.note)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok
+                                        | QDialogButtonBox.Cancel)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        self._extra(self.buttons)
+        layout.addWidget(self.buttons)
+        self._check()
+
+    def _shape(self, box, side):
+        pass
+
+    def _extra(self, buttons):
+        pass
+
+    def _check(self):
+        return True
+
+    def values(self):
+        return dict((side, float(box.value()))
+                    for side, box in self.boxes.items())
+
+
+class PageMarginsDialog(_MarginsDialog):
+    """The page's white margins of an exact figure, in its unit, each no
+    less than what it holds. More white space grows the page; the axes box
+    keeps its size."""
+
+    TITLE = "Page margins"
+
+    def __init__(self, values, least, unit, parent=None):
+        self.least = dict(least)
+        self.unit = unit
+        _MarginsDialog.__init__(self, values, parent)
+        tighten = self.buttons.button(QDialogButtonBox.Reset)
+        tighten.clicked.connect(lambda _c=False: self.tighten())
+        self.note.setText("White space round the axes box. More grows the "
+                          "page, less shrinks it; the axes box keeps its "
+                          "size. Each is at least what it holds.")
+
+    def _shape(self, box, side):
+        box.setDecimals(2)
+        box.setRange(float(self.least.get(side, 0.0)), 1000.0)
+        box.setSingleStep(0.05)
+        box.setSuffix(" " + self.unit)
+        box.setToolTip("At least {:.2f} {}: less would cut off what it "
+                       "holds.".format(self.least.get(side, 0.0), self.unit))
+
+    def _extra(self, buttons):
+        buttons.addButton(QDialogButtonBox.Reset).setText("Tighten")
+        buttons.button(QDialogButtonBox.Reset).setToolTip(
+            "Every margin down to what it holds.")
+
+    def tighten(self):
+        for side, box in self.boxes.items():
+            box.setValue(float(self.least.get(side, 0.0)))
+
+
+class DataMarginsDialog(_MarginsDialog):
+    """The data's margins inside the axes box: the share of the axis left
+    empty beyond the data on each side (the fit-margin arrows'). Two on one
+    axis must leave the data some room."""
+
+    TITLE = "Data margins"
+
+    def _shape(self, box, side):
+        box.setDecimals(3)
+        box.setRange(0.0, 0.9)
+        box.setSingleStep(0.01)
+        box.setToolTip("The share of the axis left empty beyond the data: "
+                       "0.1 is 10 %.")
+
+    def _check(self):
+        values = self.values()
+        fine = (values["left"] + values["right"] < style.FIT_MOST
+                and values["bottom"] + values["top"] < style.FIT_MOST)
+        for pair in (("left", "right"), ("bottom", "top")):
+            bad = sum(values[s] for s in pair) >= style.FIT_MOST
+            for side in pair:
+                self.boxes[side].setStyleSheet(
+                    "border: 1px solid #d04040;" if bad else "")
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(fine)
+        self.note.setText("The share of each axis left empty beyond the "
+                          "data: left 0.1 is the first tenth of the x "
+                          "axis." if fine else
+                          "Two margins of one axis leave the data no room.")
+        return fine
+
+
+class MolarMassPrompt(QDialog):
+    """"Set the molar mass" (F3, a scan's menu): the number, and the
+    calculator beside it."""
+
+    def __init__(self, samples, parent=None):
+        QDialog.__init__(self, parent)
+        self.samples = list(samples)
+        self.setWindowTitle("Molar mass")
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        layout.addLayout(form)
+        form.addRow("For", QLabel(", ".join(s.name for s in self.samples)))
+        self.molar = NumberBox(self)
+        self.molar.setDecimals(4)
+        self.molar.setRange(0.0, 1e7)
+        self.molar.setSpecialValueText("not given")
+        self.molar.setSuffix(" g/mol")
+        self.molar.setValue(float(self.samples[0].molar_mass or 0.0))
+        self.molar.setToolTip("Needed for W/mol and kJ/mol. Never assumed.")
+        form.addRow("Molar mass", molar_row(self, self.molar,
+                                            self.samples[0]))
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok
+                                   | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def value(self):
+        value = float(self.molar.value())
+        return value if value > 0 else None
 
 
 class SampleSettings(_LiveDialog):
@@ -1358,7 +1590,9 @@ class SampleSettings(_LiveDialog):
         self.molar.setSpecialValueText("not given")
         self.molar.setSuffix(" g/mol")
         self.molar.setValue(float(sample.molar_mass or 0.0))
-        form.addRow("Molar mass", self.molar)
+        self.molar.setToolTip("Needed for W/mol and kJ/mol. Never "
+                              "assumed. Every scan of the file has it.")
+        form.addRow("Molar mass", molar_row(self, self.molar, sample))
 
         self.exo = QComboBox()
         for value in (units.EXO_DOWN, units.EXO_UP):
@@ -1396,11 +1630,38 @@ def axis_title(axis, part=""):
     return "{} {}".format(name, part) if part else name
 
 
-class CaptionSettings(_LiveDialog):
+class _SideRow(object):
+    """"Side" in every window of an axis - its spine's, its numbers' and
+    its caption's, so a double-click on the y caption offers one too. It
+    shows the side the axis is DRAWN on and puts it on the one chosen,
+    through the window: the mass axis takes the heat
+    flow axis's side, so choosing its side changes that one."""
+
+    def _side_row(self, form):
+        axis = self.obj
+        self.side = QComboBox()
+        for side in (("bottom", "top") if axis.which == "x"
+                     else ("left", "right")):
+            self.side.addItem(side, side)
+        plot = _plot_of(self)
+        drawn = plot.axis_side(axis) if plot is not None else axis.side
+        self.side.setCurrentIndex(max(0, self.side.findData(drawn)))
+        self.side.setToolTip("Which side of the plot the axis is on: its "
+                             "line, numbers and caption.")
+        form.addRow("Side", self.side)
+        self.side.currentIndexChanged.connect(lambda _i: self._side_chosen())
+
+    def _side_chosen(self):
+        window = _window_of(self)
+        if window is not None:
+            window.set_axis_side(self.obj, self.side.currentData())
+
+
+class CaptionSettings(_SideRow, _LiveDialog):
     """An axis CAPTION: its words and its size, and nothing else.
 
-    Separate from the axis's own settings on purpose. Christian: the tick
-    settings should not be what a double-click on the label gives you - the
+    Separate from the axis's own settings on purpose: the tick settings
+    should not be what a double-click on the label gives you - the
     label is a piece of text, the spine is the axis. Double-clicking the
     spine opens `AxisSettings`; this is what the caption opens.
     """
@@ -1434,6 +1695,7 @@ class CaptionSettings(_LiveDialog):
         self.gap.setToolTip("Space between the numbers and the caption. "
                             "Dragging sets it too.")
         form.addRow("Distance", self.gap)
+        self._side_row(form)
 
         note = QLabel("*T* italic, _{g} subscript, \\Delta Greek, LaTeX "
                       "between $...$. Drag the caption to move it.")
@@ -1509,18 +1771,18 @@ class _RangeRows(object):
         self._show_range()
 
 
-class AxisSettings(_RangeRows, _LiveDialog):
+class AxisSettings(_SideRow, _RangeRows, _LiveDialog):
     """The SPINE: its side, its ticks and their steps, the line opposite it,
     and the grid. Opened by double-clicking the axis line; its numbers
     (`NumberSettings`) and its caption (`CaptionSettings`) have their own
-    windows (Christian, round 18).
+    windows.
 
     The defaults are Origin's closed frame on the DSC_Plotter template's
     ticks: inward, minor ticks, the opposite line with ticks and no numbers,
     no grid.
     """
 
-    FIELDS = ("side", "ticks_inward", "tick_length", "minor_ticks",
+    FIELDS = ("ticks_inward", "tick_length", "minor_ticks",
               "minor_count", "minor_length", "major_step", "mirror",
               "mirror_ticks", "show_grid")
 
@@ -1533,10 +1795,9 @@ class AxisSettings(_RangeRows, _LiveDialog):
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         layout.addLayout(form)
 
-        # The RANGE (Christian, 2026-09-29: "axis pop up menus must
-        # obviously allow you to set their min and max values"): what the
-        # axis shows now, typed back as one view step; locked, F returns to
-        # it. Through the window, never this dialog's snapshot.
+        # The RANGE, its minimum and maximum: what the axis shows now,
+        # typed back as one view step; locked, F returns to it. Through the
+        # window, never this dialog's snapshot.
         self.low = NumberBox()
         self.high = NumberBox()
         unit = axis_unit(doc, axis)
@@ -1562,18 +1823,7 @@ class AxisSettings(_RangeRows, _LiveDialog):
         self.high.valueChanged.connect(lambda _v: self._typed_range())
         self.locked.toggled.connect(self._lock_toggled)
 
-        self.side = QComboBox()
-        for side in (("bottom", "top") if axis.which == "x"
-                     else ("left", "right")):
-            self.side.addItem(side, side)
-        self.side.setCurrentIndex(max(0, self.side.findData(axis.side)))
-        self.side.setToolTip("Which side of the plot the axis is on.")
-        form.addRow("Side", self.side)
-        if axis.which == "y2":
-            # Always opposite the heat flow's axis: that one decides.
-            self.side.setEnabled(False)
-            self.side.setToolTip("The main side: the heat flow axis's Side. "
-                                 "With both drawn, heat flow goes opposite.")
+        self._side_row(form)
 
         self.inward = QCheckBox("Ticks point inward")
         self.inward.setChecked(bool(axis.ticks_inward))
@@ -1641,7 +1891,6 @@ class AxisSettings(_RangeRows, _LiveDialog):
         layout.addWidget(buttons)
         self._show()
 
-        self.side.currentIndexChanged.connect(self._apply)
         for check in (self.inward, self.minor, self.mirror,
                       self.mirror_ticks, self.grid, self.step_auto):
             check.toggled.connect(self._apply)
@@ -1657,7 +1906,7 @@ class AxisSettings(_RangeRows, _LiveDialog):
             return 0.0
         # Each axis its OWN range: the weight axis showed the heat flow's
         # step (0.1 W/g where it draws 5 %), and unticking Automatic
-        # stored it (review F8).
+        # stored it.
         lo, hi = {"x": plot.view_x, "y2": plot.view_y2}.get(
             axis.which, plot.view_y)()
         return float(plot.tick_step(axis, lo, hi))
@@ -1688,7 +1937,6 @@ class AxisSettings(_RangeRows, _LiveDialog):
 
     def _apply(self, *_args):
         axis = self.obj
-        axis.side = self.side.currentData()
         axis.ticks_inward = bool(self.inward.isChecked())
         if self.step_auto.isChecked():
             axis.major_step = None
@@ -1705,11 +1953,16 @@ class AxisSettings(_RangeRows, _LiveDialog):
         self._show()
 
 
-class NumberSettings(_LiveDialog):
-    """An axis's NUMBERS: shown or not, their size, their format. Opened by
-    double-clicking them; the spine and the caption have their own."""
+class NumberSettings(_SideRow, _LiveDialog):
+    """An axis's NUMBERS: shown or not, their size, their format, and
+    which of them are left out. Opened by double-clicking them; the spine
+    and the caption have their own."""
 
-    FIELDS = ("show_numbers", "tick_size", "number_format")
+    FIELDS = ("show_numbers", "tick_size", "number_format",
+              "hidden_numbers", "hidden_context")
+    # Values in one axis's unit: never copied to another axis.
+    INDIVIDUAL = ("hidden_numbers", "hidden_context")
+    GROUP_DISABLED = ("hidden_numbers",)
 
     def __init__(self, parent, axis, doc, on_change=None):
         _LiveDialog.__init__(self, parent, axis, on_change)
@@ -1732,7 +1985,31 @@ class NumberSettings(_LiveDialog):
         # different digits, so "automatic" is the only shared default.
         self.number_format = StyleText(axis.number_format, lambda: "",
                                        parent=self)
+        # The general tooltip speaks of units, which an axis's numbers
+        # cannot carry (the unit is in the caption).
+        self.number_format.edit.setToolTip(
+            "How every number on this axis is written. %.0f: whole "
+            "numbers (50). %.1f: one decimal (50.0). %.2f: two. %.2g: two "
+            "significant figures (0.51, 1.2, 15). Empty: as few digits as "
+            "the spacing of the ticks needs.")
         form.addRow("Format", self.number_format)
+        #: What the axis writes now, with this format and without the
+        #: hidden ones: the Format box's effect, seen before looking at
+        #: the plot.
+        self.written = QLabel(self)
+        self.written.setWordWrap(True)
+        form.addRow("Written", self.written)
+
+        self.hidden_numbers = QLineEdit(self)
+        self.hidden_numbers.setPlaceholderText("none")
+        self.hidden_numbers.setToolTip(
+            "Numbers NOT written on this axis - their ticks stay. Type "
+            "them as the axis writes them, separated by ';', ', ' or a "
+            "space: \"50\" leaves the 50 at the corner of the box out. "
+            "Right-click a number on the plot to hide or show that one.")
+        self._show_hidden()
+        form.addRow("Hidden", self.hidden_numbers)
+        self._side_row(form)
 
         buttons = self._buttons()
         layout.addWidget(buttons)
@@ -1740,6 +2017,32 @@ class NumberSettings(_LiveDialog):
         self.shown.toggled.connect(self._apply)
         self.tick_size.changed.connect(self._apply)
         self.number_format.changed.connect(self._apply)
+        self.hidden_numbers.textEdited.connect(self._hidden_typed)
+        self._show_written()
+
+    def _context(self):
+        plot = _plot_of(self)
+        return (plot.axis_context(self.obj.which) if plot is not None
+                else None)
+
+    def _show_hidden(self):
+        """The hidden numbers that apply in the axis's unit now."""
+        axis = self.obj
+        values = (axis.hidden_numbers
+                  if list(axis.hidden_context or []) == (self._context()
+                                                         or [])
+                  else [])
+        self.hidden_numbers.setText("; ".join(
+            "{:g}".format(round(float(v), 10) + 0.0) for v in values))
+
+    def _show_written(self):
+        plot = _plot_of(self)
+        if plot is None or not self.obj.show_numbers:
+            self.written.setText("(none)" if not self.obj.show_numbers
+                                 else "")
+            return
+        texts = [text for _v, _at, text in plot.numbered_ticks(self.obj)]
+        self.written.setText(", ".join(texts) or "(none)")
 
     def _apply(self, *_args):
         axis = self.obj
@@ -1747,12 +2050,28 @@ class NumberSettings(_LiveDialog):
         axis.tick_size = self.tick_size.value()
         axis.number_format = self.number_format.value()
         self._live()
+        self._show_written()
+
+    def _hidden_typed(self, text):
+        """Only when typed here: numbers hidden in another unit are kept
+        while the rest of the window is used."""
+        typed = numbers.values(text)
+        if typed is None:
+            self.hidden_numbers.setStyleSheet("border: 1px solid #d04040;")
+            return
+        self.hidden_numbers.setStyleSheet("")
+        axis = self.obj
+        # Replaced, never changed in place (the snapshot).
+        axis.hidden_numbers = sorted(typed)
+        axis.hidden_context = self._context() if typed else None
+        self._live()
+        self._show_written()
 
 
 class FigureSettings(_LiveDialog):
     """This figure's size and the place of its axes box - saved with it.
 
-    Christian: two session files (first up-scans, second up-scans) exported
+    Two session files (first up-scans, second up-scans) exported
     with the same settings must come out the same size, with their axes
     boxes the same size and in the same place, so that they sit side by side
     in Word without fiddling. In "an exact size" the MARGINS decide the axes
@@ -1907,9 +2226,9 @@ class FigureSettings(_LiveDialog):
             to_unit = figure_module.PER_INCH[fig.unit] \
                 / figure_module.DESIGN_DPI
             lines.append("The {} margin is {:.2f} {} and what it holds "
-                         "needs {:.2f} {}: numbers or a caption will be cut "
-                         "off.".format(side, have * to_unit, fig.unit,
-                                       need * to_unit, fig.unit))
+                         "needs {:.2f} {}: something drawn there will be "
+                         "cut off.".format(side, have * to_unit, fig.unit,
+                                           need * to_unit, fig.unit))
         if not fig.is_valid():
             lines.append("The margins leave no room for the axes box.")
         self.warning.setText("\n".join(lines))
@@ -1994,7 +2313,7 @@ class LabelSettings(_LiveDialog):
                                          on_change=self._live, parent=self)
         form.addRow("Place", self.transform)
 
-        # A label that belongs to a scan hangs from its curve (2026-09-29):
+        # A label that belongs to a scan hangs from its curve:
         # where along it, and how far from it - an analysis label's rows.
         self.hang_at = QLineEdit(self)
         self.hang_at.setToolTip("The temperature on its curve it hangs "
@@ -2020,12 +2339,20 @@ class LabelSettings(_LiveDialog):
 
         form.addRow("Colour", _colour_button(
             self, lambda: (label.colour if label.colour != "auto"
+                           else label.scan.colour if label.scan is not None
                            else "#cccccc"), self._set_colour))
-        self.auto = QCheckBox("Follow the theme")
+        # Automatic is its curve's colour for a label that belongs to one
+        # (`PlotWidget.label_colour`), the theme's ink for a free one -
+        # and says which.
+        self.auto = QCheckBox("Same as parent" if label.scan is not None
+                              else "Follow the theme")
+        self.auto.setToolTip("The colour of the curve it belongs to."
+                             if label.scan is not None
+                             else "The theme's ink.")
         self.auto.setChecked(label.colour in (None, "", "auto"))
         form.addRow("", self.auto)
 
-        # A NOTE is a label with an arrow to a point (round 24).
+        # A NOTE is a label with an arrow to a point.
         self.leader = QCheckBox("Leader arrow (a note)")
         self.leader.setChecked(bool(label.leader))
         self.leader.setToolTip("An arrow from the text to a point. Select "
@@ -2033,8 +2360,7 @@ class LabelSettings(_LiveDialog):
                                "a curve it snaps onto it.")
         form.addRow("", self.leader)
 
-        # The point it names, typed (Christian, 2026-09-28: only the text's
-        # place could be set, not the point being annotated).
+        # The point it names, typed, as well as the text's place.
         tip = QWidget(self)
         row = QHBoxLayout(tip)
         row.setContentsMargins(0, 0, 0, 0)
@@ -2271,7 +2597,8 @@ class AnalysisSettings(_LiveDialog):
     """
 
     FIELDS = ("visible", "colour", "label", "label_size", "flush",
-              "show_interval", "construction", "shade", "shading",
+              "show_interval", "interval_size", "construction", "shade",
+              "shading",
               "show_peak",
               "number_format",
               "unit", "label_dy")
@@ -2327,7 +2654,7 @@ class AnalysisSettings(_LiveDialog):
 
         # No "Drawn on": an analysis from a .txt export is offered under
         # every scan with its step name and is attributed by being shown on
-        # the one it belongs to (`Sample.analyses_for`, round 17).
+        # the one it belongs to (`Sample.analyses_for`).
 
         self.visible = QCheckBox("Show")
         self.visible.setChecked(bool(analysis.visible))
@@ -2339,6 +2666,9 @@ class AnalysisSettings(_LiveDialog):
         self.interval.setToolTip("Dashes at the interval ends, on the "
                                  "curve.")
         form.addRow("", self.interval)
+        self.interval_size = _style_number(self, analysis, "interval_size")
+        self.interval_size.setToolTip("Half the length of each dash.")
+        form.addRow("Marker length", self.interval_size)
 
         # The shading of an integration, and whether it lets things show
         # through. Only an integration is shaded.
@@ -2360,7 +2690,7 @@ class AnalysisSettings(_LiveDialog):
         integration = "Integration" in analysis.model_name
         form.addRow("", self.shade)
         form.addRow("Shading", self.opaque)
-        # Its peak temperature in the label as well (2026-09-29).
+        # Its peak temperature in the label as well.
         self.peak = StyleChoice(
             style.PEAKS, getattr(analysis, "show_peak", None),
             lambda: style.PEAK_TITLES.get(
@@ -2455,6 +2785,7 @@ class AnalysisSettings(_LiveDialog):
 
         self.visible.toggled.connect(self._apply)
         self.interval.toggled.connect(self._apply)
+        self.interval_size.changed.connect(self._apply)
         self.shade.toggled.connect(self._apply)
         self.opaque.changed.connect(self._apply)
         self.peak.changed.connect(self._apply)
@@ -2624,6 +2955,7 @@ class AnalysisSettings(_LiveDialog):
         analysis = self.obj
         analysis.visible = bool(self.visible.isChecked())
         analysis.show_interval = bool(self.interval.isChecked())
+        analysis.interval_size = self.interval_size.value()
         analysis.shade = bool(self.shade.isChecked())
         analysis.shading = self.opaque.value()
         analysis.show_peak = self.peak.value()
@@ -3044,7 +3376,7 @@ class ArrowSettings(_LiveDialog):
 
 
 class ExportDialog(QDialog):
-    """Where the figure goes, and in which colours (Christian, round 18).
+    """Where the figure goes, and in which colours.
 
     The system's save dialog has no room for a choice of its own, so this
     is the export: a file (Browse opens the system dialog for it), and the
@@ -3109,8 +3441,9 @@ class ExportDialog(QDialog):
 
 def install_basic_colours():
     """The colour picker's 48 basic colours, read left to right and top to
-    bottom: the plotter's first, in its order. Qt numbers the grid down
-    its six rows first, so the reading order is mapped onto that."""
+    bottom: the DSC_Plotter template's first, in its order. Qt numbers
+    the grid down its six rows first, so the reading order is mapped onto
+    that."""
     colours = (PLOTTER_COLOURS + MORE_COLOURS)[:48]
     for order, name in enumerate(colours):
         row, column = divmod(order, 8)
@@ -3294,8 +3627,13 @@ class MoleculeSettings(_LiveDialog):
 
 
 # The windows of objects with a place in the figure's stack show it: a
-# Layer field (`_LiveDialog._layer_row`, round 20).
+# Layer field (`_LiveDialog._layer_row`).
 for _kind in (ScanSettings, AnalysisSettings, LabelSettings, LegendSettings,
               ArrowSettings, OffsetMarkerSettings, ImageSettings,
               MoleculeSettings):
     _kind.LAYERED = True
+
+# Qt calls the handlers here by itself; an error in one is logged and
+# survived rather than the end of the program (`core/log.py`).
+from ..core import log as _log
+_log.guard_classes(globals(), __name__)

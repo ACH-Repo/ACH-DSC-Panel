@@ -1,8 +1,8 @@
 """Edit > Settings: the house style, for every figure and for this one.
 
-MoloM's settings page, cut down to what a figure needs. Two columns, because
-Christian asked for two things at once: defaults that persist between
-sessions, and a way to override them for one particular save file.
+Two columns, because two things are wanted at once: defaults that persist
+between sessions, and a way to override them for one particular save
+file.
 
 * **Default** is the user's own house style. It lives on this computer
   (`core/style.py`, `preferences.json`), is written when the page is closed
@@ -39,8 +39,8 @@ class SettingsDialog(QDialog):
     def __init__(self, window):
         QDialog.__init__(self, window)
         self.setWindowTitle("Settings")
-        # Not modal, like the object dialogs and like MoloM's page: a size is
-        # judged by looking at the plot, and a modal page hides it.
+        # Not modal, like the object dialogs: a size is judged by looking
+        # at the plot, and a modal page hides it.
         self.setModal(False)
         self.setWindowFlag(Qt.Tool, True)
         self.main = window
@@ -52,9 +52,8 @@ class SettingsDialog(QDialog):
         self.figure = {}
 
         layout = QVBoxLayout(self)
-        # The rows SCROLL, as MoloM's page does once it outgrew the screen:
-        # the list only gets longer, and a page taller than the screen puts
-        # its OK button out of reach.
+        # The rows SCROLL: the list only gets longer, and a page taller than
+        # the screen puts its OK button out of reach.
         self._scroll = QScrollArea(self)
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.NoFrame)
@@ -250,3 +249,8 @@ class SettingsDialog(QDialog):
             setattr(self.doc.style, key, old)
         self._live()
         QDialog.reject(self)
+
+# Qt calls the handlers here by itself; an error in one is logged and
+# survived rather than the end of the program (`core/log.py`).
+from ..core import log as _log
+_log.guard_classes(globals(), __name__)

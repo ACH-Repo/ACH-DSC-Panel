@@ -21,8 +21,8 @@ from dscpanel.core import export, loader, model, units
 def window(qapp, sample):
     """A window with BOTH segments of the test file on the plot.
 
-    A file now opens with its first heating scan alone (Christian's default
-    for stacked figures), so a test that wants two curves ticks the second
+    A file now opens with its first heating scan alone (the default for
+    stacked figures), so a test that wants two curves ticks the second
     one on the way the outliner does.
     """
     from dscpanel.ui.window import MainWindow
@@ -133,7 +133,7 @@ def test_a_cooling_scan_is_drawn_although_x_runs_backwards(window):
 
 
 def test_dragging_a_curve_never_moves_it(window):
-    """Christian: a scan moves with select > G and with nothing else. A drag
+    """A scan moves with select > G and with nothing else. A drag
     that starts on a curve marks an interval on it instead."""
     plot = window.plot
     plot.grab()
@@ -233,7 +233,7 @@ def test_stack_then_align_then_undo(window):
     window.select_all(True)
     window.stack_selected()
     offsets = [s.offset for s in window.doc.scans]
-    # the outliner's top at the top of the stack (2026-09-29)
+    # the outliner's top at the top of the stack
     assert offsets[0] > offsets[1]
     window.align_selected()
     assert [s.offset for s in window.doc.scans] != offsets
@@ -266,7 +266,7 @@ def test_drop_accepts_tri_and_sessions(window):
     assert branding.SESSION_EXT == ".dscpanel"
 
 
-# ------------------------------------------- what Christian reported broken
+# ------------------------------------------------------ reported broken
 def test_the_arrow_moves_with_the_cursor_and_not_against_it(window):
     """Dragging the arrow DOWN must move it down. The y fraction is measured
     from the top of the plot, so the sign was inverted."""
@@ -341,7 +341,7 @@ def test_r_resets_the_selection_then_everything(window):
     window.run_op("arrange.reset")
     assert window.doc.scans[0].offset == 0.0
     assert window.doc.scans[1].offset == 2.0
-    # nothing selected, nothing happens (round 17)
+    # nothing selected, nothing happens
     window.select_all(False)
     window.run_op("arrange.reset")
     assert window.doc.scans[1].offset == 2.0
@@ -517,7 +517,7 @@ def test_a_touchpad_that_reports_notches_behaves_the_same(window):
 
 
 def test_a_not_shown_segment_row_is_safe_to_select(fresh_window):
-    """The crash Christian hit: hide the only visible scan, then click a
+    """A crash: hide the only visible scan, then click a
     segment that is not on the plot.
 
     Those rows carry a three-part key, `("segment", sample id, seg)`, and
@@ -526,7 +526,7 @@ def test_a_not_shown_segment_row_is_safe_to_select(fresh_window):
     touches a row has to tolerate all three key shapes.
     """
     window = fresh_window
-    # the state he was in: the only shown scan hidden, one segment not shown
+    # the state: the only shown scan hidden, one segment not shown
     window.doc.scans[0].visible = False
     tree = window.outliner
     tree.refill()
@@ -665,7 +665,7 @@ def test_typing_a_number_moves_the_selection_without_g(window):
 
 
 def test_trace_names_appear_only_on_hover(window):
-    """Not for a selected curve any more (Christian, round 24): it is
+    """Not for a selected curve any more: it is
     orange already, and its name covered what sat at the right edge."""
     plot = window.plot
     window.select_all(False)
@@ -683,7 +683,7 @@ def test_trace_names_appear_only_on_hover(window):
 
 
 def test_the_trace_menu_stays_short(window):
-    """Settings, the molar mass, and adding a label or a note (round 24) to
+    """Settings, the molar mass, and adding a label or a note to
     this line. Nothing else: everything else lives in the outliner, the
     menus or F3."""
     from PySide6.QtWidgets import QMenu
@@ -856,9 +856,9 @@ def test_a_downward_peak_labels_from_below(window):
     assert (offset < 0) == up          # label on the side the peak is not
 
 
-# --------------------------------------------- round 5: the reported faults
+# --------------------------------------------------------- the reported faults
 def test_enter_is_not_stolen_by_the_settings_dialog(window):
-    """Christian's catch: a window-level QAction on Return fired before the
+    """A window-level QAction on Return fired before the
     plot saw the key, so confirming a measurement opened the scan settings."""
     keys = {op.id: op.key for op in window.ops.all()}
     assert keys["object.settings"] == ""
@@ -950,7 +950,7 @@ def test_nothing_is_drawn_outside_the_axes(window, tmp_path):
         assert pixel == background
 
 
-# ------------------------------------------------- round 6: artists, cursors
+# ------------------------------------------------------------ artists, cursors
 def test_every_artist_carries_a_position_and_an_anchor(window):
     from dscpanel.core import model as core_model
     arrow = window.doc.arrow
@@ -962,7 +962,7 @@ def test_every_artist_carries_a_position_and_an_anchor(window):
         assert artist.anchor_offsets() == (0.5, 0.5)
     # the capabilities are per kind, and the dialogs read them
     assert label.can_scale and label.can_rotate      # S and R
-    assert arrow.can_scale and not arrow.can_rotate   # S, round 16
+    assert arrow.can_scale and not arrow.can_rotate   # S
 
 
 def test_an_artist_keeps_its_place_when_the_space_changes(window):
@@ -1024,7 +1024,7 @@ def test_re_measuring_keeps_the_model_and_needs_no_palette(window):
     window.refresh()
     label_before = first.label
     # the window is handed the analysis being edited, so it does not ask -
-    # and it moves THAT analysis rather than replacing it (round 10)
+    # and it moves THAT analysis rather than replacing it
     again = window._measure_ready(scan, 65.0, 125.0, first)
     assert again is first
     assert first in scan.analysis_objects
@@ -1080,7 +1080,7 @@ def test_the_plain_cursor_is_a_reticle_not_a_line(window):
     assert top == background          # the old dashed line ran the full height
 
 
-# ------------------------------------------------ round 7: labels on a line
+# ------------------------------------------------------------ labels on a line
 def test_a_label_can_belong_to_a_line(window, tmp_path, sample):
     from dscpanel.core import session
     scan = window.doc.scans[0]
@@ -1220,7 +1220,7 @@ def test_the_legend_is_kept_in_the_session(window, tmp_path, sample):
     assert reopened.legend.x == pytest.approx(0.7)
 
 
-# ------------------------------- round 8: one press selects, two act on it
+# -------------------------------------------- one press selects, two act on it
 def _on_the_heating_curve(window, fractions=(0.3, 0.6)):
     """Two points ON the first scan's drawn curve, with the second scan moved
     well out of the way so picking cannot land on it."""
@@ -1379,7 +1379,7 @@ def test_a_click_inside_a_selection_makes_it_the_only_one(window):
 
 
 def test_a_single_drag_on_the_arrow_moves_it(window):
-    """Round 9: a drag that starts NEAR something acts on it - which is what
+    """A drag that starts NEAR something acts on it - which is what
     a trackpad's tap-and-drag delivers, as one press."""
     plot = window.plot
     plot.grab()
@@ -1555,9 +1555,9 @@ def test_the_settings_operator_is_registered(window):
     assert window.ops.duplicate_keys() == {}
 
 
-# ------------------------- round 9: near an object acts, far draws a box
+# ---------------------------------------- near an object acts, far draws a box
 def test_a_drag_near_a_curve_marks_it_and_far_from_it_draws_a_box(window):
-    """Christian: the box should only start when the press is NOT within the
+    """The box should only start when the press is NOT within the
     pick distance of anything. His tap-and-drag arrives as one press."""
     from dscpanel.core import style
     plot = window.plot
@@ -1623,7 +1623,7 @@ def test_the_pick_distance_is_a_setting_with_no_figure_column(window,
     assert "pick_radius" not in stored["style"]
 
 
-# --------------------------------------------- round 9: zoom is undoable
+# ------------------------------------------------------------ zoom is undoable
 def _pinch(plot, centre, notches=1, modifiers=Qt.ControlModifier):
     from PySide6.QtGui import QWheelEvent
     return QWheelEvent(QPointF(centre), QPointF(centre), QPoint(0, 0),
@@ -1632,7 +1632,7 @@ def _pinch(plot, centre, notches=1, modifiers=Qt.ControlModifier):
 
 
 def test_zooming_in_twice_comes_back_out_with_two_undos(window):
-    """Christian: zoom in on a feature a few times, Ctrl+Z walks back."""
+    """Zoom in on a feature a few times, Ctrl+Z walks back."""
     from PySide6.QtTest import QTest
     from dscpanel.ui import plot as plot_module
     plot = window.plot
@@ -1707,10 +1707,10 @@ def test_a_framing_from_another_unit_comes_back_as_the_fit(window):
     assert plot._view_x is None and plot._view_y is None
 
 
-# ------------------------------------------ round 9: the window around it
+# -------------------------------------------------------- the window around it
 def test_the_menu_bar_is_file_edit_search_help(window):
     titles = [a.text() for a in window.menuBar().actions()]
-    # Help has no Alt key at all: Alt+P is Blender's "clear parent" (round 24)
+    # Help has no Alt key at all: Alt+P is Blender's "clear parent"
     assert titles == ["Fi&le", "&Edit", "&Search", "Help"]
     # a menu's Alt+letter must not take an operator's key: two claims on
     # one key fire neither (Alt+F fits the page; "&Help" took Alt+H)
@@ -1734,7 +1734,7 @@ def test_about_says_what_is_running(window):
     from dscpanel import __version__
     text = window.about_text()
     assert __version__ in text
-    assert "ACH-DSC-Plotter" in text                # where the reader is from
+    assert "TRIOS reader" in text                   # which reader
     assert "PySide6" in text and "Qt" in text
 
 
@@ -1757,7 +1757,7 @@ def test_saving_flashes_a_confirmation(window, tmp_path):
     window.plot.grab()                              # and it paints
 
 
-# ------------------------------------------------------------- round 10
+# -----------------------------------------------------------------------------
 def test_z_starts_with_the_box(window):
     plot = window.plot
     seen = []
@@ -1847,8 +1847,8 @@ def test_an_integration_is_marked_by_two_dashes_and_nothing_between(window):
 
 
 def test_an_onset_is_marked_by_lines_to_its_point_in_the_axis_colour(window):
-    """Round 10's chords, which since 2026-09-28 are the "chords" choice of
-    an onset's Lines (the default is its tangent construction)."""
+    """Chords to the point, the "chords" choice of an onset's Lines (the
+    default is its tangent construction)."""
     from dscpanel.core import measure
     from dscpanel.ui import plot as plot_module
     scan = window.doc.scans[0]
@@ -1984,7 +1984,7 @@ def test_no_dialog_field_shadows_a_qt_method():
 
 
 def test_ctrl_w_closes_the_pop_ups_before_the_window(window):
-    """Christian: hotkey muscle memory must not close the whole project
+    """Hotkey muscle memory must not close the whole project
     while a settings window is open."""
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
@@ -2003,7 +2003,7 @@ def test_ctrl_w_closes_the_pop_ups_before_the_window(window):
     assert window.close_step() is first         # then the next one
     assert window.popups() == []
     assert closed == []
-    # then the tab (round 19), asking about its unsaved changes...
+    # then the tab, asking about its unsaved changes...
     window.ask_to_save = lambda: "discard"
     assert window.close_step() == "tab"
     assert window.figures() == [] and closed == []
@@ -2011,7 +2011,7 @@ def test_ctrl_w_closes_the_pop_ups_before_the_window(window):
     assert closed == ["window"]
 
 
-# ------------------------------------------------------------- round 11
+# -----------------------------------------------------------------------------
 def test_closing_with_unsaved_changes_asks_first(window, tmp_path):
     from PySide6.QtTest import QTest
     window.show()
@@ -2029,7 +2029,7 @@ def test_closing_with_unsaved_changes_asks_first(window, tmp_path):
     assert window.close() is False and window.isVisible()
     window.save_session(path=str(tmp_path / "kept.dscpanel"))
     assert not window.is_modified()
-    # the framing is part of the figure since round 17: a zoom IS a change
+    # the framing is part of the figure: a zoom IS a change
     # to the file, and going back to the saved framing is clean again
     before = window.plot.view_state()
     window.plot.zoom_at(window.plot.plot_rect().center(), 2.0, both=True)
@@ -2066,7 +2066,7 @@ def test_a_settings_window_closed_any_way_keeps_its_changes(window):
     assert legend.size is None
 
 
-# ------------------------------------------- round 11: x_truncate, spans
+# ----------------------------------------------------------- x_truncate, spans
 def test_a_truncated_start_is_left_out_of_fit_picking_and_exports(
         window, tmp_path, sample):
     from dscpanel.core import export as core_export, session
@@ -2132,7 +2132,7 @@ def _hooked_sample():
 
 
 def test_a_stretch_dragged_on_one_branch_measures_that_branch(qapp):
-    """Christian: a DSC curve is a parametric curve, not a function of
+    """A DSC curve is a parametric curve, not a function of
     temperature, so an interval has to be a stretch of samples. Between 60
     and 70 degC this curve passes three times; the drag was on one pass."""
     from dscpanel.core import measure
@@ -2247,9 +2247,9 @@ def test_the_session_keeps_the_temperature_scale(window, tmp_path, sample):
     assert reopened.x_unit == core_units.TEMP_K
 
 
-# ------------------------------------------------------------ round 13
+# -----------------------------------------------------------------------------
 def test_a_plain_swipe_keeps_zero_where_it_is(window):
-    """Christian, round 13: the y scale moves about y = 0 and nothing else,
+    """The y scale moves about y = 0 and nothing else,
     wherever the cursor is."""
     plot = window.plot
     plot.grab()
@@ -2333,11 +2333,11 @@ def _box_of(plot, boxes, obj):
     return (box.center().x(), box.center().y())
 
 
-# ------------------------------------------------------------ round 14
+# -----------------------------------------------------------------------------
 def test_y_offset_markers_are_objects_against_the_axis(window):
     doc = window.doc
     doc.scans[1].offset = 0.5
-    # Moving a scan keeps the frame (2026-09-29): F makes room for it.
+    # Moving a scan keeps the frame: F makes room for it.
     window.refresh()
     window.plot.fit()
     plain = window.plot.grab().toImage()
@@ -2386,7 +2386,7 @@ def test_selected_markers_are_dragged_together(window):
 
 
 def test_shift_selected_analyses_stretch_their_arrows_together(window):
-    """Round 14: shift-click several analyses, double-click-drag one, and
+    """Shift-click several analyses, double-click-drag one, and
     every one's arrow changes length by the same amount. The first click of
     the double-click narrows the selection; the double-click puts it back."""
     first, second = _two_onsets(window)
@@ -2562,7 +2562,7 @@ def test_ctrl_a_leaves_the_axes_alone(window):
     assert not any(a.selected for a in window.doc.axes.values())
 
 
-# ------------------------------------------------------------ round 15
+# -----------------------------------------------------------------------------
 def test_number_formats():
     from dscpanel.core import numbers
     assert numbers.write(13.247, "%.3g") == "13.2"
@@ -2642,7 +2642,7 @@ def test_endset_and_enthalpy_defaults(window):
 
 def test_an_old_session_label_with_its_number_becomes_the_template(
         window, tmp_path, sample):
-    """Before round 15 a panel analysis was GIVEN "*T*_{onset} = 61.1 degC"
+    """An older panel analysis was GIVEN "*T*_{onset} = 61.1 degC"
     as its label. Read back, that is the default template again - and a
     label somebody wrote stays theirs."""
     import json
@@ -2684,7 +2684,7 @@ def test_offset_markers_use_their_format(window):
 
 
 def test_a_marker_spawns_on_the_shown_curve_not_the_raw_data(window):
-    """Round 15: markers are placed on the data as SHOWN - truncated and
+    """Markers are placed on the data as SHOWN - truncated and
     inside the view - so a hidden start-up hook or a stretch outside the
     view is never where one points."""
     plot = window.plot
@@ -2782,9 +2782,9 @@ def test_the_settings_page_takes_formats_and_a_font(window):
     assert style.preference("temperature_format") == "%.0f"
 
 
-# ------------------------------------------------------------ round 16
+# -----------------------------------------------------------------------------
 def test_marker_arrow_offsets_are_set_or_shifted_numerically(window):
-    """Round 17: the marker's ARROW offset - how far its number sits from
+    """The marker's ARROW offset - how far its number sits from
     the curve - absolute or relative; the scan's offset is not in here."""
     doc = window.doc
     window.run_op("figure.offset_markers")
@@ -2965,9 +2965,9 @@ def test_a_marker_format_with_a_unit_converts_the_offset(window):
         assert window.plot.marker_text(marker) == "? mW"
 
 
-# ------------------------------------------------------------ round 17
+# -----------------------------------------------------------------------------
 def test_the_framing_is_saved_with_the_figure(window, tmp_path, sample):
-    """Christian's glitch: a y range narrowed to show a peak's label came
+    """A y range narrowed to show a peak's label came
     back fitted when the session was reopened. The view is in the file."""
     from dscpanel.core import session
     plot = window.plot
@@ -3045,7 +3045,7 @@ def test_a_stale_generated_label_in_a_version_4_file(window, tmp_path,
 
 
 def test_a_txt_analysis_is_offered_on_every_scan_of_its_step():
-    """Round 17: an analysis a .txt export names by STEP is offered under
+    """An analysis a .txt export names by STEP is offered under
     every segment with that step name, and attributed by being shown on
     the one it belongs to."""
     from conftest import make_data
@@ -3192,11 +3192,11 @@ def test_a_long_problem_under_a_label_is_not_cut_off(window):
     dialog.close()
 
 
-# ------------------------------------------------------------ round 18
+# -----------------------------------------------------------------------------
 @pytest.mark.parametrize("anchor", ["center", "top right", "bottom left"])
 @pytest.mark.parametrize("keys", ["", "c", "xx", "yym"])
 def test_the_scale_pivot_stays_put_whatever_the_anchor(window, anchor, keys):
-    """Round 18: with the anchor anywhere but bottom left, a scale drifted,
+    """With the anchor anywhere but bottom left, a scale drifted,
     because a box does not grow in proportion (font sizes step, padding
     does not scale). The pivot is now measured back into place."""
     legend = window.doc.legend
@@ -3240,8 +3240,8 @@ def test_the_legend_line_width(window, tmp_path, sample):
 
 def test_latex_between_dollars(window):
     from dscpanel.ui.plot import markup_runs
-    assert markup_runs("(Hbc)$_{1.00}$") == [("(Hbc)", False, False),
-                                               ("1.00", False, "sub")]
+    assert markup_runs("(AB)$_{1.00}$") == [("(AB)", False, False),
+                                              ("1.00", False, "sub")]
     # mathtext's rule: without braces only one character is lowered
     assert markup_runs("$_1.00$")[0] == ("1", False, "sub")
     assert markup_runs("$x^2$") == [("x", True, False), ("2", False, "sup")]
@@ -3250,7 +3250,7 @@ def test_latex_between_dollars(window):
     assert runs[-1][0].endswith("K") and not runs[-1][1]  # mathrm: upright
     assert markup_runs("price \\$5") == [("price $5", False, False)]
     # an added label is drawn with it, so its box is the markup's width
-    label = window.add_label("(Hbc)$_{1.00}$", at=QPointF(300, 200))
+    label = window.add_label("(AB)$_{1.00}$", at=QPointF(300, 200))
     window.plot.grab()
     from PySide6.QtGui import QFontMetrics
     box = window.plot._label_box(label, window.plot.plot_rect(),
@@ -3404,7 +3404,7 @@ def test_an_interval_mark_is_cut_to_the_axes():
                                                                     25.0)
 
 
-# ------------------------------------------------------------ round 19
+# -----------------------------------------------------------------------------
 def test_an_export_carries_no_selection(window, tmp_path):
     from PySide6.QtGui import QImage
     window.select_all(False)
@@ -3642,7 +3642,7 @@ def test_the_driver_carries_the_legend_and_the_labels(window):
     assert "ax.text(" in source and "rotation=30" in source
     assert mathtext("\\Delta*H*") == "$\\Delta\\mathit{H}$"
     assert mathtext("*T*_{on}") == "$\\mathit{T}_{\\mathrm{on}}$"
-    assert mathtext("(Hbc)$_{1.00}$") == "(Hbc)$_{1.00}$"
+    assert mathtext("(AB)$_{1.00}$") == "(AB)$_{1.00}$"
 
 
 def test_a_picture_is_an_artist(window, tmp_path, sample):
@@ -3690,7 +3690,7 @@ def test_ctrl_v_pastes_a_picture(window, qapp):
     assert len(window.doc.images) == before + 1
 
 
-# ------------------------------------------------------------ round 20
+# -----------------------------------------------------------------------------
 def test_ctrl_up_and_down_change_the_text_size(window):
     label = window.add_label("note", at=QPointF(300, 200))
     legend = window.doc.legend
@@ -3851,7 +3851,7 @@ def test_the_label_window_takes_several_lines(window):
     assert label.text == "one\ntwo"
 
 
-# ------------------------------------------------------------ round 21
+# -----------------------------------------------------------------------------
 def test_an_error_is_logged_and_the_program_carries_on(tmp_path, qapp):
     """PySide6 ends the process on an exception inside a slot unless an
     excepthook takes it; the log's hook takes it, writes it down and says
@@ -3929,7 +3929,8 @@ def test_the_page_handles_resize_an_exact_figure(window):
     margin = plot.to_widget(QPointF(rect.right() + 4.0, rect.top() + 4.0))
     assert plot.in_page_margin(plot.to_figure(margin))
     _page_click(plot, margin)
-    assert plot._page_handles_shown and len(plot.page_handles()) == 8
+    # the edge squares only; the corners belong to the blades and arrows
+    assert plot._page_handles_shown and len(plot.page_handles()) == 4
     # the right edge's handle, dragged out by a quarter of the page
     square = dict(plot.page_handles())[(1.0, 0.5)]
     start = square.center()
@@ -3973,7 +3974,7 @@ def test_the_page_handles_set_the_aspect_of_a_free_figure(window):
     assert layout.aspect_w > 1.0
 
 
-# ------------------------------------------ round 22: the mouse, F, outliner
+# ------------------------------------------------------ the mouse, F, outliner
 def _middle_drag(plot, start, end, mods=Qt.NoModifier, release=True):
     """A middle-button drag in pane pixels: the mouse's two-finger swipe."""
     plot.mousePressEvent(_press(plot, start, Qt.MiddleButton, mods))
@@ -3985,7 +3986,7 @@ def _middle_drag(plot, start, end, mods=Qt.NoModifier, release=True):
 
 
 def test_a_middle_drag_is_the_swipe_and_one_step(window):
-    """MoloM's mapping: what two fingers do on a trackpad, the middle
+    """What two fingers do on a trackpad, the middle
     button does on a mouse. Plain scales y about 0, up is taller."""
     plot = window.plot
     plot.grab()
@@ -4068,7 +4069,7 @@ def _analysis_at_the_extreme(window, offset, dy):
 
 
 def test_f_fits_the_analysis_labels_as_well_as_the_curves(window):
-    """Christian, round 22: an enthalpy over the highest peak was cut off
+    """An enthalpy over the highest peak was cut off
     when F rescaled. The fitted range makes room for every label."""
     plot = window.plot
     plot.grab()
@@ -4158,9 +4159,9 @@ def test_the_outliner_has_the_data_a_line_and_the_decorators(window, qapp):
     tree.grab()                              # the line paints
 
 
-# ------------------------------- round 23: structures, parents, size, presets
+# ------------------------------------------ structures, parents, size, presets
 def test_a_structure_labels_in_arial_rounded_and_by_element(window):
-    """Christian, round 23: Arial Rounded MT and colour by element are the
+    """Arial Rounded MT and colour by element are the
     defaults for a structure's element labels."""
     from dscpanel.core import style
     doc, plot = window.doc, window.plot
@@ -4191,7 +4192,7 @@ def _owned_setup(window):
 
 
 def test_giving_a_label_to_a_scan_keeps_it_in_place_and_it_follows(window):
-    """Parenting (Christian, round 23): the label stays where it is drawn,
+    """Parenting: the label stays where it is drawn,
     and from then on moves with its scan's offset."""
     plot, scan, label = _owned_setup(window)
     scan.offset = 0.3
@@ -4344,7 +4345,7 @@ def test_a_double_click_on_a_page_handle_asks_for_the_size(window):
     plot = window.plot
     plot.grab()
     plot._page_handles_shown = True
-    square = dict(plot.page_handles())[(1.0, 1.0)]
+    square = dict(plot.page_handles())[(1.0, 0.5)]
     at = (square.center().x(), square.center().y())
     asked = []
     plot.page_size_asked.disconnect(window.ask_page_size)
@@ -4480,10 +4481,10 @@ def test_a_partial_or_broken_preset_file(window, tmp_path):
     assert "Style presets" in window.menus
 
 
-# --------------------- round 24: sharpness, S on scans, themes, notes, wedges
+# -------------------------------- sharpness, S on scans, themes, notes, wedges
 def test_a_scaled_page_is_thinned_at_the_screens_resolution(window):
     """The curve is reduced per DEVICE column of the page as shown: an
-    exact figure scaled 1.4 onto the pane had 1.4-pixel treads (round 24)."""
+    exact figure scaled 1.4 onto the pane had 1.4-pixel treads."""
     from dscpanel.core import figure
     plot = window.plot
     layout = window.doc.figure
@@ -4517,7 +4518,7 @@ def test_figure_text_is_laid_out_without_hinting(window):
 
 def test_a_spread_paints_with_the_pointer_on_the_plot(window):
     """S on scans with the pointer inside the axes killed the program (an
-    access violation, 2026-09-28): the overlay drew a line to "the centre of
+    access violation): the overlay drew a line to "the centre of
     the pivots", a spread has none, and the ZeroDivisionError left Qt with
     a half-used painter. The overlay must paint, and a paint must survive
     an error in it."""
@@ -4542,8 +4543,8 @@ def test_a_spread_paints_with_the_pointer_on_the_plot(window):
 
 
 def test_s_on_scans_spreads_them_evenly_about_zero(window):
-    """Christian, round 24: S with only scans selected gives evenly spaced
-    offsets. Since 2026-09-29 the LOWEST scan stays put and is the neutral
+    """S with only scans selected gives evenly spaced offsets. The LOWEST
+    scan stays put and is the neutral
     line, and the offsets decide the order (the outliner only breaks
     ties)."""
     plot, doc = window.plot, window.doc
@@ -4670,7 +4671,7 @@ def test_a_structure_draws_its_stereocentres_as_wedges(window):
 
 def test_a_note_points_at_a_curve_and_follows_its_scan(window, tmp_path,
                                                        sample):
-    """Christian, round 24: a label with an arrow to a point. Made on a
+    """A label with an arrow to a point. Made on a
     curve, it points at the curve and belongs to that scan."""
     from dscpanel.core import session
     plot, doc = window.plot, window.doc
@@ -4695,7 +4696,7 @@ def test_a_note_points_at_a_curve_and_follows_its_scan(window, tmp_path,
     trace.scan.offset -= 0.2
     window.refresh()
     plot.grab()
-    # it hangs from its curve like an analysis label (2026-09-29): dragged
+    # it hangs from its curve like an analysis label: dragged
     # by its text it slides ALONG the curve, the arrow straight down onto
     # it, and the distance follows the hand - one undo step
     assert note.attached and note.dx == 0.0

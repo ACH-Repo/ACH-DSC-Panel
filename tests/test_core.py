@@ -140,8 +140,8 @@ def _nan_data():
 def test_only_the_flagged_tail_is_trimmed():
     """The tail where temperature OR heat flow is NaN goes; the start and a
     gap in the middle stay, so every sample keeps its index counted from the
-    segment's start (a session stores sample spans). Round 25 trimmed the
-    start too, and by the temperature only."""
+    segment's start (a session stores sample spans). An older reader
+    trimmed the start too, and by the temperature only."""
     data = _nan_data()
     before = data["numdata"][1]["nums"].copy()
     model.Sample("C:/nowhere/TEST-1.tri", data)

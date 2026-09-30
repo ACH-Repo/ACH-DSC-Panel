@@ -8,6 +8,7 @@ when there are none. Inventing a `.tri` would be inventing the one thing in
 this program that must never be guessed at.
 """
 
+import hashlib
 import os
 import sys
 
@@ -113,7 +114,7 @@ def own_preferences(tmp_path):
     """Every test gets the BUILT-IN house style and its own preferences file.
 
     The user's defaults are real state on this machine (`core/style.py`); a
-    test that saved into them would change how Christian's figures draw, and
+    test that saved into them would change how the user's figures draw, and
     one that read them would pass or fail depending on who ran it.
     """
     from dscpanel.core import style
@@ -139,10 +140,10 @@ def document(sample):
 
 
 def _local_entries():
-    """The folders and files named in `ACHDSC_TESTDATA` (semicolon separated)
+    """The folders and files named in `TRIOS_TESTDATA` (semicolon separated)
     and in the uncommitted `tests/local_testdata.txt`, one per line."""
     entries = []
-    env = os.environ.get("ACHDSC_TESTDATA", "")
+    env = os.environ.get("TRIOS_TESTDATA", "")
     entries.extend(part for part in env.split(";") if part.strip())
     local = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          "local_testdata.txt")
@@ -153,22 +154,32 @@ def _local_entries():
     return entries
 
 
-def local_file(name):
-    """The real measurement called `name` on this machine, or None.
+def hashed_name(name):
+    """How a test names a real measurement: `sha:` and the first 12 hex
+    digits of the SHA-256 of its file name in lower case. A file name is a
+    sample id, and a sample id does not belong in published source."""
+    digest = hashlib.sha256(str(name).lower().encode("utf-8")).hexdigest()
+    return "sha:" + digest[:12]
 
-    Looked up by FILE NAME in the folders the local list names, and beside
-    every file it names, so an export next to its `.tri` is found without a
-    line of its own. The names are sample ids; where they live is this
-    machine's business, and a path written into a committed test put a home
-    folder and a student's name into the repository.
+
+def local_file(name):
+    """The real measurement `name` on this machine, or None.
+
+    `name` is a `hashed_name`, or a plain file name. Looked up in the
+    folders the local list names, and beside every file it names, so an
+    export next to its `.tri` is found without a line of its own. Where the
+    files live is this machine's business: a path in a committed test would
+    put a home folder into the repository.
     """
     wanted = name.lower()
+    hashed = wanted.startswith("sha:")
     for entry in _local_entries():
         folder = entry if os.path.isdir(entry) else os.path.dirname(entry)
         if not os.path.isdir(folder):
             continue
         for candidate in os.listdir(folder):
-            if candidate.lower() == wanted:
+            key = hashed_name(candidate) if hashed else candidate.lower()
+            if key == wanted:
                 return os.path.join(folder, candidate)
     return None
 
@@ -176,9 +187,9 @@ def local_file(name):
 def testdata_files():
     """Real `.tri` files to test against, from disk. Empty is fine.
 
-    Same arrangement as ACH-DSC-Plotter: measurements are not committed, so
-    the paths live in `ACHDSC_TESTDATA` (semicolon separated) or in an
-    uncommitted `tests/local_testdata.txt`, one folder or file per line.
+    Measurements are not committed, so the paths live in `TRIOS_TESTDATA`
+    (semicolon separated) or in an uncommitted `tests/local_testdata.txt`,
+    one folder or file per line.
     """
     entries = _local_entries()
     found = []

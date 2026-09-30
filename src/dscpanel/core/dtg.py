@@ -1,8 +1,8 @@
 """DTG: the derivative of a thermogravimetric mass curve.
 
-Christian, 2026-09-29. Worked out here from the m% the file records; the
-derivative arrays TRIOS stores are flagged "calculated" (TRI-FORMAT.md 3b)
-and are never read as a signal.
+Worked out here from the m% the file records; the derivative arrays TRIOS
+stores are flagged "calculated" (TRI-FORMAT.md 3b) and are never read as a
+signal.
 
 * **Against time first.** The temperature jitters sample to sample and
   doubles back at a segment's start (CLAUDE.md, "a DSC curve is a
@@ -24,7 +24,7 @@ UI-free: numpy only.
 import numpy as np
 
 #: The two units a DTG is drawn in.
-PER_DEGREE = "%/°C"
+PER_DEGREE = "%/\u00b0C"
 PER_MINUTE = "%/min"
 UNITS = (PER_DEGREE, PER_MINUTE)
 
@@ -122,7 +122,7 @@ def missing(time_min, temp_c, percent, unit=PER_DEGREE):
     if unit == PER_DEGREE:
         rate = heating_rate(time_min, temp_c)
         if rate is None or abs(rate) < ISOTHERMAL_RATE:
-            return "heating rate (an isothermal segment has no %/°C)"
+            return "heating rate (an isothermal segment has no %/\u00b0C)"
     return None
 
 

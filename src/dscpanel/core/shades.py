@@ -1,7 +1,7 @@
 """Shades of one colour for a stack of curves: dark to light, one hue.
 
-Christian, 2026-09-29, after his stacked IR figure (a series of samples in
-one blue, darkest at the top): F3 gives the selected curves such a set.
+A stacked series of samples reads well in one colour, darkest at the top:
+F3 gives the selected curves such a set.
 A shade is the base colour mixed towards black (a negative amount) or
 towards white (a positive one), so the hue stays and only the lightness
 moves; the base itself is amount 0.

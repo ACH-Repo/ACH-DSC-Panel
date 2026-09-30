@@ -1,6 +1,6 @@
 """Reading files without freezing the window.
 
-Measured on Christian's own files: 1.09 s for a 16 MB `.tri` (seven segments,
+Measured on real files: 1.09 s for a 16 MB `.tri` (seven segments,
 13 200 points each, eighteen stored analyses) and 0.51 s for an 11 MB one. A
 drop of five files is therefore several seconds, and several seconds of a
 frozen window is a program that looks broken.
@@ -88,3 +88,8 @@ class Loader(QObject):
         if not self._pending:
             self._total = 0
             self.finished.emit()
+
+# Qt calls the handlers here by itself; an error in one is logged and
+# survived rather than the end of the program (`core/log.py`).
+from ..core import log as _log
+_log.guard_classes(globals(), __name__)

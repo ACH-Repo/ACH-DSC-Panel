@@ -1,8 +1,7 @@
-"""SDT and TGA runs: the weight on the second y axis (round 25, finished).
+"""SDT and TGA runs: the weight on the second y axis.
 
-Round 25 drew an SDT run's weight against a second y axis, on the desktop,
-without tests. These pin what it has to get right, most of it found by the
-read-only review of 2026-09-28 (its findings F2-F13):
+What drawing an SDT run's weight against a second y axis has to get right,
+most of it found by a read-only review:
 
 * which column is the percentage and which the milligrams is decided by the
   column's UNIT, never by its name alone, and neither is made from the other
@@ -17,7 +16,7 @@ read-only review of 2026-09-28 (its findings F2-F13):
 
 Synthetic samples are built in the shape the reader RETURNS (conftest), the
 SDT columns and units as `trios_io` names them; the real files are found by
-name (`conftest.local_file`) and skip when absent.
+a hash of their name (`conftest.local_file`) and skip when absent.
 """
 
 import json
@@ -31,15 +30,23 @@ from dscpanel.core import units
 
 from conftest import local_file, make_data
 
-CN81_TRI = "CN-81-I-0.45-SDT.tri"
-CN81_TXT = "cn-81-i-0.45-sdt.txt"
-DESY_OPEN = "CN-123-EXAFS-SDT_OPEN.tri"
-DESY_NO_MASS = "CN-112_119-EXAFS-ag-SDT.tri"
-OJ12 = "OJ-12-DSC-2-07012026.tri"
-INDIUM_CHECK = "CN-INDIUM-CHECK.tri"
-#: A DSC25 run whose first segment (Equilibrate) flags its first samples:
-#: 5 temperatures, 35 heat flows (TRI-FORMAT.md section 3).
-GQ_EMPTY = "GQ-empty-01122025.tri"
+# Real files, named by a hash of their file name (`conftest.hashed_name`).
+#: The SDT650 reference run: TRIOS 5.1.1, 39001 samples, its .txt export
+#: beside it.
+SDT_REFERENCE = "sha:6ceef94fd7ce"
+SDT_REFERENCE_TXT = "sha:ac9b497e666c"      # its export
+#: An SDT run in an open pan, its sample mass derived from the weight.
+SDT_OPEN = "sha:06ac54ff3719"
+#: An SDT run whose recorded weight is negative: no sample mass.
+SDT_NO_MASS = "sha:76aeb809d9b5"
+#: The DSC25 reference run: TRIOS 5.1.1, seven segments, 16 stored
+#: analyses, a Full .txt export beside it.
+DSC_REFERENCE = "sha:b2303c243b22"
+#: An indium check run with empty (NaN) samples at the start of segment 1.
+INDIUM_CHECK = "sha:2efc47d254b7"
+#: An empty-pan DSC25 run whose first segment (Equilibrate) flags its first
+#: samples: 5 temperatures, 35 heat flows (TRI-FORMAT.md section 3).
+EMPTY_PAN = "sha:2d118ff6fdd5"
 DEG_C = "\u00b0C"
 
 
@@ -150,7 +157,7 @@ def test_milligrams_from_a_percentage_need_the_mass_and_say_so():
 
 def test_a_percentage_beside_a_weight_needs_the_mass_it_is_of():
     """Where the file records the weight in mg too and no sample mass could
-    be had from them (the reader refuses one: the DESY runs' negative
+    be had from them (the reader refuses one: some runs record a negative
     weight against a positive percentage), the percentage is of no mass
     anybody knows: not drawn, and said. The milligrams are recorded."""
     data = sdt_data(mass_mg=20.0)
@@ -184,10 +191,11 @@ def test_a_sample_mass_that_is_not_positive_is_no_mass():
 
 
 def test_the_tri_and_its_export_give_the_same_milligrams():
-    """CN-81: the export has only the percentage; times the export's mass
+    """The SDT reference run: the export has only the percentage; times the
+    export's mass
     it is the .tri's recorded Weight, sample for sample."""
-    tri = _doc(loader.read_sample(_path(CN81_TRI))).scans[0]
-    txt = _doc(loader.read_sample(_path(CN81_TXT))).scans[0]
+    tri = _doc(loader.read_sample(_path(SDT_REFERENCE))).scans[0]
+    txt = _doc(loader.read_sample(_path(SDT_REFERENCE_TXT))).scans[0]
     from_tri = tri.weight_values(model.WEIGHT_MG)
     from_txt = txt.weight_values(model.WEIGHT_MG)
     assert from_txt is not None and len(from_txt) == len(from_tri)
@@ -262,10 +270,10 @@ def test_a_weight_that_cannot_be_drawn_is_said_where_it_would_be(
 
 
 def test_the_negative_weight_run_draws_no_inverted_curve(qapp):
-    """A DESY run whose recorded weight is negative: the reader finds no
+    """A run whose recorded weight is negative: the reader finds no
     sample mass, so the W/g heat flow and the percentage are placeholders
     that say so - not a curve upside down under the exo arrow."""
-    sample = loader.read_sample(_path(DESY_NO_MASS))
+    sample = loader.read_sample(_path(SDT_NO_MASS))
     assert sample.mass_g is None
     win = _window(qapp, sample)
     win.toggle_signal(model.SIGNAL_HEAT)
@@ -300,7 +308,7 @@ def test_the_weight_range_survives_a_session(qapp, tmp_path):
 
 
 def test_a_weight_range_saved_without_its_unit_comes_back(tmp_path):
-    """A session written by round 25 has no "y2_unit": its range is in the
+    """An older session has no "y2_unit": its range is in the
     weight unit saved beside it."""
     doc = _doc(_sample(sdt_data()))
     state = session.to_state(doc)
@@ -350,7 +358,7 @@ def _weight_analyses_data():
 
 def test_an_analysis_made_on_the_weight_is_not_a_heat_flow_one():
     """A file's analysis goes to the scan of the curve it was made on: the
-    onset of mass loss is the MASS scan's (Christian, 2026-09-28)."""
+    onset of mass loss is the MASS scan's."""
     doc = _doc(_sample(_weight_analyses_data()),
                [0, (0, model.SIGNAL_MASS)])
     scan, mass = doc.scans
@@ -405,7 +413,7 @@ def test_weight_analyses_are_the_mass_scans_and_drawn_on_it(qapp):
 
 
 def test_cn81s_onsets_are_on_the_weight(qapp):
-    sample = loader.read_sample(_path(CN81_TRI))
+    sample = loader.read_sample(_path(SDT_REFERENCE))
     doc = _doc(sample, [0, (0, model.SIGNAL_MASS)])
     heat, mass = doc.scans
     assert sorted(round(a.value(), 3) for a in mass.analysis_objects) == \
@@ -438,7 +446,7 @@ def test_the_weight_axis_settings_are_the_weight_axis(qapp):
 
 # ------------------------------------------ the mass is a scan of its own
 def test_an_sdt_run_opens_with_its_mass_alone(qapp):
-    """Christian, 2026-09-28: "the m% data is the meat" - an SDT file opens
+    """The m% data is the main curve of an SDT run: an SDT file opens
     with the first heating's MASS, on one y axis on the main side and no
     heat flow axis at all; the heat flow is one tick away. Both shown, the
     mass keeps the main (left) side and the heat flow goes right."""
@@ -523,7 +531,7 @@ def test_the_mass_scans_are_in_the_stack(qapp):
 # ------------------------------------------------- F11: NaN, everywhere
 def _gappy_data():
     """Flagged samples where the real files have them: at the start of a
-    DSC segment (four GQ runs, CN-INDIUM-CHECK), and a stretch in the
+    DSC segment (empty-pan and indium check runs), and a stretch in the
     middle, which the drawing breaks at."""
     data = make_data(points=400)
     for step in data["numdata"]:
@@ -590,8 +598,8 @@ def test_the_fits_and_the_picking_skip_flagged_samples(qapp):
 
 
 def test_an_analysis_over_flagged_samples_is_drawn_on_measured_ones(qapp):
-    """An integration whose stretch holds flagged heat flows (CN-INDIUM-
-    CHECK's first 34 samples have a temperature and no heat flow): its
+    """An integration whose stretch holds flagged heat flows (an indium
+    check run's first 34 samples have a temperature and no heat flow): its
     shading, the side its label goes and the point its arrow lands on come
     from the measured samples - a NaN there drew the shading and the arrow
     nowhere and put the label on the peak's side."""
@@ -626,7 +634,7 @@ def test_an_analysis_over_flagged_samples_is_drawn_on_measured_ones(qapp):
     assert found[True] == found[False] is True
 
 
-@pytest.mark.parametrize("name", [INDIUM_CHECK, GQ_EMPTY])
+@pytest.mark.parametrize("name", [INDIUM_CHECK, EMPTY_PAN])
 def test_a_run_that_flags_its_first_samples_picks_marks_and_measures(
         qapp, name):
     """The real runs with leading NaN (stage 1's NaN risks 1, 4 and 5): a
@@ -667,7 +675,7 @@ def test_a_run_that_flags_its_first_samples_picks_marks_and_measures(
 
 def test_an_axis_number_at_zero_has_no_sign(qapp):
     """Ticks are stepped in floating point, so the one at zero can be
-    -2.8e-17: GQ-empty's heat-flow axis said "-0" (found in the round-25
+    -2.8e-17: an empty-pan run's heat-flow axis said "-0" (found in a
     pass over the leading-NaN runs)."""
     from dscpanel.ui.plot import PlotWidget
     axis = model.Document().axes["y"]
@@ -697,7 +705,8 @@ def test_the_csv_leaves_flagged_samples_empty(tmp_path):
 
 
 def test_the_indium_check_exports_no_nan(tmp_path):
-    """CN-INDIUM-CHECK flags its first samples: 38 'nan' cells before."""
+    """The indium check run flags its first samples: 38 'nan' cells
+    before."""
     sample = loader.read_sample(_path(INDIUM_CHECK))
     doc = _doc(sample)
     path = str(tmp_path / "indium.csv")
@@ -728,7 +737,7 @@ def test_the_csv_writes_the_weight_of_a_segment_without_heat_flow(tmp_path):
 
 def test_a_weight_with_no_heat_flow_beside_it_is_fitted_in_x(qapp):
     """A segment that recorded a weight and no heat flow, or whose heat
-    flow cannot be drawn (the negative-weight DESY run in W/g, its weight in
+    flow cannot be drawn (the negative-weight run in W/g, its weight in
     the recorded mg): F frames the weight curve that IS drawn, not the
     0-100 of an empty plot, which showed a TGA step cut off at 100."""
     data = sdt_data()
@@ -802,9 +811,9 @@ def test_a_truncated_weights_hidden_ends_show_on_hover(qapp):
 
 
 # ---------------------------------------------------- the real files
-@pytest.mark.parametrize("name", [CN81_TRI, CN81_TXT, DESY_OPEN,
-                                  DESY_NO_MASS, OJ12, INDIUM_CHECK,
-                                  GQ_EMPTY])
+@pytest.mark.parametrize("name", [SDT_REFERENCE, SDT_REFERENCE_TXT, SDT_OPEN,
+                                  SDT_NO_MASS, DSC_REFERENCE, INDIUM_CHECK,
+                                  EMPTY_PAN])
 def test_a_real_file_goes_through_everything(qapp, tmp_path, name):
     """Open, toggle the weights, % and mg, M with the weight row, F, a
     session there and back, CSV, PNG and SVG: nothing raises, nothing NaN
@@ -840,9 +849,9 @@ def test_a_real_file_goes_through_everything(qapp, tmp_path, name):
     assert win.export_image(str(tmp_path / "f.svg"), light=True)
 
 
-# ------------------------------------ mass at a temperature (round 26)
+# ------------------------------------------------ mass at a temperature
 def test_the_mass_at_a_temperature_is_the_curves_without_its_offset():
-    """Christian's `add_annot`: the first measured sample at or past the
+    """The template's `add_annot`: the first measured sample at or past the
     temperature, its m% - the measurement, the offset not in it."""
     from dscpanel.core import labels, measure
     doc = _doc(_sample(sdt_data()), [(0, model.SIGNAL_MASS)])
@@ -934,10 +943,10 @@ def test_a_mass_marker_survives_a_session(qapp, tmp_path):
 
 
 def test_a_marker_on_a_run_with_no_mass_says_its_recorded_mg(qapp):
-    """The negative-weight DESY run has no sample mass, so no percentage;
+    """The negative-weight run has no sample mass, so no percentage;
     its mg are recorded, and a marker in mg says them."""
     from dscpanel.core import labels, measure
-    sample = loader.read_sample(_path(DESY_NO_MASS))
+    sample = loader.read_sample(_path(SDT_NO_MASS))
     doc = _doc(sample, [(0, model.SIGNAL_MASS)])
     doc.set_weight_unit(model.WEIGHT_MG)
     (mass,) = doc.scans
@@ -949,12 +958,13 @@ def test_a_marker_on_a_run_with_no_mass_says_its_recorded_mg(qapp):
     assert labels.render(analysis, doc).text == "? %"
 
 
-# --------------------------- step 4: onsets on the mass (round 26)
+# ---------------------------------------------- onsets on the mass
 def test_trioss_mass_onsets_draw_their_construction_on_the_mass(qapp):
-    """CN-81's two onsets were made in TRIOS on the weight: they are the
-    MASS scan's, and draw TRIOS's stored construction in % on its curve."""
+    """The SDT reference run's two onsets were made in TRIOS on the
+    weight: they are the MASS scan's, and draw TRIOS's stored
+    construction in % on its curve."""
     from dscpanel.core import labels, measure
-    win = _window(qapp, loader.read_sample(_path(CN81_TRI)))
+    win = _window(qapp, loader.read_sample(_path(SDT_REFERENCE)))
     doc, plot = win.doc, win.plot
     (mass,) = doc.scans
     onsets = [a for a in mass.analysis_objects if a.model_name == "Onset point"]

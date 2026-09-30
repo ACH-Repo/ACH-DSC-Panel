@@ -5,11 +5,37 @@ Everything a new session needs to pick this up cold. Read this, then
 rules and the traps). `docs/OPERATORS.md` is generated from the code and is
 always current. `docs/TRI-FORMAT.md` is the binary format.
 
-## 0. LATEST: version 1.0.0, 2026-09-29 - committed, tagged v1.0.0
+## 0. LATEST: Triplot 1.1.0, 2026-09-30 - prepared for PyPI, NOT committed
 
-Rounds 27 to 27c are in 1.0.0 (CHANGELOG.md; PLAN.md round 27). Not on
-PyPI (Christian: GitHub is enough for now). What comes next - IR, then
-PXRD, on a shared core - is `docs/FAMILY.md`.
+Christian named it **Triplot** (free on PyPI, checked 2026-09-30) and asked
+for everything to be ready for an upload. Rounds 27d to 27g, the rename
+(`branding.py`, `pyproject.toml`: distribution `triplot`, commands
+`triplot` / `triplot-gui`, import name still `dscpanel`), the fix for
+the hidden-parent label crash and round 28 (the axes and page margins,
+from his testing; PLAN.md) are 1.1.0 (CHANGELOG.md).
+
+**Everything that ships is NEUTRAL** (his request, "make everything neutral
+and clean for the upload"): source comments and docstrings, tests, README
+and CHANGELOG carry no person, sample id, private project, machine or
+development history. Keep it that way in anything under `src/` and
+`tests/` - the history belongs in docs/PLAN.md and CLAUDE.md, which do not
+ship. Tests name real files by a HASH of the file name
+(`conftest.hashed_name`; the constants in test_weight / test_data_cases /
+test_reader / test_tangents say what each file is), and the environment
+variable is `TRIOS_TESTDATA`. A first pass by an agent workflow was cut off
+by the usage limit; it was finished by hand (only comments changed - the
+code was compared by AST - and 563 tests pass with none skipped).
+
+Rebuilt and `twine check`ed on 2026-09-30 16:33 (`dist/`); the upload
+(`python -m twine upload dist/*`) is his to run. Open before it: the
+molar-mass calculator's building blocks `Hbc`/`H2bdc`, its example
+composition `(Hbc)0.75+Zn(im)1.70(bim)0.30` in the Numbers window and the
+calculator tests - program data, left as they are until he says. Not
+committed, not tagged.
+
+Version 1.0.0 (2026-09-29, committed and tagged v1.0.0) was DSC-Panel,
+from GitHub only. What comes next - IR, then PXRD, on a shared core - is
+`docs/FAMILY.md`.
 
 ## 0a. Round 27, 2026-09-29
 

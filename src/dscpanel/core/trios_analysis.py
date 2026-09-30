@@ -1,5 +1,5 @@
-# The TRIOS analyses. They started in ACH-DSC-Plotter (2.1.0) and live HERE
-# since 2026-09-28, when that program was retired: fix them in this file.
+# The TRIOS analyses, recomputed in Python. The format is docs/TRI-FORMAT.md;
+# fix them in this file.
 
 """
 trios_analysis.py -- the TRIOS analyses, recomputed in Python.
@@ -517,7 +517,7 @@ def oxidation_temperature(T, Q, x_cursor, x_transition, threshold=0.0):
 # --------------------------------------------------------------------------- #
 # validation against TRIOS's own numbers
 # --------------------------------------------------------------------------- #
-def validate(tri_or_txt=None, export_txt=None, verbose=True):
+def validate(tri_or_txt, export_txt, verbose=True):
     """Recompute every analysis found in a TRIOS export and compare.
 
     Because an analysis names only its *step program* (three segments can share
@@ -525,8 +525,6 @@ def validate(tri_or_txt=None, export_txt=None, verbose=True):
     that tests the mathematics, independent of scan attribution.
     """
     import trios_io as tio
-    tri_or_txt = tri_or_txt or 'OJ-12-DSC-2-07012026.tri'
-    export_txt = export_txt or 'oj-12-dsc-2-07012026.txt'
 
     # Curves from the binary (verified against the export to 5e-5 C), the
     # analyses from the Full text export -- the binary's own analysis records
@@ -634,4 +632,5 @@ def _dispatch(model, t, T, Q, cur, a):
 
 
 if __name__ == '__main__':
-    validate()
+    import sys
+    validate(*sys.argv[1:3])

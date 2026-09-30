@@ -2,8 +2,12 @@
 here, and generated files stay readable on a German Windows.
 """
 
+import json
 import os
 import re
+import sys
+
+import pytest
 
 from dscpanel import branding, register
 
@@ -65,6 +69,74 @@ def test_legacy_names_are_shaped_for_the_cleanup():
         assert len(entry) == 3, "LEGACY_NAMES holds (app, exe, prog_id)"
 
 
+def _user_dirs(tmp_path, monkeypatch):
+    """Every per-user folder the program or the cleanup reads, in tmp_path:
+    the real ones hold the user's preferences and Start Menu entry."""
+    if sys.platform == "darwin":
+        pytest.skip("the user folder is under ~/Library on a Mac")
+    for name in ("LOCALAPPDATA", "XDG_DATA_HOME", "APPDATA", "USERPROFILE",
+                 "HOME"):
+        monkeypatch.setenv(name, str(tmp_path / name.lower()))
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    monkeypatch.setattr(register, "_windows_scripts_dir", lambda: str(scripts))
+    old_name, old_exe, _prog = branding.LEGACY_NAMES[-1]
+    return branding.app_dir(old_name, old_exe), branding.app_dir()
+
+
+def test_the_first_start_under_a_new_name_brings_the_old_folder(
+        tmp_path, monkeypatch):
+    """DSC-Panel became Triplot (1.1.0): the house style, the presets and
+    the window's place live in a folder named after the program, and must
+    not be left behind by the rename."""
+    old, new = _user_dirs(tmp_path, monkeypatch)
+    assert old != new
+    os.makedirs(os.path.join(old, "presets"))
+    with open(os.path.join(old, "preferences.json"), "w") as fh:
+        fh.write('{"version": 2}')
+    with open(os.path.join(old, "presets", "thesis.dscstyle"), "w") as fh:
+        fh.write("{}")
+    with open(os.path.join(old, "dsc-panel.log"), "w") as fh:
+        fh.write("old log")
+    assert branding.adopt_legacy_dir() == old
+    assert os.path.isfile(os.path.join(new, "preferences.json"))
+    assert os.path.isfile(os.path.join(new, "presets", "thesis.dscstyle"))
+    assert not any(name.endswith(".log") for name in os.listdir(new))
+    assert os.path.isdir(old), "the old folder is copied, never moved"
+    # Once the new folder exists it is its own: nothing is copied over it.
+    with open(os.path.join(old, "preferences.json"), "w") as fh:
+        fh.write('{"version": 99}')
+    assert branding.adopt_legacy_dir() is None
+    with open(os.path.join(new, "preferences.json")) as fh:
+        assert fh.read() == '{"version": 2}'
+
+
+def test_nothing_is_made_when_there_was_no_old_name_here(tmp_path,
+                                                         monkeypatch):
+    _old, new = _user_dirs(tmp_path, monkeypatch)
+    assert branding.adopt_legacy_dir() is None
+    assert not os.path.exists(new)
+
+
+def test_clean_legacy_finds_the_old_names_shortcut_after_the_copy(
+        tmp_path, monkeypatch):
+    """The order the README gives: install, then `register --clean-legacy`,
+    whose main() copies the folder first - so the old manifest is there to
+    say what the old name made."""
+    old, new = _user_dirs(tmp_path, monkeypatch)
+    shortcut = tmp_path / "shortcut.lnk"
+    shortcut.write_text("x")
+    os.makedirs(old)
+    with open(os.path.join(old, "registration.json"), "w") as fh:
+        json.dump({"entries": [{"kind": "start menu", "path": str(shortcut),
+                                "name": "", "app": "DSC-Panel"}]}, fh)
+    from dscpanel import __main__
+    assert __main__.main(["register", "--clean-legacy"]) == 0
+    assert not shortcut.exists()
+    with open(branding.manifest_path()) as fh:
+        assert json.load(fh)["entries"] == []
+
+
 def test_registration_is_reversible_and_says_so_first(tmp_path, monkeypatch):
     monkeypatch.setattr(branding, "APP_NAME", branding.APP_NAME)
     made = register.register(dry_run=True)
@@ -74,7 +146,7 @@ def test_registration_is_reversible_and_says_so_first(tmp_path, monkeypatch):
 
 
 def test_generated_python_is_ascii():
-    """Christian's rule, and it is not cosmetic: PowerShell 5.1 reads a file
+    """Not cosmetic: PowerShell 5.1 reads a file
     with no BOM as cp1252, so a stray em-dash arrives mangled."""
     bad = []
     for path in _sources():
@@ -87,13 +159,13 @@ def test_generated_python_is_ascii():
 
 
 def test_the_reader_lives_here():
-    """The reader is this repo's own since ACH-DSC-Plotter was retired
-    (2026-09-28). A test that compared it with a sibling checkout failed on
-    whichever machine had the other repo out of step - a test must not
-    depend on the state of another folder."""
+    """The reader is this program's own and is fixed here, never copied
+    in from elsewhere: a test that compared it with a sibling checkout
+    failed on whichever machine had the other repo out of step - a test
+    must not depend on the state of another folder."""
     for name in ("trios_io.py", "trios_analysis.py"):
         with open(os.path.join(SRC, "core", name), "r",
                   encoding="utf-8") as fh:
             head = fh.read(300)
-        assert "VENDORED" not in head and " HERE" in head, name
+        assert "VENDORED" not in head and "this file" in head, name
     assert not os.path.exists(os.path.join(ROOT, "tools", "vendor.py"))
