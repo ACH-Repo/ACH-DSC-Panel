@@ -113,7 +113,7 @@ def test_a_typed_number_moves_a_decorator_in_axis_units(window):
     assert moved[0] - before[0] == pytest.approx(20.0 / (hi - lo)
                                                  * rect.width(), abs=0.5)
     assert moved[1] == pytest.approx(before[1], abs=0.5)
-    assert "°C" in plot._move_readout() or "C" in plot._move_readout()
+    assert "\u00b0C" in plot._move_readout() or "C" in plot._move_readout()
     plot._move["axis"] = None
     plot._move["typed"] = "0.1"
     plot._update_move(plot._move["start"])

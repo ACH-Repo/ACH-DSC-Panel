@@ -109,6 +109,19 @@ def no_modal_loops(monkeypatch):
     assert not opened, "a test reached a modal dialog: {}".format(opened)
 
 
+
+@pytest.fixture(autouse=True)
+def full_drawings():
+    """Every change drawn in full at once: tests read pixels, and a draft
+    (`PlotWidget.SETTLE_MS`) draws its curves as hairlines. The family test
+    of the drafts turns it back on."""
+    from dscpanel.ui.plot import PlotWidget
+    saved = PlotWidget.SETTLE_MS
+    PlotWidget.SETTLE_MS = 0
+    yield
+    PlotWidget.SETTLE_MS = saved
+
+
 @pytest.fixture(autouse=True)
 def own_preferences(tmp_path):
     """Every test gets the BUILT-IN house style and its own preferences file.
@@ -137,6 +150,21 @@ def document(sample):
     doc = model.Document()
     doc.add_sample(sample)
     return doc
+
+
+@pytest.fixture
+def stack_window(qapp):
+    """A window with three curves on the plot: what `test_family.py`, the
+    file every panel of the family shares, is given."""
+    from dscpanel.ui.window import MainWindow
+    win = MainWindow()
+    win.resize(900, 560)
+    for k in range(3):
+        win._sample_loaded(model.Sample("C:/nowhere/F{}.tri".format(k),
+                                        make_data()))
+    win.undo.clear()
+    win.plot.grab()
+    return win
 
 
 def _local_entries():

@@ -20,6 +20,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 #: The one-line "why" for the operators where the label is not the whole
 #: story. Everything else gets a blank.
 NOTES = {
+    "label.add": "on selected curves: their names, nothing asked",
     "file.export_driver": "hands the arrangement to ACH-DSC-Plotter",
     "transform.grab": "then a number, Enter; Shift is precision, Ctrl snaps",
     "arrange.align": "closed-form fit to the first selected scan",
@@ -120,7 +121,13 @@ def main():
                 op.label, "`{}`".format(key) if key else "", when,
                 NOTES.get(op.id, "")))
         lines.append("")
-    print("\n".join(lines))
+    # ASCII, whatever the console's code page: printed into a file by a
+    # Windows shell, a degree sign arrived as one cp1252 byte, which is
+    # not UTF-8 at all.
+    text = "\n".join(lines)
+    for char, word in (("\u00b0", "deg"), ("\u2212", "-")):
+        text = text.replace(char, word)
+    print(text.encode("ascii", "backslashreplace").decode("ascii"))
     return 0
 
 

@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+## 1.2.0 (2026-10-02)
+
+- On a white page (and in every export) a colour you picked is drawn
+  exactly as picked; only the default screen palette is darkened to read
+  on paper. A yellow used to come out olive.
+- `Ctrl+T` asks nothing: on selected curves it makes a label for each,
+  saying its name, hanging from the curve (above its right end); with nothing
+  selected, one free label "Label" to retype with a double-click. New
+  labels are selected.
+- The pick distance is 8 px unless you change it (it was 14).
+- S on curves holds the lowest still, as before; T, B or M while it is live
+  holds the top, the bottom or the middle of the stack still instead, where
+  it is when the key is pressed. The dashed line runs through the held curve.
+- The plain swipe (wheel, middle drag) makes every curve taller or flatter in
+  its place; the axis rescales and the offsets follow. It used to scale the
+  axis about y = 0, which spread the stack apart: P during S does that now,
+  keeping the stack's own gaps in proportion.
+- A pan shows the data moving under a still frame (the whole page moved
+  until the button was let go).
+- Faster drawing: every change shows at once as a draft, the curves drawn
+  thin, and in full once nothing has changed for a moment; curves are put
+  together several times faster.
+- Align from F3 shows at once and moves labels hanging from a curve too;
+  new: space the selected artists evenly across or down.
+- A box selects labels, markers and other artists, not only curves.
+- Colours: the colour as #rrggbb beside every swatch, to copy and paste;
+  "Inherit" makes a colour follow another object's for good; a label given
+  to a curve takes the curve's colour.
+- A label on a curve is placed by x and y like every other artist (no more
+  "Distance" and "Sideways"), and still moves with its curve.
+- The page-margin blades are there on every figure; taking one on a figure
+  that is not of an exact size makes it exact as it is on screen (the
+  axes box stays where it is), and says so in orange. Choosing "an exact
+  size" in Figure size and margins also starts from the screen.
+- A session whose files were moved looks for them beside itself (its
+  folder and the folders under it) and keeps their curves.
+
 ## 1.1.0 (2026-09-30)
 
 **Renamed Triplot** (it was DSC-Panel) and released on PyPI:

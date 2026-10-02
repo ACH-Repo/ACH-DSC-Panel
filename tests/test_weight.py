@@ -974,7 +974,7 @@ def test_trioss_mass_onsets_draw_their_construction_on_the_mass(qapp):
         assert found.points and found.base == model.WEIGHT_PCT
         analysis.visible = True
     assert sorted(labels.render(a, doc).text for a in onsets) == \
-        ["*T*_{on} = 416 °C", "*T*_{on} = 476 °C"]
+        ["*T*_{on} = 416 \u00b0C", "*T*_{on} = 476 \u00b0C"]
     win.refresh()
     plot.grab()
     trace = plot._trace_of(mass)

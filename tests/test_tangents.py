@@ -269,9 +269,9 @@ def test_tangents_in_w_g_on_a_run_without_a_mass_are_not_papered_over():
     data = _step_data()
     del data["head"]["samplesize"]
     data["analyses"] = {"Ramp 10,00 C/min to 250 C #1": {"Onset point": [
-        {"segment": 1, "Onset cursor x": "110.0000 °C",
-         "Transition cursor x": "170.0000 °C",
-         "Onset x": "131.0000 °C", "variable": "Heat Flow (Normalized)",
+        {"segment": 1, "Onset cursor x": "110.0000 \u00b0C",
+         "Transition cursor x": "170.0000 \u00b0C",
+         "Onset x": "131.0000 \u00b0C", "variable": "Heat Flow (Normalized)",
          "construction": [[110.0, -0.2], [131.0, -0.19], [139.0, 0.0]]}]}}
     sample, (heat, _cool) = _scans(data)
     assert sample.mass_g is None

@@ -172,9 +172,9 @@ def onset(scan, x0, x1, kind="onset", span=None):
     if key not in result or not np.isfinite(result[key]):
         return None
     return {"Model": "Endset point" if kind == "endset" else "Onset point",
-            "Onset cursor x": "{:.4f} °C".format(x0),
-            "Transition cursor x": "{:.4f} °C".format(x1),
-            key: "{:.4f} °C".format(result[key])}
+            "Onset cursor x": "{:.4f} \u00b0C".format(x0),
+            "Transition cursor x": "{:.4f} \u00b0C".format(x1),
+            key: "{:.4f} \u00b0C".format(result[key])}
 
 
 def endset(scan, x0, x1, span=None):
@@ -191,11 +191,11 @@ def integrate(scan, x0, x1, span=None):
     if not result:
         return None
     return {"Model": "Peak Integration (enthalpy)",
-            "Baseline cursor x": "{:.4f} °C".format(x0),
-            "Baseline cursor x1": "{:.4f} °C".format(x1),
+            "Baseline cursor x": "{:.4f} \u00b0C".format(x0),
+            "Baseline cursor x1": "{:.4f} \u00b0C".format(x1),
             "Enthalpy (normalized)": "{:.4f} J/g".format(
                 abs(result["Enthalpy (normalized)"])),
-            "Peak temperature": "{:.4f} °C".format(
+            "Peak temperature": "{:.4f} \u00b0C".format(
                 result["Peak temperature"])}
 
 
@@ -211,12 +211,12 @@ def glass_transition(scan, x0, x1, span=None):
     if not result or "Midpoint" not in result:
         return None
     return {"Model": "Glass transition",
-            "Onset cursor x": "{:.4f} °C".format(x0),
-            "End cursor x": "{:.4f} °C".format(x1),
-            "Onset x": "{:.4f} °C".format(result["Onset x"]),
-            "End x": "{:.4f} °C".format(result["End x"]),
+            "Onset cursor x": "{:.4f} \u00b0C".format(x0),
+            "End cursor x": "{:.4f} \u00b0C".format(x1),
+            "Onset x": "{:.4f} \u00b0C".format(result["Onset x"]),
+            "End x": "{:.4f} \u00b0C".format(result["End x"]),
             "Step height": "{:.4f} W/g".format(result["Step height"]),
-            "Midpoint": "{:.4f} °C".format(result["Midpoint"])}
+            "Midpoint": "{:.4f} \u00b0C".format(result["Midpoint"])}
 
 
 def signal_change(scan, x0, x1, span=None):
@@ -229,8 +229,8 @@ def signal_change(scan, x0, x1, span=None):
         return None
     first = next(iter(result.items()))
     return {"Model": "Signal change",
-            "Cursor x": "{:.4f} °C".format(x0),
-            "Cursor x1": "{:.4f} °C".format(x1),
+            "Cursor x": "{:.4f} \u00b0C".format(x0),
+            "Cursor x1": "{:.4f} \u00b0C".format(x1),
             first[0]: "{:.4f}".format(first[1])
             if isinstance(first[1], float) else str(first[1])}
 
@@ -244,8 +244,8 @@ def peak_height(scan, x0, x1, span=None):
     if not result:
         return None
     out = {"Model": "Peak height",
-           "Cursor x": "{:.4f} °C".format(x0),
-           "Cursor x1": "{:.4f} °C".format(x1)}
+           "Cursor x": "{:.4f} \u00b0C".format(x0),
+           "Cursor x1": "{:.4f} \u00b0C".format(x1)}
     for key, value in result.items():
         out[key] = ("{:.4f}".format(value) if isinstance(value, float)
                     else str(value))
@@ -630,7 +630,7 @@ def is_legacy_label(label):
     for template in _LEGACY.values():
         prefix = template.split("%")[0]
         pattern = (re.escape(prefix)
-                   + r"-?\d+(?:\.\d+)? (?:°C|J/g|W/g)$")
+                   + r"-?\d+(?:\.\d+)? (?:\u00b0C|J/g|W/g)$")
         if re.match(pattern, str(label)):
             return True
     return False

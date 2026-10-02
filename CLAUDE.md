@@ -135,7 +135,7 @@ going; this file is about how it is done here.
   entry in `THEMES` and nothing else. `doc.theme` holds the name; the window
   applies it on every refresh, and exports force the light one.
 * **A drag acts on what it starts NEAR** (Christian, round 9). Within the
-  pick distance (a setting, 14 px built in) of a curve, a press-and-drag
+  pick distance (a setting, 8 px built in) of a curve, a press-and-drag
   marks an interval and asks for the analysis on release; near an artist,
   an analysis label or an axis caption it moves it; anywhere else - or with
   Shift - it is a box select. Released unmoved, a press is a click. A
@@ -469,6 +469,13 @@ going; this file is about how it is done here.
   first tenth of the x axis empty. It was % of the data's range until
   preferences version 2 / session version 6, which `style.convert_old_fit`
   converts. Read both of an axis's through `PlotWidget.fit_pads`.
+* **A white page darkens only the default palette** (`paper_colour`,
+  family-wide 2026-10-02): `model.PALETTE` is chosen for a dark ground and
+  is brought down to `PAPER_LUMA` on white; any other colour - picked,
+  typed as hex, a gradient's - is drawn exactly as chosen. `for_light`
+  itself still darkens everything: the handling colours (`ACCENTS`) go
+  through it in `set_theme`, so never call it for an object's colour. A
+  golden yellow came out olive on an export until then (Christian).
 * **The handling colours are not the ink** (`plot.ACCENTS`): the reticle,
   band and selection follow the document's theme even when the page flips
   the ink to the other family. `set_theme(drawing, accent=doc.theme)`.
@@ -496,9 +503,95 @@ going; this file is about how it is done here.
   (`PlotWidget.stack_order`), and only scans on the same offset go by the
   outliner (`Document.outliner_key`: `doc.samples` as listed, a file's
   curves in `model.SIGNAL_ROWS` order), its top on top. S keeps the
-  LOWEST scan where it is. The legend lists in the outliner's order.
+  LOWEST scan where it is unless T or M holds the top or the middle
+  (`spread_anchor`; family-wide, 2026-10-01). The legend lists in the
+  outliner's order.
   Change it only through `set_sample_order` (it re-sorts `doc.scans`,
   which labels in a session are matched by).
+* **A spread's held place is where that curve IS when T, B or M is
+  pressed** (`spread_anchor` re-reads `floor` and `ceiling` from the
+  offsets): nothing moves on the key, only the line, and the step changes
+  about the new place from then on. The first version re-applied the step
+  from where the place was when S began, as Blender does for a pivot; the
+  stack jumped on every key (Christian, 2026-10-01).
+* **The spread's line runs through the held CURVE, never its offset**
+  (`_spread_line`: the curve's median height). An offset is where the
+  curve's zero is, and a transmittance hangs from 100 %: a line at the
+  offset ran through the curves below and looked like "y = 0".
+* **The plain swipe makes every curve taller IN ITS PLACE**
+  (`scale_intensity`, family-wide 2026-10-01; it scaled the axis about
+  y = 0 before, which spread the stack apart). Done without multiplying
+  data: the axis is scaled about 0 and each offset follows so the curve's
+  baseline keeps its place - `profile.baseline` says what a baseline is
+  (a transmittance's is near its top, a heat flow's its median). Read the
+  range BEFORE moving the offsets: a fitted range refits to the new stack
+  first and every curve jumped. Hidden curves follow too. The offsets ride
+  in the swipe's undo step (`_burst_offsets`, `commit_view`), never in
+  `view_state`, which a session saves as numbers.
+* **Ctrl+T asks nothing** (family-wide, 2026-10-02): on selected curves
+  it makes one label each, saying the curve's name, hanging from the
+  curve's end at `profile.name_label_corner` (`MainWindow.name_labels`,
+  `NAME_CORNERS`, `PlotWidget.end_sample` - the end AS SHOWN, walked in a
+  little); on nothing, one free label "Label". A curve whose name already
+  hangs from it gets no second; the new labels are selected. The pick
+  distance is 8 px built in since the same day (it was 14).
+* **P during S keeps the stack's own gaps** (`spread_even`, the
+  `profile` of depths below the top when S began): the old swipe's
+  proportional spread, about the held place, the typed step their mean.
+* **A change is drawn as a DRAFT first** (`PlotWidget.drafting`,
+  `_DraftPainter`, `SETTLE_MS`): every curve a hairline, then the full
+  drawing once nothing has changed for 150 ms, and while a hand is at work
+  (a drag, a pan, a swipe settling, G, S or R). Measured on a 150 % screen
+  for ten spectra: a full redraw ~190 ms, a draft ~18 ms. The WIDTH of a
+  line is what costs (a 6000-point curve: 159 ms at 1.5 px antialiased,
+  46 ms without antialiasing, 4 ms as an antialiased hairline), not the
+  antialiasing as such. The cache keys on `drafting()`. Tests draw in full
+  (conftest `full_drawings` sets `SETTLE_MS` to 0): they read pixels.
+* **A pan is drawn, not slid**: the cached picture of the whole page used
+  to be moved under the pointer (frame, numbers and captions with it).
+* **Point lists come from numpy** (`_polyline_fast`: the polygon's memory
+  filled through `shiboken6.VoidPtr`, as pyqtgraph does), checked once at
+  import on three points; `_polyline_slow` if a PySide6 ever differs.
+* **Moving several artists goes through `MainWindow._move_artists`**:
+  every field an artist keeps its place in (`PlotWidget._fields_of`), and
+  a refresh at once. Align wrote x and y only, so a label hanging from a
+  curve did not move, and nothing showed until the selection changed.
+* **A box selects artists and analysis labels too**, touched by what is
+  drawn of them; a label caught with its curve is moved once (G leaves a
+  child alone when its parent moves).
+* **A colour can FOLLOW another object's** (`Obj.colour_from`,
+  `model.sync_colours`, run first in every `refresh`): the follower's own
+  `colour` is kept up to date, so everything that reads `.colour` works
+  unchanged. Saved as `colour_links` (`[list, position]` pairs). A colour
+  chosen by hand, the hex field, the F3 colour and a gradient end the link
+  (the gradient puts it back on Revert and in its undo step). `colour_from`
+  joins a settings window's snapshot whenever `colour` is in it.
+* **A label hanging from its curve is placed by x and y**
+  (`ArtistTransform._shown_values`, `_hang_at_typed`): the numbers are those
+  of a FREE copy at the same spot, so no unit is converted here (Triplot's
+  axis may be degC, K or degF); typed, it is hung again from there through
+  `set_artist_point`. The old rows (`hang_at`, `hang_dy`, `hang_dx`) still
+  exist but are never shown.
+* **Given to a curve, a label wears its colour** (`parent_labels` sets
+  `colour` "auto", which is "Same as parent" for an owned label).
+* **Going EXACT takes the size from the screen**
+  (`PlotWidget.exact_from_screen`, `MainWindow.go_exact`, the size
+  window's `_mode_changed`): the page as drawn and its margins as they are,
+  in the layout's unit - the stored size (8.5 x 6.5 cm) put every text, in
+  points, out of all proportion to a figure laid out on a window. The
+  blades show on EVERY figure; taking one on a non-exact figure makes it
+  exact first (`exact_wanted`, said in orange) - the axes box stays put.
+* **`_flash` holds four things** (text, start, seconds, warn): every reader
+  takes `[:3]`. `_flash_tick` unpacking all four raised 40 ms after every
+  "Saved" - found by the logging test, which only passes after a test that
+  flashed (an older order dependence: alone, it fails at 1.1.0 too).
+* **A session looks for a moved file BESIDE ITSELF** (`session._read_entry`:
+  the path; else its folder and the folders under it, by name; else the
+  copy inside, where `profile.EMBED_SOURCES`). A file read from elsewhere
+  keeps the SAVED path until the opening is done - scans, labels and regions
+  are matched by it - and takes its new path at the end (`relocated`); the
+  next save heals the session. The copy is zlib + base64 of the bytes read
+  (`Sample.source_bytes`, `_source_copy` caches the text).
 * **A sample row is editable (F2) and may have a box**: `_item_changed`
   tells a rename from a tick by comparing the text with `sample.name`
   (`Sample.name` is the title, else the file name).
@@ -529,6 +622,20 @@ going; this file is about how it is done here.
   Revert gives an invalid QColor); `QColorDialog` is no longer used.
 * **The driver export is FROZEN** (Christian, 2026-09-28). New features go
   into the panel's own drawing and PNG/SVG exports, not `DSC_Plotter.py`.
+
+## The family
+
+This panel is one of a family of stacked-trace plotters (Triplot for DSC,
+IR-Panel for infrared, PXRD-Panel for powder diffraction), each its own app on the same
+handling. A change to that shared handling goes to EVERY member, and
+Christian decides which changes are family-wide: when he says so, or when
+a change is plainly about the handling and he confirms it. The standing
+rule and the list of members are in his global notes; the log of
+family-wide changes is kept there too.
+
+`tests/test_family.py` is the SAME file in every member: a family-wide
+change comes with its test there, copied to each. Each member's conftest
+provides the one fixture it needs, `stack_window`.
 
 ## Running it
 

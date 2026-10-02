@@ -69,7 +69,7 @@ SIGNALS = (SIGNAL_HEAT, SIGNAL_MASS, SIGNAL_DTG)
 SIGNAL_ROWS = (SIGNAL_MASS, SIGNAL_DTG, SIGNAL_HEAT)
 
 AXIS_LABEL = {
-    AXIS_TEMPERATURE: "Temperature / °C",
+    AXIS_TEMPERATURE: "Temperature / \u00b0C",
     AXIS_TIME: "Time / min",
 }
 
@@ -85,7 +85,7 @@ def number(value):
     """The number inside a TRIOS analysis field, or None.
 
     The reader hands analyses back as they are written in the file, so a
-    cursor position arrives as `'58,4977 °C'` - a German decimal comma
+    cursor position arrives as `'58,4977 \u00b0C'` - a German decimal comma
     and a unit. Every consumer here wants a float, and every one of them
     getting this wrong in its own way is how a plot ends up with an onset at
     zero.
@@ -107,6 +107,8 @@ class Obj(object):
     """Anything the window can select, hide, drag or right-click."""
 
     kind = "object"
+    #: The object whose colour this one FOLLOWS, or None (`sync_colours`).
+    colour_from = None
 
     def __init__(self, oid, name=""):
         self.id = int(oid)
@@ -427,7 +429,7 @@ class Scan(Obj):
                 temp = temp[np.isfinite(temp)]      # flagged samples
             value = target if target is not None else (
                 float(np.mean(temp)) if temp is not None and len(temp) else None)
-            return ("{} iso {:.0f} °C".format(index, value)
+            return ("{} iso {:.0f} \u00b0C".format(index, value)
                     if value is not None else "{} iso".format(index))
         word = "heat" if move == "up" else "cool"
         if rate:
@@ -864,7 +866,7 @@ def _analysed_curve(entry, has_weight):
 
 def _rate(prog):
     """The heating rate in K/min out of a program string, or None."""
-    match = re.search(r"([-+]?\d+(?:[.,]\d+)?)\s*°?C\s*/\s*min", prog)
+    match = re.search(r"([-+]?\d+(?:[.,]\d+)?)\s*\u00b0?C\s*/\s*min", prog)
     return number(match.group(1)) if match else None
 
 
@@ -1257,7 +1259,7 @@ class Axis(Obj):
             if doc.x_axis != AXIS_TEMPERATURE:
                 return "*t*  /  min"
             return "*T*  /  {}".format(units.TEMPERATURE_LABEL.get(
-                getattr(doc, "x_unit", units.TEMP_C), "°C"))
+                getattr(doc, "x_unit", units.TEMP_C), "\u00b0C"))
         if self.which == "y2":
             return "*m*  /  {}".format(getattr(doc, "weight_unit",
                                                WEIGHT_PCT))
@@ -1583,6 +1585,145 @@ class HeatFlowArrow(Artist):
     def text(self):
         return "{}\n{}".format(self.word.capitalize(),
                                self.direction.capitalize())
+
+
+# ------------------------------------------------------------------ colours
+# A colour can FOLLOW another object's ("Inherit" beside every colour in a
+# settings window): `colour_from` is the donor, and `sync_colours` copies
+# its colour across whenever the figure is refreshed - so the two always
+# match, through undo too. Choosing a colour of one's own ends it.
+
+def own_colour(obj):
+    """The colour `obj` is drawn in as far as the document knows: its own,
+    or for "auto" its parent's (a label's or an analysis's curve); None
+    where "auto" means the theme's ink."""
+    seen = set()
+    while obj is not None and id(obj) not in seen:
+        seen.add(id(obj))
+        colour = getattr(obj, "colour", None)
+        if colour not in (None, "", "auto"):
+            return str(colour)
+        obj = getattr(obj, "scan", None)
+    return None
+
+
+def inherits_from(obj, other):
+    """True when `obj` takes its colour from `other` at any remove, or IS
+    it: what would close a circle of donors."""
+    seen = set()
+    while obj is not None and id(obj) not in seen:
+        if obj is other:
+            return True
+        seen.add(id(obj))
+        obj = getattr(obj, "colour_from", None)
+    return False
+
+
+def colour_objects(doc):
+    """Everything in `doc` with a colour of its own."""
+    found = [o for o in doc.objects() if hasattr(o, "colour")]
+    seen = set(id(o) for o in found)
+    for scan in doc.scans:
+        marker = getattr(scan, "marker", None)
+        if (marker is not None and id(marker) not in seen
+                and hasattr(marker, "colour")):
+            found.append(marker)
+    return found
+
+
+def sync_colours(doc):
+    """Every follower takes its donor's colour, along chains (one pass per
+    link of the longest). A donor no longer in the document leaves its
+    followers as they are, still linked, so an undo that brings it back
+    brings the link back. True when anything changed."""
+    objs = colour_objects(doc)
+    present = set(id(o) for o in objs)
+    changed = False
+    for _ in range(max(1, len(objs))):
+        moved = False
+        for obj in objs:
+            donor = getattr(obj, "colour_from", None)
+            if donor is None or id(donor) not in present:
+                continue
+            colour = own_colour(donor)
+            if colour is not None and colour != obj.colour:
+                obj.colour = colour
+                moved = changed = True
+        if not moved:
+            break
+    return changed
+
+
+#: The lists a session names a follower or a donor in, by position.
+_COLOUR_LISTS = ("scans", "labels", "regions", "spans", "images",
+                 "structures")
+
+
+def _colour_ref(doc, obj):
+    for kind in _COLOUR_LISTS:
+        for index, item in enumerate(getattr(doc, kind, None) or ()):
+            if item is obj:
+                return [kind, index]
+    for index, item in enumerate(doc.analyses()):
+        if item is obj:
+            return ["analyses", index]
+    for index, scan in enumerate(doc.scans):
+        if getattr(scan, "marker", None) is obj:
+            return ["markers", index]
+    for kind in ("legend", "arrow"):
+        if getattr(doc, kind, None) is obj:
+            return [kind, 0]
+    for name, axis in doc.axes.items():
+        if axis is obj:
+            return ["axes", name]
+    return None
+
+
+def _colour_target(doc, ref):
+    try:
+        kind, index = ref
+        if kind in _COLOUR_LISTS:
+            return getattr(doc, kind)[int(index)]
+        if kind == "analyses":
+            return doc.analyses()[int(index)]
+        if kind == "markers":
+            return doc.scans[int(index)].marker
+        if kind in ("legend", "arrow"):
+            return getattr(doc, kind)
+        if kind == "axes":
+            return doc.axes[index]
+    except (TypeError, ValueError, IndexError, KeyError, AttributeError):
+        return None
+    return None
+
+
+def colour_links(doc):
+    """`[[follower, donor], ...]` as a session keeps them: each a
+    `[list, position]`."""
+    links = []
+    for obj in colour_objects(doc):
+        donor = getattr(obj, "colour_from", None)
+        if donor is None:
+            continue
+        follower, giver = _colour_ref(doc, obj), _colour_ref(doc, donor)
+        if follower is not None and giver is not None:
+            links.append([follower, giver])
+    return links
+
+
+def restore_colour_links(doc, links):
+    """The links of a session, where both ends are still there."""
+    for pair in links or ():
+        try:
+            first, second = pair
+        except (TypeError, ValueError):
+            continue
+        follower = _colour_target(doc, first)
+        donor = _colour_target(doc, second)
+        if (follower is None or donor is None
+                or inherits_from(donor, follower)):
+            continue
+        follower.colour_from = donor
 
 
 class Document(object):

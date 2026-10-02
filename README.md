@@ -18,7 +18,7 @@ triplot register             # put it in the Start Menu (optional)
 
 Python 3.10 or newer; PySide6 (the Essentials only), numpy and RDKit come
 with it. From a checkout, `pip install -e <checkout>` installs it editable.
-Version 1.1.0; what changed is in `CHANGELOG.md`.
+Version 1.2.0; what changed is in `CHANGELOG.md`.
 
 It was called **DSC-Panel** until 1.0.0 and installed from the repository
 as `ach-dsc-panel`. To move over, uninstall that first (both install the
@@ -89,9 +89,9 @@ extension.
 | click | select what is under the pointer (`Shift` adds) |
 | drag from a curve | **mark an interval**; let go and pick the analysis |
 | drag from an artist | move it: the arrow, the legend, a label, an analysis label, an axis caption |
-| drag from empty space | **box select** (with `Shift`, a box from anywhere, adding) |
+| drag from empty space | **box select** curves, labels and every other artist (with `Shift`, a box from anywhere, adding) |
 | double-click | settings: a curve, an analysis, an axis spine, a caption |
-| two-finger swipe, mouse wheel, or middle-button drag | scale the y axis about y = 0 (drag up: taller) |
+| two-finger swipe, mouse wheel, or middle-button drag | every curve taller or flatter, each in its place (drag up: taller); the axis rescales and the offsets follow, so the numbers stay true |
 | `Shift` + swipe or middle drag | pan the view, in whichever direction the hand goes |
 | pinch, `Ctrl` + wheel or middle drag | zoom both axes about the pointer (Windows sends a pinch as `Ctrl+wheel`) |
 | `Alt` + swipe or middle drag | zoom the page, like a document; with `Shift`, move it (`Alt+F` fits it again) |
@@ -104,9 +104,9 @@ extension.
 | `Shift` / `Ctrl` while moving | precision / snap to round numbers |
 | `R` | reset the selected offsets to zero (or all of them) |
 | a number | move the selected scans by it; `Enter` confirms, `Esc` cancels |
-| `Ctrl+T` | add a caption where the cursor is |
+| `Ctrl+T` | on selected curves: a label each, saying its name, above its right end; else a caption where the cursor is (retype it with a double-click) |
 | `Ctrl+Shift+T` | add a note: a caption with an arrow to the point under the cursor (on a curve, it belongs to that scan); drag the ring at its tip to re-aim it |
-| `S` with only scans selected | spread them evenly about y = 0; type the step, `Ctrl` for a round one |
+| `S` with only scans selected | spread them evenly, the lowest held still; `T`, `B`, `M` hold the top, the bottom or the middle instead; `P` keeps the stack's own gaps in proportion; type the step, `Ctrl` for a round one |
 | `Ctrl+P` / `Alt+P` | give the selected labels to the selected scan (they then move with it) / free them; or drag a label onto a scan in the outliner |
 | double-click a page handle | type the figure's size in cm or inches, the aspect ratio kept |
 | `Ctrl+L` / `Ctrl+R` / `Ctrl+M` | align analysis labels left / right / centred on their arrows |
@@ -123,7 +123,7 @@ extension.
 | `Ctrl+W` | close the pop-up in front; the window only when no pop-up is open |
 
 The rule is short on purpose: **a drag acts on what it starts near.**
-"Near" is the pick distance (Settings > Handling, 14 px unless you change
+"Near" is the pick distance (Settings > Handling, 8 px unless you change
 it): start within it of a curve and the drag marks an interval; of a label,
 the arrow or the legend and it moves that; anywhere else it draws a box. A
 click selects, a double-click opens settings. A scan moves with `G` and

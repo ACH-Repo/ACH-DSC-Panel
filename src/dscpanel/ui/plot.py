@@ -37,6 +37,7 @@ import re
 import time
 
 import numpy as np
+import shiboken6
 
 from PySide6.QtCore import (QByteArray, QPoint, QPointF, QRect, QRectF,
                             QSize, Qt, QTimer, Signal)
@@ -209,6 +210,24 @@ def for_light(colour):
     return QColor.fromRgbF(colour.redF() * factor, colour.greenF() * factor,
                            colour.blueF() * factor)
 
+
+#: The default screen palette (`model.PALETTE`): chosen for a dark ground,
+#: so a white page darkens it (`for_light`). A colour somebody chose - in
+#: the picker, the hex field, a gradient - is drawn exactly as chosen on
+#: either page.
+_SCREEN_PALETTE = frozenset(c.lower() for c in model.PALETTE)
+
+
+def paper_colour(colour):
+    """An object's colour as a white page draws it: one of the default
+    screen palette darkened to read on paper (`for_light`), any other
+    exactly as chosen. (The handling colours - reticle, selection - are
+    darkened by `set_theme` itself.)"""
+    colour = QColor(colour)
+    if colour.name().lower() in _SCREEN_PALETTE:
+        return for_light(colour)
+    return colour
+
 #: Room for the y numbers, which this plot has and the PXRD one does not.
 _LEFT = 66
 _RIGHT = 14
@@ -344,6 +363,9 @@ class PlotWidget(QWidget):
     #: A page-margin blade let go, typed or double-clicked: (side, the
     #: margin in the layout's unit). The window sets it, one step.
     page_margin_done = Signal(str, float)
+    #: A blade was taken on a figure that is not of an exact size: the
+    #: window makes it exact, from the screen (`MainWindow.go_exact`).
+    exact_wanted = Signal()
     #: A blade or a fit-margin arrow double-clicked: the window opens the
     #: page's (or the data's) margins in numbers.
     page_margins_asked = Signal()
@@ -381,7 +403,8 @@ class PlotWidget(QWidget):
                    "pan_v": Qt.SizeVerCursor, "pan_free": Qt.SizeAllCursor}
     #: A middle-button drag, by what it does (`nav_kind`).
     NAV_TEXT = {
-        "scale": "SCALE y about 0 - drag up for taller curves",
+        "scale": "TALLER or flatter, each curve in its place - drag up "
+                 "for taller",
         "zoom": "ZOOM both axes about where the drag started",
         "pan": "PAN - the figure follows the pointer",
         "page_zoom": "PAGE zoom - drag up to look closer",
@@ -987,6 +1010,7 @@ class PlotWidget(QWidget):
         since) is meaningless as numbers, so it goes back to the fit."""
         self._view_settle.stop()
         self._view_burst = None
+        self._burst_offsets = None
         if state.get("context") != self.view_state()["context"]:
             self._view_x = self._view_y = None
         else:
@@ -995,6 +1019,11 @@ class PlotWidget(QWidget):
         self._view_y2 = (state.get("y2")
                          if state.get("y2_unit") == getattr(
                              doc, "weight_unit", None) else None)
+        offsets = state.get("offsets")
+        if offsets:
+            for scan, value in offsets:
+                scan.offset = value
+            self.rebuild()
         self.invalidate()
         self.view_changed.emit()
 
@@ -1002,6 +1031,14 @@ class PlotWidget(QWidget):
         """A view gesture is starting (or continuing): remember where from."""
         if self._view_burst is None:
             self._view_burst = (self.view_state(), label)
+            self._burst_offsets = self._offsets_now()
+
+    def _offsets_now(self):
+        """Every scan's offset, as a swipe's undo step keeps them (never in
+        `view_state`: that one is saved with the session, as numbers)."""
+        doc = self.doc
+        return ([(scan, float(scan.offset)) for scan in doc.scans]
+                if doc is not None else [])
 
     def _view_touched(self, label):
         """One event of a wheel or pinch burst. The burst is one step, and it
@@ -1022,8 +1059,18 @@ class PlotWidget(QWidget):
         burst, self._view_burst = self._view_burst, None
         if burst is None:
             return False
+        self.update()                   # the smooth pass after the drafts
         before, label = burst
         after = self.view_state()
+        # A swipe moves the offsets with the framing (`scale_intensity`):
+        # they go into the same step, and only into the step.
+        offsets = getattr(self, "_burst_offsets", None)
+        self._burst_offsets = None
+        now = self._offsets_now()
+        if offsets is not None and offsets != now:
+            self.view_committed.emit(dict(before, offsets=offsets),
+                                     dict(after, offsets=now), label)
+            return True
         if ((before["x"], before["y"], before.get("y2"))
                 == (after["x"], after["y"], after.get("y2"))):
             return False
@@ -1668,11 +1715,29 @@ class PlotWidget(QWidget):
             "drag": None, "selected": None, "typed": "", "flash": None})
 
     def page_margins_editable(self):
-        """Only an exact figure has margins of its own (the others size
-        theirs to the numbers and captions)."""
+        """The blades are there on every figure whose page is clicked; only
+        an exact figure has margins of its own, and taking a blade on any
+        other makes it exact first (`exact_wanted`)."""
         return (self.doc is not None
-                and self.layout_mode() == figure_module.MODE_SIZE
                 and getattr(self, "_page_handles_shown", False))
+
+    def exact_from_screen(self):
+        """The layout of an EXACT figure that looks as this one does now:
+        the page as big as it is drawn, its margins as they are, in the
+        layout's unit. Going exact with the stored size (8.5 x 6.5 cm, or
+        whatever was last typed) put every text, drawn in points, out of
+        all proportion to a figure laid out on a whole window."""
+        layout = self.doc.figure
+        per = figure_module.DESIGN_DPI / figure_module.PER_INCH[layout.unit]
+        width, height = self.canvas_size()
+        rect = self.plot_rect()
+        values = {"width": width, "height": height,
+                  "margin_left": rect.left(),
+                  "margin_right": width - rect.right(),
+                  "margin_top": rect.top(),
+                  "margin_bottom": height - rect.bottom()}
+        return {name: round(max(0.0, value / per), 4)
+                for name, value in values.items()}
 
     def _per_unit(self):
         layout = self.doc.figure
@@ -1913,6 +1978,10 @@ class PlotWidget(QWidget):
             words, value, unit, least)
 
     def _start_page_margin_drag(self, side, pane_pos):
+        if self.layout_mode() != figure_module.MODE_SIZE:
+            self.exact_wanted.emit()
+            if self.layout_mode() != figure_module.MODE_SIZE:
+                return
         state = self._page_margin_state()
         value = getattr(self.doc.figure, "margin_" + side)
         state["drag"] = {"side": side, "start": QPointF(pane_pos),
@@ -2551,15 +2620,17 @@ class PlotWidget(QWidget):
           Ctrl+wheel, so Ctrl+wheel zooms BOTH axes about the cursor. (A
           native pinch gesture, where Qt delivers one, arrives in `event`
           below and lands in the same place.)
-        * **A mouse wheel scales y about y = 0**, and Ctrl+wheel zooms both
-          about the cursor. Zero is the one height that never moves:
-          a stack is built upwards from it, so the
-          scans grow and shrink without the baseline wandering off.
+        * **The plain swipe or wheel makes every curve taller or flatter
+          IN ITS PLACE** (`scale_intensity`): MestReNova's gesture, and
+          a PXRD viewer's. Each curve grows
+          about its own middle height and none of them moves up or down.
 
-        The view is what moves. The data is never scaled: in the PXRD window
-        the plain wheel scales intensity, and that gesture must not exist
-        here, because a DSC curve whose height changed under the hand is a
-        curve whose W/g axis is a lie.
+        Still, the data is never scaled by a gesture - a curve whose height
+        changed under the hand would be a curve whose axis is a lie. The
+        AXIS is scaled about y = 0, and each curve's offset follows so that
+        it keeps its place: the y numbers, where shown, stay true. (Scaling
+        the axis about y = 0 alone spread the stack apart as it grew; S with
+        P does that.)
 
         On a mouse the swipe is the MIDDLE-BUTTON DRAG, as in Blender, with
         the same modifiers (`nav_kind`).
@@ -2596,12 +2667,11 @@ class PlotWidget(QWidget):
                 self._view_touched("pan")
                 self.pan_by(-dx, -dy)
         elif dy or dx:
-            # The plain swipe scales the y axis, the gesture a stack needs
-            # most, about y = 0 rather than the cursor:
-            # zero stays where it is and only the scale changes. It moves
-            # the VIEW's limits and never the data.
-            self._view_touched("zoom")
-            self.scale_y(WHEEL_STEP ** ((dy or dx) / PANE_STEP_PIXELS))
+            # The plain swipe: every curve taller or flatter in its place,
+            # the gesture a stack needs most (`scale_intensity`).
+            self._view_touched("taller or flatter")
+            self.scale_intensity(WHEEL_STEP ** ((dy or dx)
+                                                / PANE_STEP_PIXELS))
         ev.accept()
 
     def _wheel_page(self, ev, mods, pixels, angles):
@@ -2638,7 +2708,8 @@ class PlotWidget(QWidget):
         """What a middle-button drag does: the swipe with the same modifier.
 
         A two-finger swipe on a trackpad is a middle-button drag on a mouse
-        (Blender's navigation button). Plain scales y about 0, Shift pans,
+        (Blender's navigation button). Plain makes the curves taller or
+        flatter in their places (`scale_intensity`), Shift pans,
         Ctrl zooms both axes, Alt the page (Shift moves it). Latched at the
         press, so a modifier touched mid-drag does not change what the hand
         is doing.
@@ -2674,7 +2745,7 @@ class PlotWidget(QWidget):
         factor = WHEEL_STEP ** (-dy / PANE_STEP_PIXELS)
         kind = nav["kind"]
         if kind == "scale":
-            self.scale_y(factor)
+            self.scale_intensity(factor)
         elif kind == "zoom":
             self.zoom_at(self.to_figure(nav["at"]), factor, both=True)
         elif kind == "pan":
@@ -2736,6 +2807,49 @@ class PlotWidget(QWidget):
             return
         lo, hi = self.main_view()
         self.set_main_view(lo / factor, hi / factor)
+
+    def scale_intensity(self, factor):
+        """The plain swipe and the middle drag: every curve on the main y
+        axis `factor` times taller, about its OWN middle height
+        (`_level_of`), each where it is on the page. Nothing is multiplied:
+        the axis is scaled about y = 0 (`scale_y`) and each curve's offset
+        is changed so its middle height keeps its place - the data stays as
+        measured, and the y numbers, where shown, stay true. Hidden curves
+        on the axis follow too, so they come back in their places. The
+        other y axis is left alone. One undo step per gesture, the offsets
+        with the framing (`commit_view`)."""
+        doc = self.doc
+        if factor <= 0 or doc is None:
+            return
+        # The range BEFORE the offsets move: a fitted one would otherwise
+        # refit to the new stack first, and every curve jumped.
+        lo, hi = self.main_view()
+        mass = self.main_axis() == "y2"
+        for scan in doc.scans:
+            if bool(getattr(scan, "is_mass", False)) != mass:
+                continue
+            rest = self._level_of(scan)
+            scan.offset = (float(scan.offset) + rest) / factor - rest
+        self.rebuild()
+        self.set_main_view(lo / factor, hi / factor)
+
+    def _level_of(self, scan):
+        """Where a curve is above its own offset, drawn or not: the
+        baseline of its kept values as the axis shows them, the offset
+        taken out - what a baseline is depends on the data
+        (`profile.baseline`: a transmittance's is near its top, a heat
+        flow's is its median). 0 for a curve that cannot be drawn."""
+        trace = self._trace_of(scan)
+        if trace is None and self.doc is not None:
+            trace = self._make_trace(self.doc, scan)
+        if trace is None or trace.y is None or not len(trace.y):
+            return 0.0
+        values = np.asarray(trace.y, dtype=float)
+        values = values[np.isfinite(values)]
+        if not len(values):
+            return 0.0
+        return (profile.baseline(values, self.doc)
+                - float(scan.offset))
 
     def pan_by(self, dx_px, dy_px):
         """Move the view by a distance in PIXELS."""
@@ -2916,8 +3030,12 @@ class PlotWidget(QWidget):
 
         A trace counts as inside when any of the points that were DRAWN for
         it falls in the box, which is the same "what you see is what you
-        pick" rule the click uses. A box smaller than the drag slop is a
-        click on empty space, and clears the selection.
+        pick" rule the click uses; an artist - a label, a band marker, a
+        region, the legend, a picture - and an analysis's label when the box
+        touches what is drawn of it. A label caught with its own curve is
+        harmless: G moves a child with its parent, never twice. A box
+        smaller than the drag slop is a click on empty space, and clears the
+        selection.
         """
         doc = self.doc
         if doc is None:
@@ -2947,6 +3065,19 @@ class PlotWidget(QWidget):
         for marker, marker_box in self._marker_boxes:
             if box.intersects(QRectF(marker_box)):
                 chosen.append(marker)
+        for analysis, analysis_box in self._analysis_boxes:
+            if (analysis not in chosen
+                    and box.intersects(QRectF(analysis_box))):
+                chosen.append(analysis)
+        rect = self.plot_rect()
+        for obj in doc.objects():
+            if (not self.is_artist(obj) or not getattr(obj, "visible", True)
+                    or obj in chosen):
+                continue
+            bounds = self.rotated_bounds(obj, self.artist_box(obj, rect),
+                                         rect)
+            if bounds is not None and box.intersects(bounds):
+                chosen.append(obj)
         if add:
             for obj in chosen:
                 obj.selected = True
@@ -3489,13 +3620,14 @@ class PlotWidget(QWidget):
         return self._start_transform("scale", objs)
 
     def start_spread(self, scans):
-        """S on scans: EVENLY spaced offsets. The LOWEST scan of the
-        selection stays where it is and is the neutral line; the others
-        stand at whole steps above it (not about y = 0). The order is the
-        one the offsets already have - prearranging a little is how it is
-        chosen - and only where they tie (laid on top of one another) the
-        outliner's, its top at the top; R turns it over while the spread is
-        live.
+        """S on scans: EVENLY spaced offsets. One place of the stack holds
+        still and is the neutral line: the LOWEST scan (B, where S starts),
+        the TOP one (T) or the MIDDLE between them (M), each where it is
+        when its key is pressed (`spread_anchor`); the others stand at
+        whole steps from it. The order is the one the offsets already have -
+        prearranging a little is how it is chosen - and only where they tie
+        (laid on top of one another) the outliner's, its top at the top; R
+        turns it over while the spread is live.
         Moving the pointer away from the line widens the step, towards it
         closes the stack onto it. A typed number is the STEP in the axis
         unit; Ctrl snaps it to a round number, Shift is precision. Enter or
@@ -3524,14 +3656,8 @@ class PlotWidget(QWidget):
                      for t in self.traces
                      if t.scan in ordered and t.y is not None and len(t.y)]
             step = 0.6 * max(spans) if spans else 1.0
-        # The neutral line: the lowest scan's offset where the axis shows
-        # it, else the level of that curve - a mass axis runs 80 to 100 %,
-        # where a distance from its offset made every step huge.
+        # The axis's range, kept with the rest (the frame holds still).
         lo, hi = self.view_for(ordered[0])
-        level = low
-        if not lo <= low <= hi:
-            level = self._curve_level(ordered[-1])
-        zero = self.sy_to_px(ordered[0], level)
         cursor = self._cursor or QPointF(self.plot_rect().center())
         # The frame holds still under the hand; a fitted one fits the new
         # stack once it is let go.
@@ -3543,12 +3669,15 @@ class PlotWidget(QWidget):
             self._view_y = self.view_y()
         self._scale = {"mode": "spread", "entries": [], "scans": ordered,
                        "framed": framed,
-                       "floor": low, "base": step, "step": step,
+                       "floor": low, "ceiling": high, "anchor": "bottom",
+                       "view": (lo, hi), "base": step, "step": step,
+                       "even": True,
+                       "profile": [offsets[0] - o for o in offsets],
                        "stored": [s.offset for s in ordered], "typed": "",
-                       "zero": zero, "level": level,
-                       "start": max(abs(cursor.y() - zero), 20.0),
                        "factor": 1.0, "turn": 0.0, "pivot": (0.0, 0.0),
                        "last": None}
+        zero = self._spread_line()
+        self._scale["start"] = max(abs(cursor.y() - zero), 20.0)
         self._apply_spread(step)
         self._transform_readout()
         self.update()
@@ -3582,19 +3711,104 @@ class PlotWidget(QWidget):
         return sorted(scans, key=lambda s: (-float(s.offset),)
                       + tuple(doc.outliner_key(s)))
 
+    #: The keys that choose what a spread holds still (`spread_anchor`).
+    SPREAD_KEYS = {Qt.Key_T: "top", Qt.Key_B: "bottom", Qt.Key_M: "middle"}
+
     def _apply_spread(self, step):
-        """The last scan of the order - the lowest - on the neutral line,
-        each one above it a step higher."""
+        """Each scan at its depth below the top, top first - a step apart,
+        or (P) the gaps the stack had when S began, scaled so their mean is
+        the step - with the place the `anchor` names where it was: the last
+        scan of the order - the lowest - on the floor, the first on the
+        ceiling, or the middle of the stack halfway between them."""
         state = self._scale
         state["step"] = step
         count = len(state["scans"])
-        for i, scan in enumerate(state["scans"]):
-            scan.offset = state["floor"] + (count - 1 - i) * step
+        if state.get("even", True):
+            depths = [i * step for i in range(count)]
+        else:
+            profile = state["profile"]
+            own = profile[-1] / (count - 1)
+            depths = [d * step / own for d in profile]
+        total = depths[-1]
+        anchor = state.get("anchor", "bottom")
+        middle = 0.5 * (state["floor"] + state["ceiling"])
+        for depth, scan in zip(depths, state["scans"]):
+            if anchor == "top":
+                scan.offset = state["ceiling"] - depth
+            elif anchor == "middle":
+                scan.offset = middle + 0.5 * total - depth
+            else:
+                scan.offset = state["floor"] + total - depth
         self.rebuild()
 
+    def spread_even(self):
+        """P while S spreads scans: even gaps, or the gaps the stack had
+        when S began kept in proportion - an uneven ladder (groups of
+        curves) spread or closed as a whole, which the swipe did before it
+        kept every curve in its place. The held place and the mean step are
+        kept; R still turns the order over, the pattern of gaps staying
+        where it is. A stack laid on top of one another has no gaps of its
+        own, and P does nothing there."""
+        state = self._scale
+        if state is None or state.get("mode") != "spread":
+            return False
+        if state["profile"][-1] <= 0:
+            return False
+        state["even"] = not state.get("even", True)
+        self._apply_spread(state["step"])
+        self._transform_readout()
+        self.update()
+        return True
+
+    def _spread_line(self):
+        """Put the neutral line through the held place AS DRAWN, and return
+        it on the page: the middle height of the curve standing there (the
+        mean of all of them, for the middle), never its bare offset. An
+        offset is where the curve's zero is, and a curve can sit far from
+        it - a transmittance hangs from 100 %, a mass from 80 to 100 % -
+        so a line at the offset ran through the other curves, and a
+        distance from it made every step huge."""
+        state = self._scale
+        scans = state["scans"]
+        anchor = state.get("anchor", "bottom")
+        if anchor == "top":
+            value, there = state["ceiling"], scans[:1]
+        elif anchor == "middle":
+            value, there = 0.5 * (state["floor"] + state["ceiling"]), scans
+        else:
+            value, there = state["floor"], scans[-1:]
+        level = value + sum(self._curve_level(s) - float(s.offset)
+                            for s in there) / len(there)
+        state["level"] = level
+        state["zero"] = self.sy_to_px(scans[0], level)
+        return state["zero"]
+
+    def spread_anchor(self, anchor):
+        """T, B or M while S spreads scans: hold the top scan, the bottom
+        one or the middle of the stack still, WHERE IT IS NOW - nothing
+        moves when the key is pressed; the line moves to the held place and
+        the step changes about it from then on. The step reached so far is
+        kept, and the pointer is measured from the new line, so the step
+        does not jump either. Esc still puts everything back as it was
+        before S."""
+        state = self._scale
+        if state is None or state.get("mode") != "spread":
+            return False
+        now = [float(s.offset) for s in state["scans"]]
+        state["floor"], state["ceiling"] = min(now), max(now)
+        state["anchor"] = anchor
+        self._apply_spread(state["step"])
+        zero = self._spread_line()
+        if self._cursor is not None:
+            state["start"] = (max(abs(self._cursor.y() - zero), 20.0)
+                              / max(state["factor"], 0.05))
+        self._transform_readout()
+        self.update()
+        return True
+
     def flip_spread(self):
-        """R during a spread: the order turned over, the neutral line (the
-        lowest place) where it was."""
+        """R during a spread: the order turned over, the held place (the
+        `anchor`) where it was."""
         state = self._scale
         if state is None or state.get("mode") != "spread":
             return False
@@ -3764,10 +3978,20 @@ class PlotWidget(QWidget):
         if state["mode"] == "spread":
             unit = (self.doc.unit_for(state["scans"][0])
                     if self.doc is not None else "")
-            text = ("SPREAD {} scans {:.4g} {} apart above the lowest - "
-                    "away from it wider, type the step, Ctrl round, R {}, "
-                    "Enter, Esc").format(
-                        len(state["scans"]), state["step"], unit,
+            held = {"top": "the top", "middle": "the middle"}.get(
+                state.get("anchor"), "the lowest")
+            count = len(state["scans"])
+            if state.get("even", True):
+                gaps, other = "{:.4g} {} apart".format(
+                    state["step"], unit), "their own gaps"
+            else:
+                own = state["profile"][-1] / (count - 1)
+                gaps, other = "their own gaps x{:.3g}".format(
+                    state["step"] / own), "even gaps"
+            text = ("SPREAD {} scans {}, {} held still - T top, B bottom, "
+                    "M middle, P {}; away from the line wider, type the "
+                    "step, Ctrl round, R {}, Enter, Esc").format(
+                        count, gaps, held, other,
                         "outliner order again" if state.get("flipped")
                         else "turns the order over")
             self.mode_changed.emit(text)
@@ -3921,8 +4145,12 @@ class PlotWidget(QWidget):
             self._finish_transform()
         elif key == Qt.Key_R and state["mode"] == "spread":
             self.flip_spread()
+        elif key in self.SPREAD_KEYS and state["mode"] == "spread":
+            self.spread_anchor(self.SPREAD_KEYS[key])
+        elif key == Qt.Key_P and state["mode"] == "spread":
+            self.spread_even()
         elif key in self.TRANSFORM_KEYS and state["mode"] == "spread":
-            pass                       # a spread is about y = 0, always
+            pass                       # X, Y and C: a spread has no box
         elif key in self.TRANSFORM_KEYS:
             self.pivot_key(self.TRANSFORM_KEYS[key])
         elif key == Qt.Key_Backspace:
@@ -4467,6 +4695,13 @@ class PlotWidget(QWidget):
     # ----------------------------------------------------------------- input
     def keyPressEvent(self, ev):
         key = ev.key()
+        if getattr(self, "_picking", None) is not None and \
+                key == Qt.Key_Escape:
+            self._picking = None
+            self.mode_changed.emit(self.MODE_TEXT.get(self._mode,
+                                                      self.SELECT_TEXT))
+            ev.accept()
+            return
         if self._press is not None and key == Qt.Key_Escape:
             self._press = None              # the button is down; forget it
             ev.accept()
@@ -4576,8 +4811,26 @@ class PlotWidget(QWidget):
             return
         ev.accept()
 
+    def pick_object(self, callback, text):
+        """The next left click on the figure names an object, handed to
+        `callback`; Esc gives up. How "Inherit" learns its donor."""
+        self._picking = callback
+        self.mode_changed.emit(text)
+        self.hovered.emit(text)
+
+    def picking(self):
+        return getattr(self, "_picking", None) is not None
+
     def mousePressEvent(self, ev):
         pos = self.to_figure(ev.position())
+        picking = getattr(self, "_picking", None)
+        if picking is not None and ev.button() == Qt.LeftButton:
+            self._picking = None
+            self.mode_changed.emit(self.MODE_TEXT.get(self._mode,
+                                                      self.SELECT_TEXT))
+            picking(self.object_at(pos))
+            ev.accept()
+            return
         if self._scale is not None:
             self._finish_transform(cancel=ev.button() == Qt.RightButton)
             ev.accept()
@@ -4756,6 +5009,8 @@ class PlotWidget(QWidget):
         pos = self.to_figure(ev.position())
         self._cursor = pos
         self._sync_pointer()
+        if ev.buttons() != Qt.NoButton:
+            self._handling = True       # drawn as a draft until released
         if self._nav is not None:
             self._drag_nav(ev.position())
             return
@@ -4831,13 +5086,20 @@ class PlotWidget(QWidget):
                 self._view_x = (x0 + dx, x1 + dx)
             if drag["mode"] in ("pan_v", "pan_free"):
                 self._set_main_stored((y0 + dy, y1 + dy))
-            self.update()                  # blit the cache, rebuild on release
+            # Drawn as it is, a draft while the hand moves: sliding the
+            # cached picture moved the whole PAGE with the data - frame,
+            # numbers, captions - until the button was let go.
+            self.invalidate()
             self.view_changed.emit()
             return
         self.hovered.emit(self.readout(pos))
         self.update()
 
     def mouseReleaseEvent(self, ev):
+        if getattr(self, "_handling", False):
+            # The hand has stopped: one smooth redraw of what it did.
+            self._handling = False
+            self.update()
         if self._nav is not None and ev.button() == Qt.MiddleButton:
             self._end_nav()
             ev.accept()
@@ -5090,7 +5352,7 @@ class PlotWidget(QWidget):
                      else doc.y_axis_unit())
         y = self.px_to_y(pos.y(), view=self.main_view())
         x_name = "T" if doc.x_axis == model.AXIS_TEMPERATURE else "t"
-        x_unit = "°C" if doc.x_axis == model.AXIS_TEMPERATURE else "min"
+        x_unit = "\u00b0C" if doc.x_axis == model.AXIS_TEMPERATURE else "min"
         text = "{} = {:.3f} {}   y = {:.5g} {}".format(
             x_name, x, x_unit, y, main_unit)
         trace = self._trace_at(pos)
@@ -5175,7 +5437,7 @@ class PlotWidget(QWidget):
         # rebuilt the plot.
         selection = (tuple(obj.selected for obj in doc.objects())
                      if doc is not None else ())
-        return (selection, self.canvas_size(), self.page(),
+        return (selection, self.drafting(), self.canvas_size(), self.page(),
                 self.width(), self.height(), self.devicePixelRatioF(),
                 self.view_x(), self.view_y(), self.view_y2(),
                 getattr(doc, "weight_unit", "") if doc else "",
@@ -5227,20 +5489,17 @@ class PlotWidget(QWidget):
             painter.end()
 
     def _paint_widget(self, painter):
-        drag = self._drag
-        if (drag is not None and drag["mode"].startswith("pan")
-                and self._cache is not None and self._cursor is not None):
-            k = self.page()[2]
-            painter.fillRect(self.rect(), self._surround())
-            painter.drawPixmap(
-                int((self._cursor.x() - drag["px"]) * k)
-                if drag["mode"] in ("pan_h", "pan_free") else 0,
-                int((self._cursor.y() - drag["py"]) * k)
-                if drag["mode"] in ("pan_v", "pan_free") else 0,
-                self._cache)
-            return
         key = self._key()
         if self._cache is None or self._cache_key != key:
+            full_due, self._full_due = getattr(self, "_full_due", False), False
+            # Drawn before (an invalidation empties the cache but keeps the
+            # key), and a change while nothing was moving: a draft now, the
+            # full drawing when it settles (`_settled`).
+            if (getattr(self, "_cache_key", None) is not None
+                    and not full_due and self.SETTLE_MS > 0
+                    and not self.drafting()):
+                self._settle_later()
+                key = self._key()
             self._cache = self._render()
             self._cache_key = key
         painter.drawPixmap(0, 0, self._cache)
@@ -5271,8 +5530,10 @@ class PlotWidget(QWidget):
     #: and fades for the rest.
     FLASH_SECONDS = 2.2
 
-    def flash(self, text, seconds=None):
-        """A message that fades out over the top of the plot.
+    def flash(self, text, seconds=None, warn=False):
+        """A message that fades out over the top of the plot - green, or
+        orange (`warn`) for something the program did on its own that the
+        user should know about.
 
         The status bar already says what happened, and saving is
         exactly the moment nobody is looking at the bottom of the window.
@@ -5280,7 +5541,7 @@ class PlotWidget(QWidget):
         carry it.
         """
         self._flash = (str(text), time.monotonic(),
-                       float(seconds or self.FLASH_SECONDS))
+                       float(seconds or self.FLASH_SECONDS), bool(warn))
         self.update()
         QTimer.singleShot(40, self._flash_tick)
 
@@ -5291,7 +5552,7 @@ class PlotWidget(QWidget):
     def _flash_tick(self):
         if not self._flash:
             return
-        _text, started, seconds = self._flash
+        _text, started, seconds = self._flash[:3]
         if time.monotonic() - started >= seconds:
             self._flash = None
             self.update()
@@ -5302,7 +5563,8 @@ class PlotWidget(QWidget):
     def _paint_flash(self, p):
         if not self._flash:
             return
-        text, started, seconds = self._flash
+        text, started, seconds = self._flash[:3]
+        warn = len(self._flash) > 3 and self._flash[3]
         left = seconds - (time.monotonic() - started)
         if left <= 0:
             return
@@ -5325,9 +5587,13 @@ class PlotWidget(QWidget):
         y = centre.y() + 18
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(38, 74, 48, int(alpha * 0.85)))
+        if warn:
+            p.setBrush(QColor(92, 54, 12, int(alpha * 0.88)))
+        else:
+            p.setBrush(QColor(38, 74, 48, int(alpha * 0.85)))
         p.drawRoundedRect(QRectF(x, y, width, height), 5, 5)
-        p.setPen(QColor(170, 235, 180, alpha))
+        p.setPen(QColor(255, 196, 120, alpha) if warn
+                 else QColor(170, 235, 180, alpha))
         p.drawText(QPointF(x + 13, y + metrics.ascent() + 6), text)
         p.restore()
 
@@ -5380,6 +5646,40 @@ class PlotWidget(QWidget):
                 if self.layout_mode() == figure_module.MODE_WINDOW
                 and not self.page_zoomed() else _SURROUND)
 
+    def drafting(self):
+        """True while a hand is at work - a drag, a pan, a swipe or a pinch
+        still settling, a G, S or R: the figure is drawn as a DRAFT then,
+        every curve a hairline (`_DraftPainter`), and once more in full
+        when the hand stops (the cache keys on this)."""
+        timer = getattr(self, "_draft_timer", None)
+        return bool(getattr(self, "_handling", False)
+                    or self._nav is not None
+                    or self._view_burst is not None
+                    or self._move is not None
+                    or self._scale is not None
+                    or (timer is not None and timer.isActive()))
+
+    #: How long the figure stays a draft after the last change - a typed
+    #: number, a click, a step of a spin box - before its one full redraw,
+    #: in ms. A full redraw of ten spectra on a 150 % screen takes ~0.2 s, a
+    #: draft ~0.02 s: every change shows at once, and the full drawing
+    #: comes when the hand has stopped. 0 draws every change in full (the
+    #: tests do, to read pixels).
+    SETTLE_MS = 150
+
+    def _settle_later(self):
+        """Keep drawing drafts until nothing has changed for `SETTLE_MS`."""
+        timer = getattr(self, "_draft_timer", None)
+        if timer is None:
+            timer = self._draft_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._settled)
+        timer.start(int(self.SETTLE_MS))
+
+    def _settled(self):
+        self._full_due = True
+        self.update()
+
     def _render(self):
         """The figure, on its page, into the cache.
 
@@ -5392,7 +5692,8 @@ class PlotWidget(QWidget):
                          max(1, int(round(self.height() * ratio))))
         pixmap.setDevicePixelRatio(ratio)
         pixmap.fill(self._surround())
-        painter = QPainter(pixmap)
+        painter = _DraftPainter(pixmap) if self.drafting() else QPainter(
+            pixmap)
         dx, dy, k = self.page()
         painter.translate(dx, dy)
         painter.scale(k, k)
@@ -5753,11 +6054,11 @@ class PlotWidget(QWidget):
         if label.selected:
             return QColor(_SELECT)
         if label.colour not in (None, "", "auto"):
-            return (for_light(label.colour) if THEME == THEME_LIGHT
+            return (paper_colour(label.colour) if THEME == THEME_LIGHT
                     else QColor(label.colour))
         owner = getattr(label, "scan", None)
         if owner is not None:
-            return (for_light(owner.colour) if THEME == THEME_LIGHT
+            return (paper_colour(owner.colour) if THEME == THEME_LIGHT
                     else QColor(owner.colour))
         return QColor(_INK)
 
@@ -5910,7 +6211,7 @@ class PlotWidget(QWidget):
         if molecule.colour in (None, "", "auto"):
             ink = QColor(_INK)
         else:
-            ink = (for_light(molecule.colour) if THEME == THEME_LIGHT
+            ink = (paper_colour(molecule.colour) if THEME == THEME_LIGHT
                    else QColor(molecule.colour))
         font = self.molecule_font(molecule)
         metrics = QFontMetrics(font)
@@ -6271,7 +6572,7 @@ class PlotWidget(QWidget):
         own = getattr(label, "leader_colour", "auto")
         if own in (None, "", "auto"):
             return self.label_colour(label)
-        return (for_light(own) if THEME == THEME_LIGHT else QColor(own))
+        return (paper_colour(own) if THEME == THEME_LIGHT else QColor(own))
 
     def note_flush_changes(self, label, side):
         """Ctrl+L / R / M on a label: `[(obj, field, value), ...]`. Its
@@ -7089,6 +7390,24 @@ class PlotWidget(QWidget):
                  & (py >= rect.top()) & (py <= rect.bottom()))
         return px, py, shown
 
+    def end_sample(self, trace, side, rect=None):
+        """The sample at a curve's `side` end ("left" or "right") AS SHOWN
+        - kept, and inside the axes box - walked `OFFSET_MARKER_INSET` in
+        along the curve, as an index into the trace's kept samples; None
+        when nothing of it is shown. Where a name label hangs."""
+        rect = rect or self.plot_rect()
+        if trace is None or trace.x is None or not len(trace.x):
+            return None
+        px, _py, shown = self._shown_samples(trace, rect)
+        if not shown.any():
+            return None
+        if side == "right":
+            start = int(np.argmax(np.where(shown, px, -np.inf)))
+            return self._walk(px, shown, start,
+                              px[start] - OFFSET_MARKER_INSET)
+        start = int(np.argmin(np.where(shown, px, np.inf)))
+        return self._walk(px, shown, start, px[start] + OFFSET_MARKER_INSET)
+
     @staticmethod
     def _walk(px, shown, k, target, slack=3.0):
         """From sample `k`, ALONG the curve (either way, sample by sample)
@@ -7201,7 +7520,7 @@ class PlotWidget(QWidget):
             return QColor(_SELECT)
         if marker.colour in (None, "", "auto"):
             return QColor(_INK)
-        return (for_light(marker.colour) if THEME == THEME_LIGHT
+        return (paper_colour(marker.colour) if THEME == THEME_LIGHT
                 else QColor(marker.colour))
 
     def _paint_offset_markers(self, p, rect, only=None):
@@ -7266,7 +7585,7 @@ class PlotWidget(QWidget):
             # ONE solid colour (an arrow's head and shaft overlapped darker
             # where they were translucent).
             return mixed(colour, self.page_colour(), 190 / 255.0)
-        return (for_light(analysis.colour) if THEME == THEME_LIGHT
+        return (paper_colour(analysis.colour) if THEME == THEME_LIGHT
                 else QColor(analysis.colour))
 
     def _analysis_slice(self, trace, analysis):
@@ -7537,7 +7856,7 @@ class PlotWidget(QWidget):
         step = metrics.height() * legend.spacing
         y = box.top() + 5 + metrics.height() / 2.0
         for scan, text in legend.entries(doc):
-            colour = (for_light(scan.colour) if THEME == THEME_LIGHT
+            colour = (paper_colour(scan.colour) if THEME == THEME_LIGHT
                       else QColor(scan.colour))
             width = (float(legend.line_width) if legend.line_width
                      else max(1.2, self.style_of(scan, "line_width")
@@ -7547,7 +7866,7 @@ class PlotWidget(QWidget):
                        QPointF(box.left() + 8 + legend.sample, y))
             ink = (QColor(_SELECT) if legend.selected
                    else (QColor(_TEXT) if legend.colour in (None, "", "auto")
-                         else (for_light(legend.colour)
+                         else (paper_colour(legend.colour)
                                if THEME == THEME_LIGHT
                                else QColor(legend.colour))))
             text_box = QRectF(box.left() + legend.sample + 14,
@@ -7570,7 +7889,7 @@ class PlotWidget(QWidget):
         chosen = doc.arrow.colour if doc is not None else "auto"
         if chosen in (None, "", "auto"):
             return QColor(_INK)
-        return for_light(chosen) if THEME == THEME_LIGHT else QColor(chosen)
+        return paper_colour(chosen) if THEME == THEME_LIGHT else QColor(chosen)
 
     def arrow_font(self, base=None):
         """The arrow's text: the house style's size unless it has its own."""
@@ -7808,7 +8127,7 @@ class PlotWidget(QWidget):
     # ----------------------------------------------------------------- paper
     def darken_for_paper(self):
         """Trace colours as they would print, parallel to `traces`."""
-        return [for_light(t.colour) for t in self.traces]
+        return [paper_colour(t.colour) for t in self.traces]
 
 
 # ------------------------------------------------------------------ helpers
@@ -7843,12 +8162,13 @@ def _free_slot(box, taken, bounds, step=15, tries=6):
 def trace_colour(trace):
     """A trace's colour as the current theme draws it.
 
-    The palette is chosen for a dark ground, so on white every trace is
-    brought down to `PAPER_LUMA`. Resolved HERE, at paint time, rather than
+    The default palette is chosen for a dark ground, so on white it is
+    brought down to `PAPER_LUMA`; a colour somebody chose is drawn as chosen
+    (`paper_colour`). Resolved HERE, at paint time, rather than
     stored on the Trace: the theme can change between two paints and the
     colour the user picked must not be overwritten by a rendering choice.
     """
-    return for_light(trace.colour) if THEME == THEME_LIGHT else QColor(trace.colour)
+    return paper_colour(trace.colour) if THEME == THEME_LIGHT else QColor(trace.colour)
 
 
 def _analysis_marker(entry):
@@ -7932,11 +8252,65 @@ def _finite_runs(x, y):
     return [(x[run], y[run]) for run in runs if len(run) > 1]
 
 
-def _polyline(px, py):
+
+class _DraftPainter(QPainter):
+    """The painter of a draft, while a hand is at work
+    (`PlotWidget.drafting`): every CURVE is a hairline, one device pixel,
+    smooth. Measured on a 150 % screen, a 6000-point curve took 159 ms as
+    a 1.5 px antialiased line, 46 ms as the same line without
+    antialiasing - and 4 ms as an antialiased hairline: the width is what
+    costs, not the smoothing. Everything else is drawn as always; the
+    curves get their width back in the one smooth redraw when the hand
+    stops."""
+
+    def drawPolyline(self, *args):
+        pen = self.pen()
+        if pen.style() == Qt.NoPen or pen.widthF() == 0.0:
+            QPainter.drawPolyline(self, *args)
+            return
+        thin = QPen(pen)
+        thin.setWidthF(0.0)
+        QPainter.setPen(self, thin)
+        QPainter.drawPolyline(self, *args)
+        QPainter.setPen(self, pen)
+
+def _polyline_slow(px, py):
     poly = QPolygonF()
     for a, b in zip(np.asarray(px).tolist(), np.asarray(py).tolist()):
         poly.append(QPointF(a, b))
     return poly
+
+
+def _polyline_fast(px, py):
+    """The points written straight into the polygon's memory from numpy,
+    as pyqtgraph does: built one `QPointF` at a time in Python, a redraw
+    of ten spectra spent most of its time here (150 000 calls)."""
+    xs = np.asarray(px, dtype=float)
+    ys = np.asarray(py, dtype=float)
+    count = len(xs)
+    poly = QPolygonF()
+    if not count:
+        return poly
+    poly.resize(count)
+    memory = np.frombuffer(shiboken6.VoidPtr(poly.data(), count * 16, True),
+                           dtype=np.float64).reshape(count, 2)
+    memory[:, 0] = xs
+    memory[:, 1] = ys
+    return poly
+
+
+def _fast_polylines_work():
+    """True when this PySide6 hands out the polygon's memory as expected:
+    checked once, on three points, before a curve is ever drawn that way."""
+    try:
+        poly = _polyline_fast([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
+        return [(p.x(), p.y()) for p in poly] == [(1.0, 4.0), (2.0, 5.0),
+                                                  (3.0, 6.0)]
+    except Exception:          # noqa: BLE001 - any failure: the slow way
+        return False
+
+
+_polyline = _polyline_fast if _fast_polylines_work() else _polyline_slow
 
 
 

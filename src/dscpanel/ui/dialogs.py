@@ -11,7 +11,7 @@ value. Both forms are taken and the typed text is left alone while it is
 being typed.
 """
 
-from PySide6.QtCore import QLocale, QPointF, Qt, Signal
+from PySide6.QtCore import QLocale, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QValidator
 from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QColorDialog,
                                QComboBox, QDialog, QDialogButtonBox,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QColorDialog,
 #: ones never reach it.
 SCREEN_SHARE = 0.85
 
+import copy
 import html
 import os
 
@@ -776,8 +777,10 @@ class ArtistTransform(QWidget):
             box.setRange(-1e9, 1e9)
             box.setSingleStep(0.01)
             row_layout.addWidget(box)
-        self.at_x.setValue(float(artist.x))
-        self.at_y.setValue(float(artist.y))
+        x, y = self._shown_values()
+        self.at_x.setValue(x)
+        self.at_y.setValue(y)
+        self._shown = (self.at_x.value(), self.at_y.value())
         form.addRow("x, y", row)
         self._form, self._place_row = form, row
 
@@ -809,6 +812,51 @@ class ArtistTransform(QWidget):
         self.at_y.valueChanged.connect(self._apply)
         self.anchor.currentIndexChanged.connect(self._apply)
 
+    def hide_anchor(self):
+        """No anchor to choose: a note's text sits on its arrow."""
+        label = self._form.labelForField(self.anchor)
+        if label is not None:
+            label.setVisible(False)
+        self.anchor.setVisible(False)
+
+    def _hanging(self):
+        """A label that hangs from its curve: x and y are where it IS,
+        and typing them hangs it again from there."""
+        return (self.plot is not None
+                and bool(getattr(self.artist, "attached", False)))
+
+    def _free_twin(self):
+        """A free copy of a hanging label, in the space chosen: the numbers
+        a free label at the same spot would have (in the axis's own unit,
+        whatever that is - the plot converts, not this)."""
+        twin = copy.copy(self.artist)
+        twin.at = None
+        twin.scan = None
+        twin.parent_offset = None
+        twin.leader = None
+        twin.vline = None
+        twin.space = self.space.currentData()
+        return twin
+
+    def _shown_values(self):
+        artist = self.artist
+        if not self._hanging():
+            return float(artist.x), float(artist.y)
+        rect = self.plot.plot_rect()
+        px, py = self.plot.artist_point(artist, rect)
+        twin = self._free_twin()
+        self.plot.set_artist_point(twin, px, py, rect, clamp=False)
+        return float(twin.x), float(twin.y)
+
+    def _hang_at_typed(self):
+        twin = self._free_twin()
+        twin.x, twin.y = float(self.at_x.value()), float(self.at_y.value())
+        rect = self.plot.plot_rect()
+        px, py = self.plot.artist_point(twin, rect)
+        # Hangs from there: the point along its curve and the distance from
+        # it follow (`PlotWidget._place_attached`), as a drag does.
+        self.plot.set_artist_point(self.artist, px, py, rect, clamp=False)
+
     def hide_position(self, anchor_too=False):
         """No page position to type: a label hanging from its curve is
         placed by its point and distance instead."""
@@ -826,8 +874,10 @@ class ArtistTransform(QWidget):
             self.plot.convert_artist_space(self.artist, wanted)
         self.at_x.blockSignals(True)
         self.at_y.blockSignals(True)
-        self.at_x.setValue(float(self.artist.x))
-        self.at_y.setValue(float(self.artist.y))
+        x, y = self._shown_values()
+        self.at_x.setValue(x)
+        self.at_y.setValue(y)
+        self._shown = (self.at_x.value(), self.at_y.value())
         self.at_x.blockSignals(False)
         self.at_y.blockSignals(False)
         self._apply()
@@ -835,8 +885,14 @@ class ArtistTransform(QWidget):
     def _apply(self, *_args):
         self.artist.space = self.space.currentData()
         self.artist.anchor = self.anchor.currentData()
-        self.artist.x = float(self.at_x.value())
-        self.artist.y = float(self.at_y.value())
+        typed = (self.at_x.value(), self.at_y.value())
+        if self._hanging():
+            if typed != self._shown:
+                self._hang_at_typed()
+                self._shown = typed
+        else:
+            self.artist.x = float(typed[0])
+            self.artist.y = float(typed[1])
         if self.rotation is not None:
             self.artist.rotation = float(self.rotation.value())
         if self.on_change is not None:
@@ -883,6 +939,10 @@ class _LiveDialog(QDialog):
         QDialog.__init__(self, parent)
         if self.LAYERED and "z" not in type(self).FIELDS:
             self.FIELDS = tuple(type(self).FIELDS) + ("z",)
+        # A colour that follows another's (`colour_from`) reverts and
+        # undoes with the colour.
+        if "colour" in self.FIELDS and "colour_from" not in self.FIELDS:
+            self.FIELDS = tuple(self.FIELDS) + ("colour_from",)
         self.obj = obj
         self.on_change = on_change
         self.doc = _document_of(parent)
@@ -1081,17 +1141,75 @@ class _LiveDialog(QDialog):
                 + [(o, dict(saved)) for o, saved in self._group_snapshots])
 
 
+class _HexBox(QLineEdit):
+    """A colour as #rrggbb, to copy and paste between windows: a click
+    selects all of it."""
+
+    def focusInEvent(self, ev):
+        QLineEdit.focusInEvent(self, ev)
+        QTimer.singleShot(0, self.selectAll)
+
+
+def _donor_name(obj):
+    if hasattr(obj, "display_name"):
+        return obj.display_name()
+    text = getattr(obj, "text", None) or getattr(obj, "name", "")
+    return "\"{}\"".format(text) if text else type(obj).__name__.lower()
+
+
 def _colour_button(parent, get_colour, set_colour):
-    button = QPushButton(parent)
+    """A colour row of a settings window: the swatch (the picker, dropper
+    and all); the colour as #rrggbb right beside it, to copy, or to paste
+    one in and press Enter, without opening anything; and, for the
+    object's own colour, INHERIT - the next click on the figure names an
+    object whose colour this one then FOLLOWS (`model.sync_colours`,
+    saved with the session). Choosing a colour of its own ends that."""
+    row = QWidget(parent)
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    button = QPushButton(row)
     button.setFixedWidth(64)
+    hex_box = _HexBox(row)
+    hex_box.setFixedWidth(84)
+    hex_box.setToolTip("The colour as #rrggbb: copy it, or paste one in "
+                       "and press Enter.")
+    obj = getattr(parent, "obj", None)
+    # Only the object's OWN colour follows (not, say, a note's arrow).
+    follows = (obj is not None and hasattr(obj, "colour")
+               and getattr(parent, "_set_colour", None) == set_colour)
+    inherit = QPushButton("Inherit...", row) if follows else None
+    layout.addWidget(button)
+    layout.addWidget(hex_box)
+    if inherit is not None:
+        layout.addWidget(inherit)
+    layout.addStretch(1)
+    # core/model.py, imported here under that name
+    doc_model = units_module
 
     def refresh():
         colour = QColor(get_colour())
         button.setStyleSheet(
             "background: {}; border: 1px solid #555;".format(colour.name()))
+        if not hex_box.hasFocus():
+            hex_box.setText(colour.name())
+        if inherit is not None:
+            donor = getattr(obj, "colour_from", None)
+            inherit.setText("Inherits" if donor is not None
+                            else "Inherit...")
+            inherit.setToolTip(
+                "Follows the colour of {} - click to stop following."
+                .format(_donor_name(donor)) if donor is not None else
+                "Click, then click the object on the figure whose colour "
+                "this one follows from now on.")
+
+    def own(name):
+        """A colour of its own: no longer another's."""
+        if follows:
+            obj.colour_from = None
+        set_colour(name)
 
     def live(name):
-        set_colour(name)
+        own(name)
         refresh()
 
     def pick():
@@ -1102,14 +1220,53 @@ def _colour_button(parent, get_colour, set_colour):
         colour = pick_colour(QColor(get_colour()), parent, "Pick a colour",
                              live=live)
         if colour.isValid():
-            set_colour(colour.name())
+            own(colour.name())
         elif was_auto:
             auto.setChecked(True)
         refresh()
 
+    def typed():
+        text = hex_box.text().strip()
+        if text and not text.startswith("#"):
+            text = "#" + text
+        colour = QColor(text)
+        if colour.isValid() and len(text) in (4, 7) and \
+                colour.name() != QColor(get_colour()).name():
+            own(colour.name())
+        refresh()
+
+    def inherit_clicked():
+        if getattr(obj, "colour_from", None) is not None:
+            obj.colour_from = None          # keeps the colour it has
+            parent._live()
+            refresh()
+            return
+        plot = getattr(parent.parentWidget(), "plot", None)
+        if plot is None:
+            return
+
+        def chosen(donor):
+            if (donor is None or donor is obj or not hasattr(donor, "colour")
+                    or doc_model.inherits_from(donor, obj)):
+                return
+            obj.colour_from = donor
+            colour = doc_model.own_colour(donor)
+            if colour is not None:
+                set_colour(colour)
+            else:
+                parent._live()
+            refresh()
+
+        plot.pick_object(chosen, "INHERIT a colour: click the object it "
+                                 "follows - Esc gives up")
+
     button.clicked.connect(lambda _c=False: pick())
+    hex_box.editingFinished.connect(typed)
+    if inherit is not None:
+        inherit.clicked.connect(lambda _c=False: inherit_clicked())
     refresh()
-    return button
+    row.swatch, row.hex, row.inherit = button, hex_box, inherit
+    return row
 
 
 class ScanSettings(_LiveDialog):
@@ -2176,8 +2333,25 @@ class FigureSettings(_LiveDialog):
         self.axes_w.valueChanged.connect(self._axes_typed)
         self.axes_h.valueChanged.connect(self._axes_typed)
         self.dpi.valueChanged.connect(self._apply)
-        self.mode.currentIndexChanged.connect(self._apply)
+        self.mode.currentIndexChanged.connect(self._mode_changed)
         self.unit.currentIndexChanged.connect(self._unit_changed)
+
+    def _mode_changed(self, *_args):
+        """Going EXACT takes its numbers from the screen
+        (`exact_from_screen`), not from the stored size, so the figure keeps
+        its look: the stored one set every text out of proportion."""
+        fig = self.obj
+        wanted = self.mode.currentData()
+        if (wanted == figure_module.MODE_SIZE and fig.mode != wanted
+                and self.plot is not None and self.plot.doc is not None):
+            for name, value in self.plot.exact_from_screen().items():
+                setattr(fig, name, value)
+            fig.mode = wanted
+            fig.grown = {}
+            self._live()
+            self._show()
+            return
+        self._apply()
 
     def _boxes(self):
         return (self.fig_w, self.fig_h, self.margin_l, self.margin_r,
@@ -2441,15 +2615,20 @@ class LabelSettings(_LiveDialog):
         label = self.obj
         on = bool(getattr(label, "attached", False))
         form = self.findChildren(QFormLayout)[0]
+        # A label on a curve is placed like every other artist, by x and y
+        # in the Place rows (`ArtistTransform`, which hangs it again where
+        # it is typed). The point on the curve, a distance and a sideways
+        # shift in px read as confusing in use: those rows are never
+        # shown now.
         for widget in self._hang_rows:
-            visible = on and not (widget is self.hang_dx and label.leader)
-            widget.setVisible(visible)
+            widget.setVisible(False)
             caption = form.labelForField(widget)
             if caption is not None:
-                caption.setVisible(visible)
+                caption.setVisible(False)
         if not on:
             return
-        self.transform.hide_position(anchor_too=bool(label.leader))
+        if label.leader:
+            self.transform.hide_anchor()
         plot = getattr(self.parent(), "plot", None)
         celsius = plot.attached_celsius(label) if plot is not None else None
         for widget in self._hang_rows:

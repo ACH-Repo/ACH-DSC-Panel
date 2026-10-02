@@ -16,8 +16,12 @@ UI-free: `load` takes the reader as an argument, so this module never imports
 the reader or a window and is testable with a stub.
 """
 
+import base64
 import json
 import os
+import shutil
+import tempfile
+import zlib
 
 from . import dtg
 from . import figure as figure_module
@@ -195,6 +199,87 @@ def _restore_analysis(analysis, saved, version):
         analysis.label = None
 
 
+
+# ------------------------------------------------- where a session's files are
+# A session names its files by path. Moved, a file is looked for BESIDE THE
+# SESSION (its folder and the folders under it, by name), and where the
+# panel keeps copies (`profile.EMBED_SOURCES`) the copy inside the session is
+# read when it is nowhere to be found - and the opening says which.
+
+def _source_copy(sample):
+    """The copy a session keeps of a sample's file - zlib, then base64 - or
+    None. Made once per file read (`is_modified` saves often)."""
+    data = getattr(sample, "source_bytes", None)
+    if not data:
+        return None
+    cached = getattr(sample, "_source_copy", None)
+    if cached is None or cached[0] is not data:
+        cached = (data, base64.b64encode(zlib.compress(data, 9)).decode(
+            "ascii"))
+        sample._source_copy = cached
+    return cached[1]
+
+
+#: How many files the look beside a session reads the names of, at most.
+LOOK_LIMIT = 20000
+
+
+def _look_beside(session_path, wanted):
+    """A file named as `wanted` is, in the session's folder or a folder
+    under it, or None."""
+    name = os.path.basename(str(wanted).replace("\\", "/")).lower()
+    if not name:
+        return None
+    folder = os.path.dirname(os.path.abspath(session_path))
+    seen = 0
+    for base, dirs, files in os.walk(folder):
+        dirs.sort()
+        for found in files:
+            if found.lower() == name:
+                return os.path.join(base, found)
+        seen += len(files)
+        if seen > LOOK_LIMIT:
+            break
+    return None
+
+
+def _read_entry(entry, session_path, read_sample, notes, relocated):
+    """One of a session's files: where it was; else beside the session;
+    else the copy inside it. Raises with the reader's reason when none of
+    them is there. A file read from elsewhere keeps the path the session
+    knew it by until the opening is done (everything is matched by it),
+    then takes its new one (`relocated`)."""
+    path = entry["path"]
+    if os.path.isfile(path):
+        return read_sample(path)
+    shown = os.path.basename(str(path).replace("\\", "/"))
+    found = _look_beside(session_path, path)
+    if found is not None:
+        sample = read_sample(found)
+        sample.path = path
+        relocated.append((sample, found))
+        notes.append("{}: moved - found beside the session".format(shown))
+        return sample
+    copy = entry.get("copy")
+    if copy:
+        data = zlib.decompress(base64.b64decode(copy))
+        folder = tempfile.mkdtemp(prefix="panel-copy-")
+        try:
+            temp = os.path.join(folder, shown)
+            with open(temp, "wb") as fh:
+                fh.write(data)
+            sample = read_sample(temp)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+        sample.path = path
+        sample.source_bytes = data
+        sample.from_copy = True
+        notes.append("{}: not where it was - read from the copy inside "
+                     "the session".format(shown))
+        return sample
+    return read_sample(path)
+
+
 def to_state(doc):
     """The document as plain data, ready for `json.dump`."""
     samples = []
@@ -207,6 +292,10 @@ def to_state(doc):
             "title": sample.title,
             "composition": sample.composition,
         })
+    for entry, sample in zip(samples, doc.samples):
+        copy = _source_copy(sample)
+        if copy:
+            entry["copy"] = copy
     scans = []
     for scan in doc.scans:
         scans.append({
@@ -331,6 +420,7 @@ def to_state(doc):
                   "space": arrow.space, "anchor": arrow.anchor},
         "samples": samples,
         "scans": scans,
+        "colour_links": model.colour_links(doc),
     }
 
 
@@ -361,6 +451,7 @@ def load(path, read_sample):
     doc.loaded_version = version
     problems = []
     by_path = {}
+    relocated = []
     saved_style = dict(state.get("style") or {})
     if version < 6:
         # The fit margins were percent of the data's range until version 6.
@@ -375,7 +466,8 @@ def load(path, read_sample):
     doc.figure.grown = figure_module.clean_grown(state.get("figure_grown"))
     for entry in state.get("samples", []):
         try:
-            sample = read_sample(entry["path"])
+            sample = _read_entry(entry, path, read_sample, problems,
+                                 relocated)
         except Exception as exc:
             problems.append("{}: {}".format(
                 os.path.basename(entry.get("path", "?")), exc))
@@ -663,5 +755,8 @@ def load(path, read_sample):
         # saved with it (a change of unit fits the range
         # again, so a range is always in the unit in force).
         doc.view["y2_unit"] = doc.weight_unit
+    model.restore_colour_links(doc, state.get("colour_links"))
+    for sample, found in relocated:
+        sample.path = found
     doc.path = str(path)
     return doc, problems

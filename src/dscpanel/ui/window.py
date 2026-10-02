@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (QApplication, QDialog,
 
 from .. import branding
 from ..core import (arrange, dtg, export, loader, measure, model, ops,
-                    presets,
+                    presets, profile,
                     session, style, undo, units)
 from ..core.chem import mirrored_layout
 from ..core.log import LOGGER
@@ -242,6 +242,7 @@ class MainWindow(QMainWindow):
         plot.transform_done.connect(self._transform_done)
         plot.measure_ready.connect(self._measure_ready)
         plot.view_committed.connect(self._view_committed)
+        plot.exact_wanted.connect(self.go_exact)
         plot.margin_done.connect(
             lambda side, share: self.set_fit_margin(side, share))
         plot.page_margin_done.connect(
@@ -407,6 +408,8 @@ class MainWindow(QMainWindow):
             self.set_background(colour.name())
 
     def refresh(self, keep_view=True):
+        # Colours that follow another object's take it first.
+        model.sync_colours(self.doc)
         plot_module.set_theme(self.drawing_theme(), accent=self.doc.theme)
         # The windows around the plot wear its theme too: the outliner, the
         # menus and the dialogs were light beside a dark plot.
@@ -609,6 +612,28 @@ class MainWindow(QMainWindow):
         return self.set_page_margins(dict(zip(
             figure_module.MARGIN_SIDES, plot.least_page_margins())),
             "tighten the page margins")
+
+    def go_exact(self):
+        """The figure to an EXACT size, taken from the screen
+        (`PlotWidget.exact_from_screen`): nothing moves or changes size,
+        and the blades then work on real margins. Said in orange, since the
+        user only took a blade. One undo step."""
+        layout = self.doc.figure
+        if layout.mode == figure_module.MODE_SIZE:
+            return []
+        plot = self.plot
+        values = plot.exact_from_screen()
+        changes = [(layout, "mode", figure_module.MODE_SIZE)] + [
+            (layout, name, value) for name, value in values.items()]
+        if layout.grown:
+            changes.append((layout, "grown", {}))
+        self.undo.set_props(changes, "exact size")
+        plot.fit_page()
+        self.refresh()
+        plot.flash("Exact size now: {:.1f} x {:.1f} {} - as it was on "
+                   "screen".format(values["width"], values["height"],
+                                   layout.unit), seconds=4.0, warn=True)
+        return changes
 
     def set_page_margin(self, side, value):
         """One white margin of an exact figure, in its unit: what a blade
@@ -1096,7 +1121,9 @@ class MainWindow(QMainWindow):
         r("transform.scale", "Scale the selection", lambda c: c.plot.start_scale(),
           category="Transform", key="S",
           shortcut="S, then move or type a factor, Enter (Esc cancels); "
-                   "with only scans selected, spreads them about y = 0",
+                   "with only scans selected, spreads them evenly; T, B or M "
+                   "holds the top, the bottom or the middle still; P keeps "
+                   "their own gaps",
           enabled=lambda c: (any(c.plot.scale_fields(o)
                                  for o in c.doc.selected())
                              or c.spreadable()),
@@ -1115,6 +1142,14 @@ class MainWindow(QMainWindow):
               category="Transform", key=key, shortcut=key,
               enabled=lambda c: len(c.selected_artists()) >= 2,
               aliases=("align", "line up", edge, "chemdraw"))
+        for direction, words in (("x", "across"), ("y", "down")):
+            r("arrange.distribute_" + direction,
+              "Space the artists evenly {}".format(words),
+              (lambda d: lambda c: c.distribute_artists(d))(direction),
+              category="Transform",
+              enabled=lambda c: len(c.selected_artists()) >= 3,
+              aliases=("distribute", "space", "evenly", "equal gaps",
+                       "spacing", "labels", words))
         # The stack order, per object: Page Up and Page Down, which every
         # keyboard layout has (brackets need AltGr on a German one).
         for how, key, words in (
@@ -1341,9 +1376,11 @@ class MainWindow(QMainWindow):
               aliases=("flush", "alignment", "justify", words))
         r("legend.settings", "Legend settings...",
           lambda c: c.edit_object(c.doc.legend), category="Object")
-        r("label.add", "Add a label...", lambda c: c.add_label(),
+        r("label.add", "Add a label (on curves: their names)",
+          lambda c: c.add_label(),
           category="Object", key="Ctrl+T", shortcut="Ctrl+T",
-          aliases=("text", "caption", "annotate", "title"))
+          aliases=("text", "caption", "annotate", "title", "name",
+                   "names", "label curves", "name labels"))
         r("label.vline", "Add a marker line...", lambda c: c.add_marker_line(),
           category="Object",
           shortcut="or right-click the plot",
@@ -1695,7 +1732,7 @@ class MainWindow(QMainWindow):
         act.triggered.connect(lambda _c=False: self.edit_object(scan))
         molar = menu.addAction("Set the molar mass...")
         molar.triggered.connect(lambda _c=False: self.ask_molar_mass([scan]))
-        caption = menu.addAction("Add a label...")
+        caption = menu.addAction("Label it with its name")
         caption.triggered.connect(lambda _c=False: self.add_label(scan=scan))
         # Where the right-click was: the pointer leaves the plot for the
         # menu, and the note must point at the curve, not at the menu.
@@ -2469,7 +2506,7 @@ class MainWindow(QMainWindow):
         right = max(b.right() for _a, b in boxes)
         top = min(b.top() for _a, b in boxes)
         bottom = max(b.bottom() for _a, b in boxes)
-        changes = []
+        moves = []
         for artist, box in boxes:
             dx = {"left": left - box.left(), "right": right - box.right(),
                   "centre": (left + right) / 2.0 - box.center().x()
@@ -2477,16 +2514,75 @@ class MainWindow(QMainWindow):
             dy = {"top": top - box.top(), "bottom": bottom - box.bottom(),
                   "middle": (top + bottom) / 2.0 - box.center().y()
                   }.get(edge, 0.0)
-            old = (artist.x, artist.y)
-            x, y = plot.artist_point(artist, rect)
-            plot.set_artist_point(artist, x + dx, y + dy, rect, clamp=False)
-            new = (artist.x, artist.y)
-            artist.x, artist.y = old
-            if new != old:
-                changes += [(artist, "x", new[0]), (artist, "y", new[1])]
-        self.undo.set_props(changes, "align {}".format(edge))
+            moves.append((artist, dx, dy))
+        self._move_artists(moves, "align {}".format(edge))
         self.note.setText("{} artists aligned: {}".format(len(artists), edge))
         return len(artists)
+
+    def distribute_artists(self, direction):
+        """The selected artists spaced evenly ACROSS ("x") or DOWN ("y"):
+        the two outermost stay, and the ones between move so the GAPS
+        between neighbouring boxes are equal - labels of different widths
+        then look evenly spaced, and a block of lines of one height gets one
+        pitch. Three or more. One undo step."""
+        artists = self.selected_artists()
+        if len(artists) < 3:
+            return None
+        plot = self.plot
+        rect = plot.plot_rect()
+        boxes = [(a, plot.rotated_bounds(a, plot.artist_box(a, rect), rect))
+                 for a in artists]
+        across = direction == "x"
+
+        def start(box):
+            return box.left() if across else box.top()
+
+        def size(box):
+            return box.width() if across else box.height()
+
+        boxes.sort(key=lambda item: start(item[1]) + size(item[1]) / 2.0)
+        first, last = boxes[0][1], boxes[-1][1]
+        room = (start(last) + size(last)) - start(first)
+        gap = (room - sum(size(b) for _a, b in boxes)) / (len(boxes) - 1)
+        moves, at = [], start(first)
+        for artist, box in boxes:
+            shift = at - start(box)
+            moves.append((artist, shift if across else 0.0,
+                          0.0 if across else shift))
+            at += size(box) + gap
+        self._move_artists(moves, "distribute {} artists".format(
+            len(artists)))
+        self.note.setText("{} artists spaced evenly {}".format(
+            len(artists), "across" if across else "down"))
+        return len(artists)
+
+    def _move_artists(self, moves, label):
+        """Move artists by distances on the page, `[(artist, dx, dy), ...]`,
+        as ONE undo step - through every field an artist keeps its place
+        in (`PlotWidget._fields_of`: a label on a curve hangs from `at`,
+        `dx`, `dy`; a band marker stands at `vline`), not only x and y,
+        which left those where they were. Redrawn at once: the picture is
+        cached, and the move used to show only when the selection
+        changed."""
+        plot = self.plot
+        rect = plot.plot_rect()
+        changes = []
+        for artist, dx, dy in moves:
+            if not dx and not dy:
+                continue
+            names = plot._fields_of(artist)
+            old = tuple(list(v) if isinstance(v, list) else v
+                        for v in plot._stored_of(artist))
+            x, y = plot.artist_point(artist, rect)
+            plot.set_artist_point(artist, x + dx, y + dy, rect, clamp=False)
+            new = plot._stored_of(artist)
+            for name, value in zip(names, old):
+                setattr(artist, name, value)
+            changes += [(artist, name, value) for name, value, was
+                        in zip(names, new, old) if value != was]
+        self.undo.set_props(changes, label)
+        self.refresh()
+        return changes
 
     def stack_objects(self):
         """Everything with a place in the stack, bottom first. The weight
@@ -3052,19 +3148,36 @@ class MainWindow(QMainWindow):
         self.note.setText("Legend {}".format(
             "shown" if legend.visible else "hidden"))
 
-    def add_label(self, text=None, at=None, scan=None):
-        """Put a caption on the figure, undoably.
+    #: How a name label sits against the end of its curve, by the corner
+    #: `profile.name_label_corner` gives: the end it hangs from, its anchor
+    #: there, its flush, and its step from the curve (figure units, down
+    #: positive).
+    NAME_CORNERS = {
+        "lower right": ("right", "top right", "right", -4.0, 4.0),
+        "upper right": ("right", "bottom right", "right", -4.0, -4.0),
+        "lower left": ("left", "top left", "left", 4.0, 4.0),
+        "upper left": ("left", "bottom left", "left", 4.0, -4.0),
+    }
 
-        Placed where the cursor is, or in the middle when there is no cursor
-        (F3, a menu). It is an object from the moment it exists: draggable,
-        editable, selectable, saved with the session.
+    #: What a free label says until it is retyped.
+    DEFAULT_LABEL = "Label"
+
+    def add_label(self, text=None, at=None, scan=None):
+        """Put a caption on the figure, undoably - nothing is asked first.
+
+        With curves selected (or `scan`) and no `text`: a label for each,
+        saying its name (`name_labels`). Otherwise one free label, `text`
+        or "Label" until it is retyped (double-click), where the cursor is,
+        or in the middle when there is no cursor (F3, a menu). An object
+        from the moment it exists: draggable, editable, selectable, saved
+        with the session; selected once made.
         """
-        from PySide6.QtWidgets import QInputDialog as _Input
-        if text is None:
-            text, ok = _Input.getText(self, "Add a label", "Text:")
-            if not ok or not text.strip():
-                return None
-            text = text.strip()
+        if text is None and at is None:
+            scans = ([scan] if scan is not None else
+                     [s for s in self.doc.selected_scans() if s.visible])
+            if scans:
+                return self.name_labels(scans)
+        text = str(text or "").strip() or self.DEFAULT_LABEL
         rect = self.plot.plot_rect()
         cursor = at or self.plot._cursor
         if cursor is not None:
@@ -3082,8 +3195,55 @@ class MainWindow(QMainWindow):
             lambda: self.doc.labels.append(label),
             lambda: self.doc.remove_label(label),
             "add a label"))
+        self.doc.select_only([label])
         self.refresh()
         return label
+
+    def name_labels(self, scans):
+        """A label for each of `scans`, saying its name, hanging from its
+        curve - at the end and on the side `profile.name_label_corner`
+        gives - in its colour: what Ctrl+T makes on selected curves, with
+        no text asked for. A curve whose name already hangs from it gets no
+        second. One undo step; the new labels selected."""
+        plot, doc = self.plot, self.doc
+        rect = plot.plot_rect()
+        side, anchor, flush, dx, dy = self.NAME_CORNERS.get(
+            profile.name_label_corner(doc), self.NAME_CORNERS["upper right"])
+        made = []
+        for scan in scans:
+            name = scan.display_name()
+            if any(lb.text == name and lb.scan is scan for lb in doc.labels):
+                continue
+            trace = plot._trace_of(scan)
+            k = plot.end_sample(trace, side, rect)
+            if k is None:
+                continue
+            label = model.TextLabel(doc._next_id(), name, 0.5, 0.5, scan)
+            label.anchor = anchor
+            label.flush = flush
+            label.at = ("i", trace.first + int(k))
+            label.dx, label.dy = dx, dy
+            made.append(label)
+        if not made:
+            self.note.setText("Nothing to label: each has its name already, "
+                              "or is not on show")
+            return []
+
+        def put():
+            for label in made:
+                if label not in doc.labels:
+                    doc.labels.append(label)
+
+        def take():
+            for label in made:
+                doc.remove_label(label)
+
+        self.undo.push(undo.CallCommand(put, take, "name labels"))
+        doc.select_only(made)
+        self.refresh()
+        self.note.setText("{} label(s): G or a drag moves them, a "
+                          "double-click retypes one".format(len(made)))
+        return made
 
     def add_note(self, text=None, at=None):
         """A NOTE: a label with an arrow to a point.
@@ -3188,6 +3348,11 @@ class MainWindow(QMainWindow):
             changes += [(label, "scan", scan), (label, "parent_offset",
                                                 followed),
                         (label, "x", x), (label, "y", y)]
+            if scan is not None:
+                # Given to a curve, it wears the curve's colour ("Same as
+                # parent"), as an owned label does until told otherwise.
+                changes += [(label, "colour", "auto"),
+                            (label, "colour_from", None)]
             if leader != label.leader:
                 changes.append((label, "leader", leader))
             if hung is not None:
@@ -3846,7 +4011,8 @@ class MainWindow(QMainWindow):
                                           "Colour for the selection")
         if not colour.isValid():
             return
-        self.undo.set_props([(s, "colour", colour.name()) for s in scans],
+        self.undo.set_props([(s, "colour", colour.name()) for s in scans]
+                            + [(s, "colour_from", None) for s in scans],
                             "colour")
 
     def gradient_dialog(self, scans=None):

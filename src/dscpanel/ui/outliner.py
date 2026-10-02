@@ -304,7 +304,7 @@ class Outliner(QTreeWidget):
         item.setCheckState(0, Qt.Checked if scan.visible else Qt.Unchecked)
         # The plot's colour for it, which on the light theme is the same
         # hue darkened to read on white (`plot.for_light`).
-        colour = (plot_module.for_light(scan.colour)
+        colour = (plot_module.paper_colour(scan.colour)
                   if plot_module.THEME == plot_module.THEME_LIGHT
                   else QColor(scan.colour))
         item.setForeground(0, QBrush(colour))

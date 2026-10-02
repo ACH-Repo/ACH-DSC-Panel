@@ -57,13 +57,15 @@ This file is GENERATED. After adding an operator, run:
 | Mirror horizontally (left-right) | `Ctrl+Shift+H` | always |  |
 | Mirror vertically (top-bottom) | `Ctrl+Shift+V` | always |  |
 | Move the selection | `G, then a number, Enter (Esc cancels)` | something is selected | then a number, Enter; Shift is precision, Ctrl snaps |
-| Scale the selection | `S, then move or type a factor, Enter (Esc cancels); with only scans selected, spreads them about y = 0` | the arrow, the legend or a label is selected |  |
+| Scale the selection | `S, then move or type a factor, Enter (Esc cancels); with only scans selected, spreads them evenly; T, B or M holds the top, the bottom or the middle still; P keeps their own gaps` | the arrow, the legend or a label is selected |  |
 | Align the artists' left edges | `Ctrl+Shift+Alt+L` | always |  |
 | Align the artists' right edges | `Ctrl+Shift+Alt+R` | always |  |
 | Align the artists' top edges | `Ctrl+Shift+Alt+T` | always |  |
 | Align the artists' bottom edges | `Ctrl+Shift+Alt+B` | always |  |
 | Align the artists' centres, side to side | `Ctrl+Shift+Alt+C` | always |  |
 | Align the artists' middles, up and down | `Ctrl+Shift+Alt+M` | always |  |
+| Space the artists evenly across |  | always |  |
+| Space the artists evenly down |  | always |  |
 | Stack the selected scans evenly |  | two or more scans selected |  |
 | Distribute the offsets evenly |  | three or more scans selected |  |
 | Align the selection to the active scan |  | two or more scans selected | closed-form fit to the first selected scan |
@@ -97,7 +99,7 @@ This file is GENERATED. After adding an operator, run:
 | Align labels right | `Ctrl+R` | an analysis, or a scan with one shown, is selected |  |
 | Align labels centred | `Ctrl+M` | an analysis, or a scan with one shown, is selected |  |
 | Legend settings... |  | always |  |
-| Add a label... | `Ctrl+T` | always |  |
+| Add a label (on curves: their names) | `Ctrl+T` | always | on selected curves: their names, nothing asked |
 | Add a marker line... | `or right-click the plot` | always |  |
 | Add a note with an arrow... | `Ctrl+Shift+T, or right-click a curve` | always |  |
 | Give the selected labels to the selected scan | `Ctrl+P, or drag the label onto the scan in the outliner` | always |  |
@@ -123,7 +125,7 @@ This file is GENERATED. After adding an operator, run:
 | Mass axis: mg |  | always |  |
 | Show or hide the mass curves |  | always |  |
 | Show or hide the DTG curves |  | always |  |
-| DTG axis: %/°C |  | always |  |
+| DTG axis: %/degC |  | always |  |
 | DTG axis: %/min |  | always |  |
 | Show or hide the heat flow curves |  | always |  |
 | Theme: blender-default |  | always |  |
@@ -154,7 +156,7 @@ This file is GENERATED. After adding an operator, run:
 | :-- | :-- | :-- | :-- |
 | Search operators... | `F3` | always | also the Search button on the menu bar |
 | Open the log folder |  | always |  |
-| About DSC-Panel |  | always | Help menu: version, reader, Qt |
+| About Triplot |  | always | Help menu: version, reader, Qt |
 | Settings... | `Ctrl+,` | always | sizes, label alignment, pick distance |
 
 ## Analyse

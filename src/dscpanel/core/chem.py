@@ -212,7 +212,7 @@ def label_of(atom, hydrogens_left=False):
         text = hydrogens + text if hydrogens_left else text + hydrogens
     charge = int(atom.get("charge", 0))
     if charge:
-        sign = "+" if charge > 0 else "−"
+        sign = "+" if charge > 0 else "\u2212"
         text += "^{%s%s}" % ("" if abs(charge) == 1 else abs(charge), sign)
     return text
 

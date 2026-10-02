@@ -39,7 +39,7 @@ def test_offsets_follow_a_change_of_unit(document):
 
 # ------------------------------------------------------------------- model
 def test_number_reads_german_decimals_and_units():
-    assert model.number("58,4977 °C") == pytest.approx(58.4977)
+    assert model.number("58,4977 \u00b0C") == pytest.approx(58.4977)
     assert model.number("13.2611 J/g") == pytest.approx(13.2611)
     assert model.number(None) is None
 
@@ -82,7 +82,7 @@ def test_analyses_segment_numbers_are_one_based(sample):
     onset one scan down, which is how this was found."""
     sample.data["analyses"] = {
         "Ramp 10,00 C/min to 250 C #1": {
-            "Onset point": [{"segment": 1, "Onset x": "61,08 °C"}]}}
+            "Onset point": [{"segment": 1, "Onset x": "61,08 \u00b0C"}]}}
     assert len(sample.analyses_for(0)) == 1
     assert sample.analyses_for(1) == []
 
@@ -90,7 +90,7 @@ def test_analyses_segment_numbers_are_one_based(sample):
 def test_text_export_analyses_are_matched_by_step_name(sample):
     sample.data["analyses"] = {
         "Ramp 10,00 C/min to 250 C": {
-            "Onset point": [{"Onset x": "61,08 °C"}]}}
+            "Onset point": [{"Onset x": "61,08 \u00b0C"}]}}
     first = sample.analyses_for(0)
     assert len(first) == 1 and first[0]["attribution"] == "by step name"
     assert sample.analyses_for(1) == []

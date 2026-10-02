@@ -511,6 +511,13 @@ class GradientDialog(QDialog):
         self.setWindowTitle("Colour gradient")
         self.scans = shades.stack_order(scans)
         self.before = [(scan, scan.colour) for scan in self.scans]
+        # A gradient gives each curve a colour of its own: one that
+        # FOLLOWED another object's stops (else the next refresh put the
+        # donor's back over the gradient); Revert and undo bring it back.
+        self.links = [(scan, getattr(scan, "colour_from", None))
+                      for scan in self.scans]
+        for scan in self.scans:
+            scan.colour_from = None
         self._on_change = on_change
         self._reverted = False
         self.base = QColor(self.scans[0].colour if self.scans else "#1f77b4")
@@ -601,6 +608,10 @@ class GradientDialog(QDialog):
             if new != old:
                 scan.colour = old
                 found.append((scan, "colour", new))
+        for scan, link in self.links:
+            if link is not None:
+                scan.colour_from = link
+                found.append((scan, "colour_from", None))
         return found
 
     def keyPressEvent(self, ev):
@@ -616,6 +627,8 @@ class GradientDialog(QDialog):
         self._reverted = True
         for scan, old in self.before:
             scan.colour = old
+        for scan, link in self.links:
+            scan.colour_from = link
         if self._on_change is not None:
             self._on_change()
         QDialog.reject(self)

@@ -63,7 +63,7 @@ DEFAULTS = (
     ("Signal change", "\\Delta*q* = {}"),
 )
 
-_DEG = "°"
+_DEG = "\u00b0"
 
 #: Every unit a label may ask for, per quantity, as a factor from the base
 #: unit (degC, J/g, W/g) and what that factor needs.

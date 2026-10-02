@@ -158,6 +158,20 @@ def test_generated_python_is_ascii():
     assert not bad, "em-dashes in: {}".format(bad)
 
 
+def test_the_source_is_ascii():
+    """PowerShell 5.1 reads a file with no BOM as cp1252: anything past
+    ASCII arrives mangled. Unicode is written as escapes (`"\u00b0C"`),
+    in prose as words (degC). The dash test above let a degree sign
+    through for weeks."""
+    bad = []
+    for path in _sources():
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        if any(byte > 127 for byte in raw):
+            bad.append(os.path.relpath(path, ROOT))
+    assert not bad, "non-ASCII in: {}".format(bad)
+
+
 def test_the_reader_lives_here():
     """The reader is this program's own and is fixed here, never copied
     in from elsewhere: a test that compared it with a sibling checkout
@@ -169,3 +183,33 @@ def test_the_reader_lives_here():
             head = fh.read(300)
         assert "VENDORED" not in head and "this file" in head, name
     assert not os.path.exists(os.path.join(ROOT, "tools", "vendor.py"))
+
+
+def test_no_module_name_is_bound_twice():
+    """A module-level name given twice silently replaces the first: the
+    markup's accent table was once called `ACCENTS` like the theme's
+    handling colours, and a white page under a dark theme raised
+    KeyError 'tilde'."""
+    import ast
+    twice = []
+    for path in _sources():
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        seen = {}
+        for node in tree.body:
+            names = []
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = (node.targets if isinstance(node, ast.Assign)
+                           else [node.target])
+                for target in targets:
+                    names += [n.id for n in ast.walk(target)
+                              if isinstance(n, ast.Name)]
+            elif isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                names.append(node.name)
+            for name in names:
+                if name in seen:
+                    twice.append("{}: {} (lines {} and {})".format(
+                        os.path.relpath(path, ROOT), name, seen[name],
+                        node.lineno))
+                seen.setdefault(name, node.lineno)
+    assert not twice, twice

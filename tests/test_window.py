@@ -410,10 +410,10 @@ def test_analyses_are_off_until_they_are_ticked(window):
     scan._analyses = None
     scan.sample.data["analyses"] = {
         "Ramp 10,00 C/min to 250 C #1": {
-            "Onset point": [{"segment": 1, "Onset x": "61,08 °C",
-                             "Onset cursor x": "53,40 °C"}],
-            "Glass transition": [{"segment": 1, "Midpoint": "78,91 °C",
-                                  "Onset cursor x": "63,19 °C"}]}}
+            "Onset point": [{"segment": 1, "Onset x": "61,08 \u00b0C",
+                             "Onset cursor x": "53,40 \u00b0C"}],
+            "Glass transition": [{"segment": 1, "Midpoint": "78,91 \u00b0C",
+                                  "Onset cursor x": "63,19 \u00b0C"}]}}
     analyses = scan.analysis_objects
     assert len(analyses) == 2
     assert not any(a.visible for a in analyses)
@@ -431,7 +431,7 @@ def test_an_analysis_says_how_sure_its_attribution_is(window):
     scan._analyses = None
     scan.sample.data["analyses"] = {
         "Ramp 10,00 C/min to 250 C": {           # no segment: a .txt export
-            "Onset point": [{"Onset x": "61,08 °C"}]}}
+            "Onset point": [{"Onset x": "61,08 \u00b0C"}]}}
     analysis = scan.analysis_objects[0]
     assert analysis.attribution == "by step name"
     assert not analysis.certain
@@ -444,7 +444,7 @@ def test_an_analysis_can_be_moved_to_another_scan(window):
     first._analyses = None
     first.sample.data["analyses"] = {
         "Ramp 10,00 C/min to 250 C": {
-            "Onset point": [{"Onset x": "61,08 °C"}]}}
+            "Onset point": [{"Onset x": "61,08 \u00b0C"}]}}
     analysis = first.analysis_objects[0]
     analysis.reassign(second)
     assert analysis.scan is second
@@ -458,9 +458,9 @@ def test_show_and_hide_every_analysis_is_one_undo_step(window):
     scan._analyses = None
     scan.sample.data["analyses"] = {
         "Ramp 10,00 C/min to 250 C #1": {
-            "Onset point": [{"segment": 1, "Onset x": "61,08 °C"}],
+            "Onset point": [{"segment": 1, "Onset x": "61,08 \u00b0C"}],
             "Peak Integration (enthalpy)": [
-                {"segment": 1, "Peak temperature": "88,84 °C",
+                {"segment": 1, "Peak temperature": "88,84 \u00b0C",
                  "Enthalpy (normalized)": "13,26 J/g"}]}}
     window.doc.select_only([scan])
     window.run_op("analysis.show")
@@ -477,8 +477,8 @@ def test_the_session_remembers_which_analyses_were_on(window, tmp_path,
     scan._analyses = None
     scan.sample.data["analyses"] = {
         "Ramp 10,00 C/min to 250 C #1": {
-            "Onset point": [{"segment": 1, "Onset x": "61,08 °C",
-                             "Onset cursor x": "53,40 °C"}]}}
+            "Onset point": [{"segment": 1, "Onset x": "61,08 \u00b0C",
+                             "Onset cursor x": "53,40 \u00b0C"}]}}
     scan.analysis_objects[0].visible = True
     scan.analysis_objects[0].label = "the one that matters"
     path = tmp_path / "figure.dscpanel"
@@ -555,7 +555,7 @@ def test_no_grid_and_the_template_captions_by_default(window):
     from dscpanel.ui.plot import markup_runs
     runs = markup_runs(doc.axes["x"].caption(doc))
     assert runs[0] == ("T", True, False)       # italic, not a subscript
-    assert any(part.strip().endswith("°C") for part, _i, _s in runs)
+    assert any(part.strip().endswith("\u00b0C") for part, _i, _s in runs)
     assert doc.axes["y"].caption(doc).startswith("Heat Flow")
     assert "W/g" in doc.axes["y"].caption(doc)
     window.plot.grab()
@@ -596,7 +596,7 @@ def test_dragging_an_analysis_moves_only_its_label_vertically(window):
     scan._analyses = None
     scan.sample.data["analyses"] = {
         "Ramp 10,00 C/min to 250 C #1": {
-            "Onset point": [{"segment": 1, "Onset x": "120,0 °C"}]}}
+            "Onset point": [{"segment": 1, "Onset x": "120,0 \u00b0C"}]}}
     analysis = scan.analysis_objects[0]
     analysis.visible = True
     window.refresh()
@@ -620,10 +620,10 @@ def test_an_integration_is_shaded(window):
     scan.sample.data["analyses"] = {
         "Ramp 10,00 C/min to 250 C #1": {
             "Peak Integration (enthalpy)": [
-                {"segment": 1, "Peak temperature": "120,0 °C",
+                {"segment": 1, "Peak temperature": "120,0 \u00b0C",
                  "Enthalpy (normalized)": "13,3 J/g",
-                 "Baseline cursor x": "80,0 °C",
-                 "Baseline cursor x1": "160,0 °C"}]}}
+                 "Baseline cursor x": "80,0 \u00b0C",
+                 "Baseline cursor x1": "160,0 \u00b0C"}]}}
     analysis = scan.analysis_objects[0]
     assert analysis.shade
     analysis.visible = True
@@ -841,10 +841,10 @@ def test_a_downward_peak_labels_from_below(window):
     scan.sample.data["analyses"] = {
         "Ramp 10,00 C/min to 250 C #1": {
             "Peak Integration (enthalpy)": [
-                {"segment": 1, "Peak temperature": "120,0 °C",
+                {"segment": 1, "Peak temperature": "120,0 \u00b0C",
                  "Enthalpy (normalized)": "13,3 J/g",
-                 "Baseline cursor x": "80,0 °C",
-                 "Baseline cursor x1": "160,0 °C"}]}}
+                 "Baseline cursor x": "80,0 \u00b0C",
+                 "Baseline cursor x1": "160,0 \u00b0C"}]}}
     analysis = scan.analysis_objects[0]
     analysis.visible = True
     window.refresh()
@@ -1089,6 +1089,8 @@ def test_a_label_can_belong_to_a_line(window, tmp_path, sample):
                              scan=scan)
     assert label.scan is scan
     assert window.doc.labels_for(scan) == [label]
+    assert window.doc.selected() == [label]          # made, and selected
+    window.doc.select_only([])
     # an owned label wears its line's colour while its own is automatic
     assert window.plot.label_colour(label).name() == "#ff8800"
     label.colour = "#00ff00"
@@ -4055,7 +4057,7 @@ def _analysis_at_the_extreme(window, offset, dy):
     trace = next(t for t in plot.traces if t.scan is scan)
     pick = np.argmax if offset > 0 else np.argmin
     index = 20 + int(pick(trace.y[20:-20]))
-    temperature = "{:.2f} °C".format(float(trace.x[index]))
+    temperature = "{:.2f} \u00b0C".format(float(trace.x[index]))
     scan._analyses = None
     scan.sample.data["analyses"] = {
         "Ramp 10,00 C/min to 250 C #1": {
@@ -4107,7 +4109,7 @@ def test_the_outliner_has_the_data_a_line_and_the_decorators(window, qapp):
     scan._analyses = None
     scan.sample.data["analyses"] = {
         "Ramp 10,00 C/min to 250 C #1": {
-            "Onset point": [{"segment": 1, "Onset x": "61,08 °C"}]}}
+            "Onset point": [{"segment": 1, "Onset x": "61,08 \u00b0C"}]}}
     assert scan.analysis_objects
     free = window.add_label("Free\nand a second line")
     owned = window.add_label("Mine", scan=scan)
@@ -4553,7 +4555,9 @@ def test_s_on_scans_spreads_them_evenly_about_zero(window):
     window.refresh()
     plot.grab()
     doc.select_only([first, second])
-    plot._cursor = QPointF(300.0, plot.y_to_px(0.3) - 80.0)
+    # 80 px above the neutral line, which runs through the lowest CURVE
+    plot._cursor = QPointF(300.0,
+                           plot.y_to_px(plot._curve_level(second)) - 80.0)
     assert window.run_op("transform.scale")
     state = plot._scale
     assert state["mode"] == "spread"

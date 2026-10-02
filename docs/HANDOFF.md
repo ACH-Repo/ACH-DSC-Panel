@@ -5,7 +5,18 @@ Everything a new session needs to pick this up cold. Read this, then
 rules and the traps). `docs/OPERATORS.md` is generated from the code and is
 always current. `docs/TRI-FORMAT.md` is the binary format.
 
-## 0. LATEST: Triplot 1.1.0, 2026-09-30 - prepared for PyPI, NOT committed
+## 0. LATEST: Triplot 1.2.0, 2026-10-02 - committed, tagged, pushed
+
+The family-wide changes of 2026-10-01 and 2026-10-02 (CHANGELOG.md; the
+register is `panel-family.md` in his global notes): what S holds still,
+the swipe in place, drafts, artists, colours, blades, sessions that find
+moved files, name labels with Ctrl+T, the pick distance 8, colours as
+picked on a white page. Built and `twine check`ed in `dist/`; the PyPI
+upload (`python -m twine upload dist/triplot-1.2.0*`) is his to run. The
+GitHub repository is still called ACH-DSC-Panel (only the PyPI and program
+name is Triplot).
+
+## 0b. Triplot 1.1.0, 2026-09-30 - prepared for PyPI
 
 Christian named it **Triplot** (free on PyPI, checked 2026-09-30) and asked
 for everything to be ready for an upload. Rounds 27d to 27g, the rename

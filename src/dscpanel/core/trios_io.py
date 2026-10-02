@@ -20,8 +20,9 @@ release that shifts an offset can be re-derived rather than guessed at.
 Three things this reader learned the hard way, all of which bit earlier
 versions and are worth keeping in mind:
 
-1. Segments are delimited by their *step objects* (the "Ramp 10,00 °C/min to
-   250 °C" program strings), NOT by a fixed number of arrays per segment. An
+1. Segments are delimited by their *step objects* (the program strings
+   "Ramp 10,00 \u00b0C/min to 250 \u00b0C"), NOT by a fixed number of arrays
+   per segment. An
    analysis can attach a derived curve (a running integral, a polynomial fit)
    to one segment only, and a partial final segment can record fewer signals
    than the rest -- both break any fixed-stride chunking.
@@ -645,11 +646,11 @@ def _weight_is_positive(w):
 
 
 UNITS = {
-    'Time': 'min', 'Temperature': '°C', 'Heat Flow': 'W',
+    'Time': 'min', 'Temperature': '\u00b0C', 'Heat Flow': 'W',
     'Heat Flow (Normalized)': 'W/g', 'Weight': 'mg', 'Weight Change': '%',
-    'Weight Corrected Heat Flow': 'W/g', 'Temperature Rate': '°C/min',
+    'Weight Corrected Heat Flow': 'W/g', 'Temperature Rate': '\u00b0C/min',
     'Sample Flow': 'mL/min', 'Balance Flow': 'mL/min',
-    'Temperature Difference': '°C',
+    'Temperature Difference': '\u00b0C',
     # As TRIOS's own signal list names them (the [Signal List] of an SDT
     # export: "Set Point (degC)", "Power Requested (W)").
     'Set Point': '\u00b0C', 'Power Requested': 'W', 'Power Delivered': 'W',
@@ -790,7 +791,7 @@ def _analysis_chains(raw, doc_start):
 # no fields. An earlier version searched byte by byte for the first pair of
 # plausible temperatures instead; it matched 4 bytes early whenever a cursor's
 # low mantissa bytes, read together with the header's last u32 (2), happened to
-# decode as -2.0, and drew that analysis at 0 °C.
+# decode as -2.0, and drew that analysis at 0 degC.
 RECORD_HEAD = 30
 REC_TAG0 = bytes.fromhex('01000100')     # at +0
 REC_TAG1 = bytes.fromhex('0f2f01')       # at +8
@@ -1017,10 +1018,10 @@ def _tg_fields(T, Q, points, y_unit='W/g'):
     for value in (cur0, on_x, end_x, cur1):
         if not np.isfinite(value) or not -200.0 < value < 2000.0:
             return {}
-    out = {'Onset cursor x': f'{cur0:.4f} °C',
-           'End cursor x': f'{cur1:.4f} °C',
-           'Onset x': f'{on_x:.4f} °C',
-           'End x': f'{end_x:.4f} °C',
+    out = {'Onset cursor x': f'{cur0:.4f} \u00b0C',
+           'End cursor x': f'{cur1:.4f} \u00b0C',
+           'Onset x': f'{on_x:.4f} \u00b0C',
+           'End x': f'{end_x:.4f} \u00b0C',
            'Step height': f'{end_y - on_y:.4f} {y_unit}'.rstrip()}
     if Q is None:
         return out
@@ -1033,7 +1034,7 @@ def _tg_fields(T, Q, points, y_unit='W/g'):
         tw, qw = ts[window], qs[window]
         if qw[-1] < qw[0]:            # np.interp needs an increasing x
             tw, qw = tw[::-1], qw[::-1]
-        out['Midpoint'] = f'{float(np.interp(half, qw, tw)):.4f} °C'
+        out['Midpoint'] = f'{float(np.interp(half, qw, tw)):.4f} \u00b0C'
     return out
 
 
@@ -1077,11 +1078,11 @@ def _recompute(model, t, T, Q, c0, c1, stored=None, points=None,
         # cursor x 116,637).
         flat, transition = (c1, c0) if endset else (c0, c1)
         if endset:
-            out['Transition cursor x'] = f'{transition:.4f} °C'
-            out['Onset cursor x'] = f'{flat:.4f} °C'
+            out['Transition cursor x'] = f'{transition:.4f} \u00b0C'
+            out['Onset cursor x'] = f'{flat:.4f} \u00b0C'
         else:
-            out['Onset cursor x'] = f'{flat:.4f} °C'
-            out['Transition cursor x'] = f'{transition:.4f} °C'
+            out['Onset cursor x'] = f'{flat:.4f} \u00b0C'
+            out['Transition cursor x'] = f'{transition:.4f} \u00b0C'
         k = 'Endset x' if endset else 'Onset x'
         # TRIOS's own answer is stored in the record at +16 and is exact, so it
         # is what gets reported. The Python reconstruction is kept alongside for
@@ -1090,24 +1091,24 @@ def _recompute(model, t, T, Q, c0, c1, stored=None, points=None,
         # flat cursor first: that is the one its baseline tangent is fitted
         # at (an endset passed transition-first came out as the onset).
         if stored is not None:
-            out[k] = f'{stored:.4f} °C'
+            out[k] = f'{stored:.4f} \u00b0C'
         r = _python(_analysis_fn('onset_point'), T, Q, flat, transition,
                     kind='endset' if endset else 'onset')
         if k in r and np.isfinite(r[k]):
-            out[k + ' (python)'] = f'{r[k]:.4f} °C'
+            out[k + ' (python)'] = f'{r[k]:.4f} \u00b0C'
             if stored is None:
-                out[k] = f'{r[k]:.4f} °C'
+                out[k] = f'{r[k]:.4f} \u00b0C'
     elif model.startswith('Peak Integration'):
-        out['Baseline cursor x'] = f'{c0:.4f} °C'
-        out['Baseline cursor x1'] = f'{c1:.4f} °C'
+        out['Baseline cursor x'] = f'{c0:.4f} \u00b0C'
+        out['Baseline cursor x1'] = f'{c1:.4f} \u00b0C'
         r = _python(_analysis_fn('peak_integration'), t, T, Q, c0, c1)
         if r:
             out['Enthalpy (normalized)'] = \
                 f"{abs(r['Enthalpy (normalized)']):.4f} J/g"
-            out['Peak temperature'] = f"{r['Peak temperature']:.4f} °C"
+            out['Peak temperature'] = f"{r['Peak temperature']:.4f} \u00b0C"
     else:
-        out['Cursor x'] = f'{c0:.4f} °C'
-        out['Cursor x1'] = f'{c1:.4f} °C'
+        out['Cursor x'] = f'{c0:.4f} \u00b0C'
+        out['Cursor x1'] = f'{c1:.4f} \u00b0C'
     return out
 
 
@@ -1196,7 +1197,7 @@ def _text_dim(name, unit):
 def read_tri_text(path):
     """TRIOS ``.txt`` export -> the same structure as read_tri_binary."""
     text = Path(path).read_text(encoding='utf-8', errors='replace')
-    text = text.replace('Â', '')          # cp1252-read-as-utf8 mojibake
+    text = text.replace('\u00c2', '')          # cp1252-read-as-utf8 mojibake
 
     data = {'numdata': [], 'analyses': {}}
     matches = list(re.finditer(r'\n\[([\w\s]+)\]\n', text))

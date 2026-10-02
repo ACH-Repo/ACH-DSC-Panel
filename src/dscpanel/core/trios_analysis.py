@@ -11,15 +11,15 @@ bottom -- run this file to see the comparison.
 
 Conventions, and the one thing that is easy to get wrong
 --------------------------------------------------------
-``t`` is time in minutes, ``T`` temperature in °C, ``Q`` the normalized heat
+``t`` is time in minutes, ``T`` temperature in degC, ``Q`` the normalized heat
 flow in W/g (i.e. J s^-1 g^-1). Endothermic-up or exothermic-up only changes
 signs, never the algebra.
 
 **Peak Integration integrates over TIME; Area under the curve integrates over
 TEMPERATURE.** That asymmetry is real and is visible in TRIOS's own units:
 
-    Enthalpy                 J/g       = ∫ Q dt   (W/g · s)
-    Area under the curve     °C·W/g    = ∫ Q dT
+    Enthalpy                 J/g       = int Q dt   (W/g * s)
+    Area under the curve     degC*W/g  = int Q dT
 
 Swapping them yields a number that looks entirely plausible and is wrong by a
 factor of the heating rate. Time must be in *seconds* for the enthalpy, so the
@@ -136,7 +136,7 @@ def peak_integration(t, T, Q, x0, x1, baseline='linear'):
     A straight baseline is drawn between the curve values at the two cursors
     and the enclosed area is integrated **over time**:
 
-        ΔH [J/g] = ∫ (Q − Q_base) dt        with t in seconds
+        Delta H [J/g] = int (Q - Q_base) dt        with t in seconds
 
     Returns enthalpy (J/g, signed), |enthalpy|, peak temperature (the extremum
     of the baseline-corrected signal) and the baseline endpoints.
@@ -167,7 +167,7 @@ def onset_point(T, Q, x_cursor, x_transition, kind='onset',
     Intersects the tangent taken at the cursor (the flat side) with the tangent
     at the inflection of the transition:
 
-        T_onset = (b_infl − b_cur) / (m_cur − m_infl)
+        T_onset = (b_infl - b_cur) / (m_cur - m_infl)
 
     The FLAT side is whichever cursor comes first: ``x_cursor``. For an
     onset that is the cursor met first in acquisition order, for an endset
@@ -235,8 +235,9 @@ def glass_transition(T, Q, x_onset, x_end, midpoint='half height',
     intersections, and the midpoint is where the curve reaches half the step
     height measured between the extrapolated cursor tangents.
 
-    Returns onset / midpoint / end temperatures and the step height ΔCp-like
-    change in W/g (divide by the heating rate in K/s for a true ΔCp).
+    Returns onset / midpoint / end temperatures and the step height, a
+    Delta Cp-like change in W/g (divide by the heating rate in K/s for a
+    true Delta Cp).
 
     ``x_onset`` is the cursor met FIRST in acquisition order and ``x_end``
     the one met last, so on a cooling scan the onset is the high side: the
@@ -295,7 +296,7 @@ def glass_transition(T, Q, x_onset, x_end, midpoint='half height',
 
 
 def signal_change(T, Q, x0, x1, mass_g=None):
-    """Δy between two cursors -- TRIOS "Signal change".
+    """Delta y between two cursors -- TRIOS "Signal change".
 
     Measured in ACQUISITION order, i.e. later sample minus earlier sample, not
     higher temperature minus lower. On a cooling segment the two differ in
@@ -424,7 +425,7 @@ def statistics(T, Q, x0, x1):
 
 
 def area_under_curve(T, Q, x0, x1):
-    """TRIOS "Area under the curve": ∫ Q dT, in °C·W/g.
+    """TRIOS "Area under the curve": int Q dT, in degC*W/g.
 
     Note the integration variable -- this one is over temperature, unlike
     peak_integration which is over time."""
@@ -440,8 +441,8 @@ def area_under_curve(T, Q, x0, x1):
 def polynomial(T, Q, x0, x1, terms=3):
     """Least-squares polynomial over the window -- TRIOS "Polynomial".
 
-    ``terms`` counts coefficients, so terms=3 is a quadratic a0 + a1x + a2x².
-    Returns the coefficients in TRIOS's ascending order plus R²."""
+    ``terms`` counts coefficients, so terms=3 is a quadratic a0 + a1x + a2x^2.
+    Returns the coefficients in TRIOS's ascending order plus R^2."""
     T, Q = np.asarray(T), np.asarray(Q)
     m = _window(T, x0, x1)
     if m.sum() < terms:
@@ -459,7 +460,7 @@ def polynomial(T, Q, x0, x1, terms=3):
 def running_integral(t, T, Q, x0, x1, baseline='linear'):
     """Cumulative enthalpy through the window -- TRIOS "Running Integral".
 
-    Returns the T grid and the running ∫(Q − base) dt in J/g, plus the total,
+    Returns the T grid and the running int(Q - base) dt in J/g, plus the total,
     so it can be drawn as a second curve."""
     t, T, Q = map(np.asarray, (t, T, Q))
     m = _window(T, x0, x1)
@@ -475,7 +476,7 @@ def running_integral(t, T, Q, x0, x1, baseline='linear'):
 
 
 def find_peaks(T, Q, x0, x1, n=1, prominence_frac=0.05):
-    """Local maxima of |Q − baseline| in the window -- TRIOS "Find peaks"."""
+    """Local maxima of |Q - baseline| in the window -- TRIOS "Find peaks"."""
     T, Q = np.asarray(T), np.asarray(Q)
     m = _window(T, x0, x1)
     if m.sum() < 5:

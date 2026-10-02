@@ -238,7 +238,7 @@ SETTINGS = (
     # interval, move the label) rather than start a box select. 60 px
     # grabbed a neighbouring scan where curves run close; 14 is the old
     # fixed value, and the hand that uses it decides.
-    Setting("pick_radius", "Pick distance", 14.0, low=2.0, high=60.0,
+    Setting("pick_radius", "Pick distance", 8.0, low=2.0, high=60.0,
             step=1.0, decimals=0, figure=False, suffix=" px",
             note="How near a press acts on an object; further away "
                  "it draws a box."),

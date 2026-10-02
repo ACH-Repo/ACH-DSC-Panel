@@ -1088,11 +1088,13 @@ def test_the_margins_in_numbers(window):
     assert plot.margin_share("left") == pytest.approx(0.6, abs=1e-3)
 
 
-def test_no_blades_where_the_margins_size_themselves(window):
+def test_blades_on_every_figure(window):
+    """Blades on a figure whose margins size themselves too:
+    taking one makes the figure exact, from the screen (test_family)."""
     plot = window.plot
     plot._page_handles_shown = True
     plot.grab()
-    assert not plot.page_margins_editable()
+    assert plot.page_margins_editable()
     assert plot.page_margin_blade_at(plot.page_on_pane().center()) is None
 
 
