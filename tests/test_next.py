@@ -4,6 +4,7 @@ where they should and slide along their curve, and a SMILES pasted
 without RDKit.
 """
 
+import numpy as np
 import pytest
 
 from PySide6.QtCore import QPointF
@@ -468,3 +469,41 @@ def test_the_empty_plot_menu_offers_the_background_not_open(window):
     assert "Background" in texts
     assert [a.text() for a in menu._paper.actions()] == [
         "White", "The theme's", "Other colour..."]
+
+
+# ------------------------------------------- an onset's label, which side
+def _flank_labels(window, scan):
+    """An onset and an endset dragged along the flanks of the peak at
+    118 degC (sample spans, as a drag makes them), and which way each label
+    sits: negative is above the curve."""
+    from dscpanel.core import measure
+    plot = window.plot
+    window.refresh()
+    plot.grab()
+    trace = plot._trace_of(scan)
+    near = lambda t: int(np.argmin(np.abs(trace.x - t)))  # noqa: E731
+    onset = measure.run("Onset point", scan, 70.0, 113.0, span=(
+        trace.first + near(70.0), trace.first + near(113.0)))
+    endset = measure.run("Endset point", scan, 123.0, 170.0, span=(
+        trace.first + near(123.0), trace.first + near(170.0)))
+    rect = plot.plot_rect()
+    return [plot.label_offset(a, trace, rect) for a in (onset, endset)]
+
+
+def test_an_onset_label_goes_where_its_peak_goes(window):
+    """The chord between an onset's cursors lies on the PEAK's side of
+    its flank, so reading the side from it put every onset label on the
+    wrong side. The fixture's peak points down: both labels below."""
+    assert all(offset > 0 for offset in _flank_labels(
+        window, window.doc.scans[0]))
+
+
+def test_an_onset_label_stands_above_a_peak_that_rises(qapp):
+    from conftest import make_data
+    from dscpanel.ui.window import MainWindow
+    data = make_data()
+    data["numdata"][0]["nums"][:, 2] *= -1.0          # the peak points up
+    win = MainWindow()
+    win.resize(900, 560)
+    win._sample_loaded(model.Sample("C:/nowhere/TEST-2.tri", data))
+    assert all(offset < 0 for offset in _flank_labels(win, win.doc.scans[0]))

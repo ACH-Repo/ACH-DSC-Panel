@@ -18,7 +18,7 @@ triplot register             # put it in the Start Menu (optional)
 
 Python 3.10 or newer; PySide6 (the Essentials only), numpy and RDKit come
 with it. From a checkout, `pip install -e <checkout>` installs it editable.
-Version 1.2.0; what changed is in `CHANGELOG.md`.
+Version 1.2.1; what changed is in `CHANGELOG.md`.
 
 It was called **DSC-Panel** until 1.0.0 and installed from the repository
 as `ach-dsc-panel`. To move over, uninstall that first (both install the

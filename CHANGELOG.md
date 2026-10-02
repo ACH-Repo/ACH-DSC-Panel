@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.2.1 (2026-10-02)
+
+- An onset's or endset's label stands on the side its peak goes (above a
+  peak that rises, below one that falls), as an integration's does. It
+  went to the other side whenever the onset was made by dragging along
+  the curve.
+
 ## 1.2.0 (2026-10-02)
 
 - On a white page (and in every export) a colour you picked is drawn

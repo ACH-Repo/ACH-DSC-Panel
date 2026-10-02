@@ -5,7 +5,14 @@ Everything a new session needs to pick this up cold. Read this, then
 rules and the traps). `docs/OPERATORS.md` is generated from the code and is
 always current. `docs/TRI-FORMAT.md` is the binary format.
 
-## 0. LATEST: Triplot 1.2.0, 2026-10-02 - committed, tagged, pushed
+## 0. LATEST: Triplot 1.2.1, 2026-10-02 - committed, tagged, pushed
+
+1.2.1 is 1.2.0 plus one fix: an onset's or endset's label on the side
+its peak goes (PLAN.md, "After 1.2.0"). The PyPI upload is
+`python -m twine upload dist/triplot-1.2.1*` (his to run; 1.2.0 was never
+uploaded).
+
+### Triplot 1.2.0, 2026-10-02
 
 The family-wide changes of 2026-10-01 and 2026-10-02 (CHANGELOG.md; the
 register is `panel-family.md` in his global notes): what S holds still,

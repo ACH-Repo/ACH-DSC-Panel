@@ -7134,12 +7134,15 @@ class PlotWidget(QWidget):
         return -46.0 if self.peak_points_up(analysis, trace) else 46.0
 
     def _covered(self, trace, analysis):
-        """`(xs, ys)`: the part of the drawn curve an integration covers.
+        """`(xs, ys)`: the part of the drawn curve an analysis covers, in
+        the order the samples were measured.
 
         Its own stretch of samples when it was measured along the curve;
-        otherwise every sample between the two stored cursor temperatures,
-        which is all a file's analysis says - and which, on a curve that
-        doubles back, takes in more than one branch.
+        otherwise every sample between its two stored cursor temperatures
+        (`Analysis.cursors`: an integration's baseline cursors, an onset's
+        flat and transition cursors), which is all a file's analysis says -
+        and which, on a curve that doubles back, takes in more than one
+        branch.
 
         MEASURED samples only: a flagged one (NaN) made the baseline, the
         shading and the side the label goes NaN (an indium check run's
@@ -7152,10 +7155,10 @@ class PlotWidget(QWidget):
                 return None
             xs, ys = trace.x[a:b + 1], trace.y[a:b + 1]
         else:
-            x0 = model.number(analysis.fields.get("Baseline cursor x"))
-            x1 = model.number(analysis.fields.get("Baseline cursor x1"))
-            if x0 is None or x1 is None or trace.x is None:
+            cursors = analysis.cursors()
+            if len(cursors) != 2 or trace.x is None:
                 return None
+            x0, x1 = cursors
             low, high = self.to_axis(min(x0, x1)), self.to_axis(max(x0, x1))
             with np.errstate(invalid="ignore"):
                 inside = (trace.x >= low) & (trace.x <= high)
@@ -7166,11 +7169,27 @@ class PlotWidget(QWidget):
         return xs[measured], ys[measured]
 
     def peak_points_up(self, analysis, trace):
-        """True when the feature rises above its own baseline on screen."""
+        """True when the feature rises above its own baseline on screen.
+
+        A peak or a step: the curve against the chord between its
+        interval's ends. An ONSET or an ENDSET covers only a peak's flank,
+        and there the chord lies on the peak's side of the curve (flat,
+        then bending away): read that way, every onset label went to the
+        side the peak does not go. So for them it is which way the curve
+        leaves its flat end - the baseline an onset starts from (its first
+        sample measured) or an endset returns to (its last): the label goes
+        on the peak's side, as an integration's does. Not on a mass curve,
+        whose steps keep the chord's answer."""
         covered = self._covered(trace, analysis)
         if covered is None:
             return True
         xs, ys = covered
+        name = analysis.model_name
+        if (("Onset point" in name or "Endset point" in name)
+                and not getattr(trace.scan, "is_mass", False)):
+            flat = float(ys[-1] if "Endset" in name else ys[0])
+            away = ys - flat
+            return abs(float(np.max(away))) >= abs(float(np.min(away)))
         deviation = ys - _chord(xs, ys)
         # On screen y grows downward, so a curve ABOVE its baseline in data
         # terms is the one with the larger positive deviation.

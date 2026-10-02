@@ -1296,6 +1296,18 @@ Christian: why a yellow came out olive on a white page. On a white page
 whole family. (The selective swipe and "xN" factors he asked for in the
 same message went to PXRD-Panel only.)
 
+### After 1.2.0 (2026-10-02): an onset's label, which side
+
+Christian: onsets always spawn at the bottom, "the wrong way around".
+`PlotWidget.peak_points_up` read the side from the curve against the chord
+between the interval's ends - right for a peak, inverted for an onset or
+endset, whose interval is a FLANK (flat, then bending away: the chord lies
+on the peak's side). Now an onset or endset is read from its flat end (the
+first sample measured for an onset, the last for an endset): the label goes
+where the peak goes. `_covered` takes any analysis's cursors, so a typed or
+a file's onset is read the same way. Mass curves keep the chord. Released as
+1.2.1 the same day (his call).
+
 ## Next
 
 1. **TGA as a first-class plot** (Christian, 2026-09-28, with his target
