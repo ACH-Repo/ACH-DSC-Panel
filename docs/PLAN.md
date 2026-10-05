@@ -1308,6 +1308,30 @@ where the peak goes. `_covered` takes any analysis's cursors, so a typed or
 a file's onset is read the same way. Mass curves keep the chord. Released as
 1.2.1 the same day (his call).
 
+## Settings windows in order (2026-10-05): settings windows in order, family-wide
+
+Christian, with two screenshots (a region's "Spectra" list, a band
+marker's "Arrow colour"): text boxes at the top of their pop-ups, the rows
+in an intuitive order - what is most likely edited after making the
+object, and what only the window can edit, first; text and colour very
+high. Asked: why a region has a spectra list (it is what a MAGNIFYING
+region magnifies - one class for highlight and magnify), and why band
+markers have arrow rows (labels, notes and markers share `LabelSettings`;
+the rows belonged to notes). His word: all three panels, the arrow rows
+off band markers, the proposed order.
+
+* `_LiveDialog.FIRST_ROWS` / `LAST_ROWS` / `row_order()`, applied by
+  `_buttons` through `order_rows`. Orders: band marker Text, Line at,
+  Colour...; note Text, Colour, the arrow...; label Text, Colour, Size...,
+  Leader arrow; region Text, From, Colour, Shade...; distance arrow Text,
+  Colour, From, To...; analysis Label, Shows, Colour, Number format,
+  Model...; offset marker Number format, Colour...; structure SMILES,
+  Colour...; caption Text, Shows, Size...; heat-flow arrow Label, Colour...; Show and Layer last.
+* A note's rows are shown only while it is a note (they were greyed);
+  never on a band marker. A region's curve list only while it magnifies.
+* Test: `test_settings_windows_put_the_text_and_the_colour_first` in
+  `tests/test_family.py`.
+
 ## Next
 
 1. **TGA as a first-class plot** (Christian, 2026-09-28, with his target

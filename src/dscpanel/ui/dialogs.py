@@ -911,6 +911,57 @@ def screen_limit(widget):
     return int(screen.availableGeometry().height() * SCREEN_SHARE)
 
 
+def order_rows(form, first=(), last=(), owner=None):
+    """Put the rows of `form` in order: those named in `first` at the top,
+    in that order, those in `last` at the bottom, the rest between them as
+    they were. A key is a row's label ("Colour") or "@" and the name of
+    the attribute of `owner` holding its field ("@auto"); a key with no
+    row is passed over. The widgets are MOVED, never rebuilt: what they
+    hold, their signals and whether they are hidden stay as they are."""
+    rows = []
+    while form.rowCount():
+        spanning = form.itemAt(0, QFormLayout.SpanningRole) is not None
+        taken = form.takeRow(0)
+        label = (taken.labelItem.widget()
+                 if taken.labelItem is not None else None)
+        item = taken.fieldItem
+        field = None
+        if item is not None:
+            field = (item.widget() if item.widget() is not None
+                     else item.layout())
+        rows.append((label, field, spanning))
+    chosen = set()
+
+    def find(key):
+        for index, (label, field, _spanning) in enumerate(rows):
+            if index in chosen:
+                continue
+            if key.startswith("@"):
+                hit = (owner is not None and field is not None
+                       and getattr(owner, key[1:], None) is field)
+            else:
+                hit = isinstance(label, QLabel) and label.text() == key
+            if hit:
+                chosen.add(index)
+                return index
+        return None
+
+    head = [i for i in (find(key) for key in first) if i is not None]
+    tail = [i for i in (find(key) for key in last) if i is not None]
+    middle = [i for i in range(len(rows)) if i not in chosen]
+    for index in head + middle + tail:
+        label, field, spanning = rows[index]
+        if field is None:
+            if label is not None:
+                form.addRow(label)
+        elif spanning:
+            form.addRow(field)
+        elif label is None:
+            form.addRow("", field)
+        else:
+            form.addRow(label, field)
+
+
 class _LiveDialog(QDialog):
     """Common machinery: snapshot on open, restore on reject.
 
@@ -934,6 +985,17 @@ class _LiveDialog(QDialog):
     #: True for an object with a place in the figure's stack: its window
     #: gets a Layer field (`_layer_row`), and its z is in FIELDS.
     LAYERED = False
+    #: The order of the rows, top to bottom (Christian, 2026-10-05): what
+    #: is most likely changed after the object is made, and what only this
+    #: window can change, first - its text, its colour, the values typed
+    #: here - then sizes and style; `LAST_ROWS` (Show, Layer: H, the
+    #: outliner and Ctrl+PgUp do those too) at the bottom. A key is a
+    #: row's label ("Colour") or "@" and the attribute holding its field
+    #: ("@auto"); a key with no row is passed over, and the rows not named
+    #: keep their order between the two. Applied by `_buttons`, which
+    #: every window calls last (`order_rows`).
+    FIRST_ROWS = ()
+    LAST_ROWS = ()
 
     def __init__(self, parent, obj, on_change=None):
         QDialog.__init__(self, parent)
@@ -1120,6 +1182,7 @@ class _LiveDialog(QDialog):
             forms = self.findChildren(QFormLayout)
             if forms:
                 self._layer_row(forms[0])
+        self._order_rows()
         buttons = QDialogButtonBox(QDialogButtonBox.Ok
                                    | QDialogButtonBox.Cancel)
         revert = buttons.button(QDialogButtonBox.Cancel)
@@ -1129,6 +1192,19 @@ class _LiveDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.revert)
         return buttons
+
+    def row_order(self):
+        """`(first, last)`, the keys `_order_rows` puts at the top and the
+        bottom; a window whose order depends on its object overrides it."""
+        return self.FIRST_ROWS, self.LAST_ROWS
+
+    def _order_rows(self):
+        first, last = self.row_order()
+        if not first and not last:
+            return
+        forms = self.findChildren(QFormLayout)
+        if forms:
+            order_rows(forms[0], first, last, self)
 
     def snapshot(self):
         """What the object looked like when this opened, for the undo step."""
@@ -1826,6 +1902,10 @@ class CaptionSettings(_SideRow, _LiveDialog):
     FIELDS = ("label", "label_size", "label_along", "label_gap", "visible")
     INDIVIDUAL = ("label", "label_along")
     GROUP_DISABLED = ("label",)
+
+    #: The order of its rows (`_LiveDialog.FIRST_ROWS`).
+    FIRST_ROWS = ("Text", "@own_text", "Shows", "Size", "Distance", "Side")
+    LAST_ROWS = ("@shown",)
 
     def __init__(self, parent, axis, doc, on_change=None):
         _LiveDialog.__init__(self, parent, axis, on_change)
@@ -2571,10 +2651,10 @@ class LabelSettings(_LiveDialog):
                            self.leader_auto)
         # On its curve a note's arrow drops straight onto its point: no
         # point to type apart from where it hangs, no edge to leave from.
-        if label.attached:
-            for widget in (tip, self.leader_from):
-                form.labelForField(widget).setVisible(False)
-                widget.setVisible(False)
+        self._tip_row = tip
+        # A band marker has no arrow: its line already says where.
+        if label.is_vline:
+            self.leader.setVisible(False)
         self._show_tip()
 
         # A MARKER LINE's temperature, typed, and its style.
@@ -2609,6 +2689,24 @@ class LabelSettings(_LiveDialog):
         self.leader_auto.toggled.connect(self._apply)
         self.tip_x.editingFinished.connect(self._typed_tip)
         self.tip_y.editingFinished.connect(self._typed_tip)
+
+    def row_order(self):
+        """A band marker: its text, where its line stands, its colour. A
+        note: its text, its colour, the point it names and its arrow. A
+        label: its text, its colour, its size; "Leader arrow" turns it
+        into a note, its rows below it. Layer last."""
+        label = self.obj
+        style = ("Size", "@bold", "Place", "On the curve at", "@hang_dy",
+                 "@hang_dx")
+        arrow = ("@leader", "Points at", "Arrow from", "@arrow_colour",
+                 "@leader_auto")
+        if label.is_vline:
+            first = ("@text", "Line at", "Colour", "@auto") + style
+        elif label.leader:
+            first = ("@text", "Colour", "@auto") + arrow + style
+        else:
+            first = ("@text", "Colour", "@auto") + style + arrow
+        return first, ("Layer",)
 
     def _show_hang(self):
         """The rows of a label hanging from its curve, shown only then."""
@@ -2696,9 +2794,18 @@ class LabelSettings(_LiveDialog):
         while it is a note."""
         label = self.obj
         plot = getattr(self.parent(), "plot", None)
-        on = bool(label.leader)
+        on = bool(label.leader) and not label.is_vline
+        # SHOWN only while it is a note (they were greyed out); on its
+        # curve a note's arrow drops straight onto its point, so there is
+        # no point to type and no edge to leave from.
+        form = self.findChildren(QFormLayout)[0]
         for widget in self._note_rows:
-            widget.setEnabled(on)
+            shown = on and not (label.attached and widget in (
+                self._tip_row, self.leader_from))
+            widget.setVisible(shown)
+            caption = form.labelForField(widget)
+            if caption is not None:
+                caption.setVisible(shown)
         if not on or plot is None:
             self.tip_x.setText("")
             self.tip_y.setText("")
@@ -2750,6 +2857,8 @@ class LabelSettings(_LiveDialog):
             tip = QPointF(box.center().x(), box.bottom() + 36.0)
             label.leader = plot.leader_value(label, tip, rect)
         self._show_tip()
+        if self.isVisible():
+            self.fit()
         self._live()
 
     def _apply(self, *_args):
@@ -2783,6 +2892,13 @@ class AnalysisSettings(_LiveDialog):
               "unit", "label_dy")
     INDIVIDUAL = ("label",)
     GROUP_DISABLED = ("label", "model", "start", "end")
+
+    #: The order of its rows (`_LiveDialog.FIRST_ROWS`).
+    FIRST_ROWS = ("Label", "Shows", "Colour", "@auto", "Number format", "Unit",
+                  "Model", "@source", "@start", "@end", "Results", "Peak (Tp)",
+                  "Lines", "@lines_note", "Label size", "Alignment",
+                  "@interval", "Marker length", "@shade", "Shading")
+    LAST_ROWS = ("@visible", "Layer")
 
     def __init__(self, parent, analysis, on_change=None):
         _LiveDialog.__init__(self, parent, analysis, on_change)
@@ -3242,6 +3358,11 @@ class OffsetMarkerSettings(_LiveDialog):
 
     FIELDS = ("size", "colour", "visible", "at", "dy", "number_format")
 
+    #: The order of its rows (`_LiveDialog.FIRST_ROWS`).
+    FIRST_ROWS = ("Number format", "Colour", "@auto", "Points at", "@at_auto",
+                  "Size")
+    LAST_ROWS = ("@visible",)
+
     def __init__(self, parent, marker, on_change=None):
         _LiveDialog.__init__(self, parent, marker, on_change)
         self.plot = getattr(parent, "plot", None) or _plot_of(parent)
@@ -3383,6 +3504,10 @@ class ArrowSettings(_LiveDialog):
     FIELDS = ("word", "direction", "colour", "visible",
               "x", "y", "space", "anchor", "head_length", "head_width",
               "tail_length", "tail_width", "lock", "size")
+
+    #: The order of its rows (`_LiveDialog.FIRST_ROWS`).
+    FIRST_ROWS = ("Label", "Colour", "@auto")
+    LAST_ROWS = ("@visible",)
 
     def __init__(self, parent, arrow, on_change=None):
         _LiveDialog.__init__(self, parent, arrow, on_change)
@@ -3683,6 +3808,11 @@ class MoleculeSettings(_LiveDialog):
     INDIVIDUAL = ("x", "y", "space", "smiles", "atoms", "bonds")
     GROUP_DISABLED = ("smiles_edit", "transform.space", "transform.at_x",
                       "transform.at_y")
+
+    #: The order of its rows (`_LiveDialog.FIRST_ROWS`).
+    FIRST_ROWS = ("SMILES", "Colour", "@auto", "@by_element", "Bond length",
+                  "Bond width", "Label size", "Label font", "@upright")
+    LAST_ROWS = ("@shown", "Place", "Layer")
 
     def __init__(self, parent, molecule, on_change=None):
         _LiveDialog.__init__(self, parent, molecule, on_change)

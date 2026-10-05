@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Settings windows in an order you can work down: the text first, then
+  the colour, then what only the window can set (a marker line's
+  position, a note's point and arrow, a region's stretch), then sizes and
+  style; Show and Layer at the bottom.
+- A band marker's (marker line's) window has no arrow rows any more: they
+  belonged to notes. A label's arrow rows appear only once "Leader
+  arrow" makes it a note.
+
 ## 1.2.1 (2026-10-02)
 
 - An onset's or endset's label stands on the side its peak goes (above a

@@ -75,6 +75,14 @@ going; this file is about how it is done here.
 
 ## Traps already paid for
 
+* **A settings window's rows are ORDERED, not built in order**
+  (2026-10-05, family-wide): `_LiveDialog.FIRST_ROWS` / `LAST_ROWS` (or
+  `row_order()`, which `LabelSettings` overrides per kind) name rows by
+  label or "@attribute"; `_buttons` - every window's last call - moves
+  them (`order_rows`). A new row joins its window's list, or it lands in
+  the middle. The widgets are moved, not rebuilt: hiding a row means its
+  field AND `labelForField`.
+
 * **`segment` from the reader is 1-BASED** (`trios_io` writes `j + 1`).
   Reading it as an index draws every analysis one scan too low, and the
   result looks plausible. `Sample.analyses_for` handles it, and
