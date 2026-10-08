@@ -18,6 +18,7 @@ Three exports, and each answers a different question.
   the window, so the export has to carry the notice with it.
 """
 
+import math
 import os
 import re
 
@@ -647,3 +648,227 @@ def _paths_block(doc):
         lines.append("    r'{}',".format(path))
     lines.append("]")
     return "\n".join(lines)
+
+
+# ------------------------------------------------ TRIOS's Excel export
+#: TRIOS's Details sheet, row by row: what it says, and where the reader
+#: keeps it - a .txt export's own header line, else a .tri's metadata
+#: string. "Filename" is the export's own name (`trios_name`).
+TRIOS_DETAILS = (
+    ("Filename", ()),
+    ("Instrument name", ("Instrument name", "instrumentname")),
+    ("Operator", ("Operator", "operator")),
+    ("rundate", ("rundate",)),
+    ("Sample name", ("Sample name", "samplename")),
+    ("proceduresegments", ("proceduresegments",)),
+)
+
+#: Characters an Excel sheet name may not hold.
+_SHEET_FORBIDDEN = re.compile(r"[/\\?*\[\]:]")
+
+
+def trios_name(sample):
+    """The name TRIOS gives an export of `sample`'s file: the file's name
+    without its extension, in lower case."""
+    return os.path.splitext(os.path.basename(str(sample.path)))[0].lower()
+
+
+def trios_step_name(prog):
+    """A step's name as TRIOS writes it in an export: without the ` #n`
+    the reader numbers the segments with."""
+    return re.sub(r"\s+#\d+\s*$", "", str(prog or "")).strip()
+
+
+def trios_sheet_names(steps):
+    """Excel sheet names for step names, as TRIOS makes them: the name
+    without the characters a sheet name may not hold, `-2`, `-3`... after
+    a repeat, and its LAST 31 characters when longer (Excel's limit:
+    "Ramp 10.00 degC/min to 250.0000 degC-2" becomes "mp 10.00 ...-2")."""
+    counts, used, out = {}, set(), []
+    for step in steps:
+        base = _SHEET_FORBIDDEN.sub("", str(step)) or "Step"
+        counts[base] = counts.get(base, 0) + 1
+        name = base if counts[base] == 1 else "{}-{}".format(base,
+                                                              counts[base])
+        name = name[-31:]
+        extra = 1
+        while name.lower() in used:           # Excel's names ignore case
+            extra += 1
+            name = "{}-{}".format(base, counts[base] + extra)[-31:]
+        used.add(name.lower())
+        out.append(name)
+    return out
+
+
+def trios_step_columns(sample, seg):
+    """`(names, units, columns)` of one step as TRIOS's Excel export
+    writes it: Time and Temperature, the heat flow normalised to the
+    sample mass (W/g; in mW where the run has no mass), and an SDT run's
+    weight in % - which TRIOS calls "Weight" there, the reader "Weight
+    Change". Every sample of the step, in the reader's units - the
+    flagged tail the plot leaves off as well (`Sample` keeps it as
+    `tail`), where TRIOS writes the time and an empty cell."""
+    step = sample.data["numdata"][seg]
+    dims, step_units, nums = step["dims"], step["units"], step["nums"]
+    tail = step.get("tail")
+    if tail is not None and len(tail):
+        nums = np.vstack([nums, tail])
+
+    def take(name):
+        if name not in dims:
+            return None
+        k = dims.index(name)
+        return step_units[k], np.asarray(nums[:, k], dtype=float)
+
+    names, unit_row, columns = [], [], []
+    for name in ("Time", "Temperature"):
+        found = take(name)
+        if found is not None:
+            names.append(name)
+            unit_row.append(found[0])
+            columns.append(found[1])
+    flow = take("Heat Flow (Normalized)")
+    if flow is not None:
+        names.append("Heat Flow (Normalized)")
+        unit_row.append(flow[0])
+        columns.append(flow[1])
+    else:
+        flow = take("Heat Flow")
+        if flow is not None:
+            watts = flow[0] == "W"
+            names.append("Heat Flow")
+            unit_row.append("mW" if watts else flow[0])
+            columns.append(flow[1] * 1000.0 if watts else flow[1])
+    weight = take("Weight Change")
+    if weight is not None:
+        names.append("Weight")
+        unit_row.append(weight[0])
+        columns.append(weight[1])
+    return names, unit_row, columns
+
+
+def trios_details(sample, name):
+    """The Details sheet's rows for `sample`, its export called `name`."""
+    head = sample.data.get("head") or {}
+    rows = []
+    for title, keys in TRIOS_DETAILS:
+        if not keys:
+            rows.append((title, name))
+            continue
+        value = next((head[k] for k in keys if head.get(k)), "")
+        rows.append((title, str(value)))
+    return rows
+
+
+def trios_excel_groups(doc):
+    """`[(sample, [segment, ...]), ...]`: what TRIOS-style workbooks hold -
+    one per file, with every segment of it that has a curve on the figure
+    (the selected curves' only, when any is selected), in the run's
+    order."""
+    shown = [s for s in doc.scans if s.visible]
+    chosen = [s for s in shown if s.selected] or shown
+    groups = []
+    for sample in doc.samples:
+        segs = sorted({s.seg for s in chosen if s.sample is sample})
+        if segs:
+            groups.append((sample, segs))
+    return groups
+
+
+def write_trios_excel(sample, segments, path):
+    """`sample`'s `segments` as TRIOS's Excel export lays them out: a
+    Details sheet (Filename - this workbook's name - instrument name,
+    operator, run date, sample name, the procedure), then one sheet per
+    step - its name, the column names, the units, then the samples. Plain
+    cells and numbers, as TRIOS writes them; an empty sample is an empty
+    cell. Written as .xlsx. Returns the path."""
+    from openpyxl import Workbook
+    name = os.path.splitext(os.path.basename(path))[0]
+    book = Workbook(write_only=True)
+    details = book.create_sheet("Details")
+    for row in trios_details(sample, name):
+        details.append(list(row))
+    numdata = sample.data["numdata"]
+    steps = [trios_step_name(numdata[seg].get("prog")) for seg in segments]
+    for seg, step, title in zip(segments, steps, trios_sheet_names(steps)):
+        sheet = book.create_sheet(title)
+        names, unit_row, columns = trios_step_columns(sample, seg)
+        sheet.append([step] + [None] * (len(names) - 1))
+        sheet.append(names)
+        sheet.append(unit_row)
+        if not columns:
+            continue
+        table = np.column_stack(columns)
+        for values in table.tolist():
+            sheet.append([v if v == v and abs(v) != float("inf") else None
+                          for v in values])
+    folder = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(folder):
+        os.makedirs(folder)
+    book.save(path)
+    return path
+
+
+# ---------------------------------------------- the measured data as text
+def _data_head(sample):
+    """The lines at the top of a data export: the file, then what the run
+    records, as "Details..." shows it, and its exotherm direction."""
+    from . import profile
+    lines = ["{}, exported by {}".format(os.path.basename(str(sample.path)),
+                                         branding.APP_NAME),
+             "File: {}".format(sample.path)]
+    for title, value in profile.details(sample):
+        lines.append("{}: {}".format(title, value))
+    lines.append("Exotherm: {} ({})".format(sample.exo, sample.exo_source))
+    return [" ".join(str(line).split()) for line in lines]
+
+
+def _number(value):
+    """A sample as text: 8 significant figures (all an instrument's float
+    holds), "." the decimal point; empty for an empty one."""
+    return "%.8g" % value if math.isfinite(value) else ""
+
+
+def data_text_name(sample):
+    """The name a data export of `sample` takes: its file's, as .csv."""
+    return os.path.splitext(os.path.basename(str(sample.path)))[0] + ".csv"
+
+
+def write_data_text(sample, segments, path):
+    """`sample`'s `segments` as tab-separated text, our own format: what the
+    run records on lines commented out with "#" (each segment's step name
+    last), a header row - "Segment", then each column's name and unit, as
+    "Temperature (degC)" - then every sample of each segment, its number
+    first. The columns of the Excel export (`trios_step_columns`): a
+    segment without one has empty cells there, as has an empty sample.
+    UTF-8. Returns the path."""
+    numdata = sample.data["numdata"]
+    heads, tables = [], []
+    for seg in segments:
+        names, unit_row, columns = trios_step_columns(sample, seg)
+        named = []
+        for name, unit, column in zip(names, unit_row, columns):
+            head = "{} ({})".format(name, unit) if unit else name
+            if head not in heads:
+                heads.append(head)
+            named.append((head, column))
+        tables.append((seg, dict(named)))
+    lines = ["# " + line for line in _data_head(sample)]
+    for seg in segments:
+        lines.append("# Segment {}: {}".format(
+            seg + 1, trios_step_name(numdata[seg].get("prog"))))
+    lines.append("\t".join(["Segment"] + heads))
+    for seg, named in tables:
+        count = max([len(c) for c in named.values()] or [0])
+        empty = np.full(count, np.nan)
+        columns = [np.asarray(named.get(head, empty), dtype=float).tolist()
+                   for head in heads]
+        number = str(seg + 1)
+        for row in zip(*columns):
+            lines.append("\t".join([number] + [_number(v) for v in row]))
+    folder = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(folder):
+        os.makedirs(folder)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n".join(lines) + "\n")
+    return path

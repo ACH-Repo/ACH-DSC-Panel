@@ -23,6 +23,8 @@ This file is GENERATED. After adding an operator, run:
 | Save the session as... | `Ctrl+Shift+S` | a scan is open |  |
 | Export the figure... | `Ctrl+E` | a scan is open |  |
 | Export the curves as CSV... |  | a scan is open |  |
+| Export as TRIOS Excel workbooks... |  | always |  |
+| Export the measured data (tab-separated)... |  | always |  |
 | Export as a DSC_Plotter.py driver... |  | a scan is open | hands the arrangement to ACH-DSC-Plotter |
 | Close the pop-up in front, the tab, or the window | `Ctrl+W` | always |  |
 
@@ -155,6 +157,9 @@ This file is GENERATED. After adding an operator, run:
 | Operator | Key | Lights up when | Note |
 | :-- | :-- | :-- | :-- |
 | Search operators... | `F3` | always | also the Search button on the menu bar |
+| Save my operator aliases as... |  | always | a .json to share: dropped on a panel, it installs them |
+| Install operator aliases from a file... |  | always | or drop the file on the window |
+| Reset the operator search to factory |  | always | your aliases and the recent list; asked first |
 | Open the log folder |  | always |  |
 | About Triplot |  | always | Help menu: version, reader, Qt |
 | Settings... | `Ctrl+,` | always | sizes, label alignment, pick distance |

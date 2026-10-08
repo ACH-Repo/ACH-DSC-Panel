@@ -37,3 +37,29 @@ def name_label_corner(_doc=None):
     `MainWindow.name_labels`): above the curve's right end. A heat flow's
     start is where a run settles, its end where the figure has room."""
     return "upper right"
+
+
+#: What "Details..." says of a file besides where it is and how big
+#: (`session.file_facts`): what the run itself records - a .txt export's
+#: header line, else a .tri's metadata string.
+DETAILS = (
+    ("Sample name", ("Sample name", "samplename")),
+    ("Run date", ("rundate",)),
+    ("Instrument", ("Instrument name", "instrumentname", "instrumenttype")),
+    ("Operator", ("Operator", "operator")),
+    ("Procedure", ("proceduresegments",)),
+)
+
+
+def details(sample):
+    """`[(what, value), ...]`: what `sample`'s run records of itself, for
+    "Details..." - the facts that tell two files of one name apart."""
+    head = (sample.data or {}).get("head", {}) or {}
+    rows = []
+    for title, keys in DETAILS:
+        value = next((str(head[k]) for k in keys if head.get(k)), "")
+        if value:
+            rows.append((title, value))
+    rows.append(("Segments", str(sample.segment_count())))
+    rows.append(("Sample mass", sample.mass_text() or "none recorded"))
+    return rows

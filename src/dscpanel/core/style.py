@@ -215,6 +215,12 @@ SETTINGS = (
     Setting("mass_format", "Masses (m% at a temperature)", numbers.MASS,
             kind="format",
             note="%.0f whole percent; %.1f mg converts."),
+    Setting("mass_line_format", "Mass lines (m% at a point)",
+            numbers.MASS_LINE, kind="format",
+            note="The value written at an analysis's mass line."),
+    Setting("mass_line_width", "Mass line width", 0.5, low=0.1,
+            high=4.0, step=0.1, decimals=2,
+            note="Thinner than the curves (curve width 1)."),
     Setting("line_width", "Curve width", 1.0, low=0.2, high=8.0, step=0.2,
             decimals=2),
     # How much room F leaves round the data on each side - the template's

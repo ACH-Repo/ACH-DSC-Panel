@@ -962,6 +962,88 @@ def order_rows(form, first=(), last=(), owner=None):
             form.addRow(label, field)
 
 
+def clean_path(text):
+    """A path as typed or pasted: the spaces round it and the quotes
+    Windows puts round a path it copies ("Copy as path", Ctrl+Shift+C)
+    taken off, a file:/// link made a path; "" for nothing."""
+    text = (text or "").strip()
+    while len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1].strip()
+    if text.lower().startswith("file:"):
+        from PySide6.QtCore import QUrl
+        text = QUrl(text).toLocalFile() or text
+    return os.path.normpath(text) if text else ""
+
+
+class SourceRow(QWidget):
+    """A file's path in its settings (and its curves'): another one typed
+    or pasted - the quotes Windows adds are dropped as it is pasted - and
+    Enter, or found with Browse... It takes the file's place through the
+    window (`_LiveDialog._source_chosen`, "Change the source file"); a
+    path that is not a file is marked, and nothing happens."""
+
+    chosen = Signal(str)
+
+    def __init__(self, sample, parent=None):
+        QWidget.__init__(self, parent)
+        self.sample = sample
+        line = QHBoxLayout(self)
+        line.setContentsMargins(0, 0, 0, 0)
+        self.path = QLineEdit(sample.path)
+        self.path.setToolTip(
+            "The file it is read from. Type or paste another path (the "
+            "quotes of Copy as path are dropped) and press Enter, or Browse: "
+            "it takes this file's place - its curves keep their place, "
+            "colour and labels. One undo step.")
+        # Wide enough for the whole path (within reason), its start shown.
+        self.path.setMinimumWidth(min(560, self.path.fontMetrics(
+        ).horizontalAdvance(sample.path) + 24))
+        self.path.setCursorPosition(0)
+        self.browse = QPushButton("Browse...")
+        self.browse.setToolTip("Find another file to take this one's place.")
+        line.addWidget(self.path, 1)
+        line.addWidget(self.browse)
+        self._busy = False
+        self.path.textChanged.connect(self._tidy)
+        self.path.editingFinished.connect(self._typed)
+        self.browse.clicked.connect(lambda _c=False: self._browse())
+
+    def _tidy(self, text):
+        """Quotes round a pasted path go at once."""
+        bare = text.strip()
+        if len(bare) >= 2 and bare[0] == bare[-1] and bare[0] in "\"'":
+            self.path.blockSignals(True)
+            self.path.setText(bare[1:-1].strip())
+            self.path.blockSignals(False)
+
+    def _typed(self):
+        if self._busy:
+            return
+        path = clean_path(self.path.text())
+        same = path and os.path.normcase(os.path.abspath(path)) == \
+            os.path.normcase(os.path.abspath(self.sample.path))
+        if not path or same:
+            self.path.setStyleSheet("")
+            return
+        if not os.path.isfile(path):
+            self.path.setStyleSheet("border: 1px solid #d04040;")
+            self.path.setToolTip("No such file: {}".format(path))
+            return
+        self.path.setStyleSheet("")
+        self._busy = True
+        try:
+            self.chosen.emit(path)
+        finally:
+            self._busy = False
+
+    def _browse(self):
+        window = _window_of(self)
+        path = window.ask_source_path(self.sample) if window else ""
+        if path:
+            self.path.setText(os.path.normpath(path))
+            self._typed()
+
+
 class _LiveDialog(QDialog):
     """Common machinery: snapshot on open, restore on reject.
 
@@ -1193,6 +1275,20 @@ class _LiveDialog(QDialog):
         buttons.rejected.connect(self.revert)
         return buttons
 
+    def _source_chosen(self, path):
+        """Another file in this one's place (`MainWindow.change_source`,
+        its own undo step). This window closes FIRST - its step lands
+        before the change - and opens again on the new file, every row of
+        which may differ (its wavelength, its points, its title)."""
+        window = _window_of(self)
+        if window is None:
+            return
+        obj = self.obj
+        sample = getattr(obj, "sample", obj)
+        self.accept()
+        window.change_source(sample, path)
+        window.edit_object(obj)
+
     def row_order(self):
         """`(first, last)`, the keys `_order_rows` puts at the top and the
         bottom; a window whose order depends on its object overrides it."""
@@ -1351,7 +1447,8 @@ class ScanSettings(_LiveDialog):
     FIELDS = ("colour", "label", "offset", "line_width", "keep",
               "dtg_window")
     INDIVIDUAL = ("label", "offset")
-    GROUP_DISABLED = ("label", "offset", "molar", "analyses")
+    GROUP_DISABLED = ("label", "offset", "molar", "analyses",
+                      "file_row")
 
     def __init__(self, parent, scan, unit, on_change=None):
         _LiveDialog.__init__(self, parent, scan, on_change)
@@ -1443,6 +1540,10 @@ class ScanSettings(_LiveDialog):
             self.analyses.addItem("no analyses in the file for this scan")
             self.analyses.setEnabled(False)
         form.addRow("Analyses", self.analyses)
+        sample = scan.sample
+        self.file_row = SourceRow(sample, self)
+        self.file_row.chosen.connect(self._source_chosen)
+        form.addRow("File", self.file_row)
 
         # ------------------------------------------------- the molar mass
         sample = scan.sample
@@ -1811,7 +1912,9 @@ class SampleSettings(_LiveDialog):
         form = QFormLayout()
         layout.addLayout(form)
 
-        form.addRow("File", QLabel(sample.path))
+        self.file_row = SourceRow(sample, self)
+        self.file_row.chosen.connect(self._source_chosen)
+        form.addRow("File", self.file_row)
         form.addRow("Instrument", QLabel(sample.instrument or "unknown"))
         form.addRow("Sample mass", QLabel(
             "{:g} mg".format(sample.mass_g * 1000.0) if sample.mass_g
@@ -2886,6 +2989,7 @@ class AnalysisSettings(_LiveDialog):
 
     FIELDS = ("visible", "colour", "label", "label_size", "flush",
               "show_interval", "interval_size", "construction", "shade",
+              "mass_line",
               "shading",
               "show_peak",
               "number_format",
@@ -2896,7 +3000,8 @@ class AnalysisSettings(_LiveDialog):
     #: The order of its rows (`_LiveDialog.FIRST_ROWS`).
     FIRST_ROWS = ("Label", "Shows", "Colour", "@auto", "Number format", "Unit",
                   "Model", "@source", "@start", "@end", "Results", "Peak (Tp)",
-                  "Lines", "@lines_note", "Label size", "Alignment",
+                  "Lines", "@lines_note", "@mass_line", "Label size",
+                  "Alignment",
                   "@interval", "Marker length", "@shade", "Shading")
     LAST_ROWS = ("@visible", "Layer")
 
@@ -3016,6 +3121,16 @@ class AnalysisSettings(_LiveDialog):
         self.lines_note.setStyleSheet("color: #9a9a9a;")
         self.lines_note.setVisible(False)
         form.addRow("", self.lines_note)
+        # A dashed line across the axes at the m% of its point - only an
+        # analysis with a point on a mass curve has one.
+        self.mass_line = QCheckBox("Mass line")
+        self.mass_line.setChecked(bool(getattr(analysis, "mass_line",
+                                               False)))
+        self.mass_line.setToolTip(
+            "A dashed line across the plot at the m% of this point, its "
+            "value at the left edge (house style: Mass lines).")
+        form.addRow("", self.mass_line)
+        self.mass_line.setVisible(analysis.has_mass_line)
 
         self.text_size = _style_number(self, analysis, "label_size")
         self.text_size.setToolTip("Label size, pt.")
@@ -3080,6 +3195,7 @@ class AnalysisSettings(_LiveDialog):
 
         self.visible.toggled.connect(self._apply)
         self.interval.toggled.connect(self._apply)
+        self.mass_line.toggled.connect(self._apply)
         self.interval_size.changed.connect(self._apply)
         self.shade.toggled.connect(self._apply)
         self.opaque.changed.connect(self._apply)
@@ -3250,6 +3366,7 @@ class AnalysisSettings(_LiveDialog):
         analysis = self.obj
         analysis.visible = bool(self.visible.isChecked())
         analysis.show_interval = bool(self.interval.isChecked())
+        analysis.mass_line = bool(self.mass_line.isChecked())
         analysis.interval_size = self.interval_size.value()
         analysis.shade = bool(self.shade.isChecked())
         analysis.shading = self.opaque.value()
@@ -3941,6 +4058,119 @@ for _kind in (ScanSettings, AnalysisSettings, LabelSettings, LegendSettings,
               ArrowSettings, OffsetMarkerSettings, ImageSettings,
               MoleculeSettings):
     _kind.LAYERED = True
+
+class DetailsDialog(QDialog):
+    """"Details..." of a file: where it is, how big, its dates and a
+    fingerprint of its contents, and what its run records - what tells two
+    files of one name apart, two of these side by side. For a file the
+    session could not read: where it was and what is kept of it, with the
+    two ways to look for it (`locate`, `find`: callables, else None)."""
+
+    def __init__(self, parent, title, rows, locate=None, find=None):
+        QDialog.__init__(self, parent)
+        self.setWindowTitle(title)
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        layout.addLayout(form)
+        #: `[(what, value), ...]` as shown.
+        self.rows = [(str(what), str(value)) for what, value in rows]
+        for what, value in self.rows:
+            shown = QLabel(value, self)
+            shown.setWordWrap(True)
+            shown.setMinimumWidth(360)
+            form.addRow(what, shown)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, self)
+        for text, act in (("Locate...", locate), ("Find in a folder...",
+                                                  find)):
+            if act is None:
+                continue
+            button = buttons.addButton(text, QDialogButtonBox.ActionRole)
+            button.setAutoDefault(False)
+            button.clicked.connect(
+                lambda _c=False, act=act: self._then(act))
+        copy_all = buttons.addButton("Copy", QDialogButtonBox.ActionRole)
+        copy_all.setAutoDefault(False)
+        copy_all.setToolTip("All of it as text, a line per row.")
+        copy_all.clicked.connect(lambda _c=False: self.copy())
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        readable(self)
+
+    def text(self):
+        return "\n".join("{}: {}".format(what, value)
+                         for what, value in self.rows)
+
+    def copy(self):
+        from PySide6.QtWidgets import QApplication
+        QApplication.clipboard().setText(self.text())
+
+    def _then(self, act):
+        """Close, then look: the look opens dialogs of its own."""
+        self.accept()
+        QTimer.singleShot(0, act)
+
+
+class FoundFilesDialog(QDialog):
+    """What a search under a folder found for the files a session could not
+    read: for each, the files named like it, the likeliest chosen - or
+    "Leave it missing". Each one's size and date are on its tooltip."""
+
+    def __init__(self, parent, folder, hits, stopped=""):
+        QDialog.__init__(self, parent)
+        self.setWindowTitle("Missing files found")
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        intro = QLabel("Under {}{}: take these in their places?".format(
+            folder, stopped), self)
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        layout.addLayout(form)
+        #: `[(saved path, combo box), ...]`.
+        self.boxes = []
+        for name, saved, found in hits:
+            if not found:
+                form.addRow(name, QLabel("nothing like it", self))
+                continue
+            box = QComboBox(self)
+            for score, path in found:
+                try:
+                    shown = os.path.relpath(path, folder)
+                except ValueError:
+                    shown = path
+                box.addItem("{}   {:.0%}".format(shown, score), path)
+                box.setItemData(box.count() - 1, _file_line(path),
+                                Qt.ToolTipRole)
+            box.addItem("Leave it missing", "")
+            form.addRow(name, box)
+            self.boxes.append((saved, box))
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.button(QDialogButtonBox.Ok).setText("Take them")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        readable(self)
+
+    def chosen(self):
+        """`{saved path: file}` for every file given one."""
+        return dict((saved, box.currentData()) for saved, box in self.boxes
+                    if box.currentData())
+
+
+def _file_line(path):
+    """"12,345 bytes, modified 2025-10-09 14:02" - or the path alone."""
+    import time
+    try:
+        info = os.stat(path)
+    except OSError:
+        return path
+    return "{}\n{:,} bytes, modified {}".format(
+        path, info.st_size,
+        time.strftime("%Y-%m-%d %H:%M", time.localtime(info.st_mtime)))
+
 
 # Qt calls the handlers here by itself; an error in one is logged and
 # survived rather than the end of the program (`core/log.py`).

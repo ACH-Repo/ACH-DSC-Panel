@@ -1332,6 +1332,165 @@ off band markers, the proposed order.
 * Test: `test_settings_windows_put_the_text_and_the_colour_first` in
   `tests/test_family.py`.
 
+## F3 (2026-10-05): F3 remembers, aliases of your own, family-wide
+
+Christian: show the F3 option used last when the search opens again; and
+custom aliases, user/installation specific, shareable as a .json dropped
+on the viewport, with a reset to factory. His choices: a recent list (not
+the last query typed back), family-wide.
+
+* `core/userops.py` (the same file in every member): `recent` /
+  `note_used` (5, newest first), `aliases` / `add_alias` /
+  `remove_aliases`, `export` / `read_shared` / `merge` / `install`,
+  `reset`; kept in `operators.json` beside the preferences.
+* `OperatorRegistry.search(..., extra=)` searches the user's aliases, and
+  ranks an operator whose alias starts with what was typed first.
+* `OperatorPalette`: "Used last" and "Every operator" headings when the
+  box is empty, the newest recent selected; a column for the user's
+  aliases (greyed); right-click: "Add an alias...", "Remove my alias".
+  The window's `previous` text was never set (dead since Triplot); the
+  window builds the palette in `operator_palette` and records a choice
+  in `palette_ran`.
+* Edit > Operator search: save the aliases as..., install from a file...,
+  reset to factory (asked). A dropped alias file installs (asked, with
+  what it adds; unknown operators skipped and said).
+* Tests in `tests/test_family.py`.
+
+## The source file (2026-10-05): the source file, typed or pasted
+
+Christian (a PXRD file window): set the source file there too, by
+browsing or by pasting a full path, the quotes Windows adds stripped. His
+word: all three panels, the file's window and the curve's.
+
+* `dialogs.SourceRow` (a path box and Browse...) in `SampleSettings` and
+  `ScanSettings` (Triplot's curve window had no File row; it has one now,
+  after Analyses). `clean_path`: spaces, quotes, file:/// links.
+* `_LiveDialog._source_chosen`: the window closes, `change_source` runs
+  (its own undo step), the window opens again on the new file.
+  `MainWindow.ask_source_path` is the file dialog both use.
+* Test in `tests/test_family.py`.
+
+### Round 32 (2026-10-07): the swipe per axis, the DTG's peak
+
+Christian (docs/NEXT.md 2-4). `tests/test_round32.py`.
+
+* **The swipe on a selection rescales the selected curves' OWN y
+  axis** (`PlotWidget.swiped_axes`, `scale_intensity`): the heat flow
+  and the m% made taller or flatter one at a time, every curve on the
+  axis in its place, as the plain swipe; both axes when both have a
+  selected curve; the main axis with none selected. A hidden curve, or
+  a heat flow beside a DTG (no axis), does not decide. The status bar
+  says which axis. Triplot only, by his choice (2026-10-07): PXRD-Panel's
+  per-pattern `multiplier` is not for DSC (nothing is normalised).
+* **DTG: "Peak temperature"** (`measure.DTG_PEAK`, `dtg_peak`): the
+  measured sample farthest from the line joining the stretch's ends,
+  by its span (a drag) or its temperatures (typed); `*T*_{p} = {}`.
+  Offered on DTG curves only - every other model reads the heat flow
+  (`_series`), which a DTG segment may not even show.
+* Asked: how to show TG, DTG and DSC together. The established ways:
+  one plot with an outward-offset third y axis (TRIOS, Proteus,
+  STARe), or panels stacked on a shared temperature axis (papers).
+  He keeps two figures for now; nothing built (the DTG still takes the
+  heat flow's axis).
+* **Mass lines** (his `plot_SDTs.py`, `add_onset_manual(...,
+  showmass=True)`): an analysis with a point on an m% curve
+  (`Analysis.has_mass_line`: onset, endset, mass at a temperature) can
+  draw a dashed 0.7 pt line across the axes at the height of the point
+  its label points at (`PlotWidget.mass_line`), UNDER every curve (its
+  own paint item, `MASS_LINE_Z`), its m% without the offset written at
+  the left edge just above it in the analysis's colour and label size
+  (`_paint_mass_text`). "Mass line" in the analysis's settings, off
+  until ticked; saved; house style "Mass lines" `%.1f`, as his script
+  rounds. The value is the curve's at the nearest sample, like his
+  `y_at_nearest_x` (a mass-at-temperature's own number takes the first
+  sample at or past: a sample apart on coarse data).
+  - From his first look (a screenshot: values over labels, lines across
+    everything): the value is DRAGGED along its line (`Analysis.
+    mass_at`, a share of the axes' width) and a little up or down
+    (`mass_dy`, within `MASS_REACH` beyond half its height), through a
+    handle of its own (`model.MassText`, `Analysis.mass_text`: a click,
+    double-click or right-click on it is its analysis's). The line is
+    thinner than the curves (house style "Mass line width", 0.5
+    against the curves' 1) in its own dashes (`MASS_DASH`, unbroken
+    across runs), under everything, and drawn at a quarter of its
+    colour (`MASS_FADE`) where it passes behind something
+    (`mass_obstacles`): a curve, an analysis label, its arrow, its
+    tangents and dashes, a mass line's value, a decorator - worked out
+    from where they WILL be drawn (`analysis_label_geometry`, now
+    shared with the painting; `artist_box`), since the line goes
+    first.
+  - G on a selected value moved the analysis's LABEL: a click on the
+    value selected its analysis. The value is now selected itself (in
+    `Document.objects()` while its line shows, orange when selected);
+    G, X and Y move it, H hides its line (`MassText.visible`).
+* **Colours as on the screen, family-wide**: his CAU-Ga export drew
+  the default palette's orange "nearly brown" - `paper_colour` still
+  darkened `model.PALETTE` on white (2026-10-02 spared only picked
+  colours). Shown hue-keeping darkening at 3:1 and 3.5:1 and the screen
+  colours, he chose the screen colours, for every member.
+* **TRIOS's Excel export** (his request: CSV and Excel "equivalent to
+  the one in TRIOS"): File > Export as TRIOS Excel workbooks
+  (`export.write_trios_excel`), checked cell by cell against three .xls
+  files TRIOS wrote (opened through Excel): a Details sheet (Filename -
+  the export's own name, in lower case - instrument, operator, run date,
+  sample name, the procedure), then a sheet per step, named as TRIOS
+  names them (no "/", "-2" after a repeat, the LAST 31 characters), its
+  step name, column names, units, and every sample with the flagged
+  ones as empty cells - which is why `_trim_empty_ends` now keeps the
+  tail aside. An SDT run's weight in % is "Weight" there. Segments on
+  the figure, the selected curves' only if any; one workbook per file.
+  openpyxl joins the dependencies. A procedure longer than 127 bytes
+  read as missing: .NET writes such a length in two bytes
+  (`trios_io._meta_string`).
+* **The measured data as text** (his word: "the most simple format
+  imaginable", never read by TRIOS, so our own): File > Export the
+  measured data (tab-separated), `export.write_data_text`. The Excel
+  export's segments and columns, a .csv per file named as the file:
+  the run's details (`profile.details`, the exotherm) on "#" lines, then
+  "# Segment n: step name", a header row "Segment", "Time (min)",
+  "Temperature (degC)"..., every sample with its segment's number
+  first, `%.8g` (an instrument's float32 holds no more), "." always, an
+  empty sample an empty cell. One file per run beside another of the
+  same name gets "-2" (`MainWindow._export_per_file`, shared with the
+  Excel export).
+
+## The missing file (2026-10-08): missing files kept, found again - family-wide
+
+Christian (2026-10-08): a Triplot session copied about "lost its data
+source" - its file had been saved from Downloads as `x(1).tri` and lay
+beside the session as `x.tri`. The look beside a session is by exact
+name, so the file was missing, and the outliner showed nothing at all.
+He chose, for the whole family:
+
+* **The file keeps a row** (`model.MissingSource`, `doc.missing`): its
+  name in red, MISSING, its saved path on the tooltip. What the session
+  held of it - the file's entry, its curves', the labels hanging from
+  them - is KEPT and put back into every save at its place
+  (`session._keep_missing`), colour links, span ends and region curves
+  moved to match. Before, the next save lost all of it.
+* **Right-click: Locate...** (by hand), **Find in a folder...** (his
+  idea: `os.walk` under a folder he names, the same extension, the name
+  at least 0.85 alike by difflib - `session.similar_files`), Details...,
+  Forget (one undo step). A copy's "(1)" / " - Copy" counts as the same
+  name and comes first, then names with the same numbers: "Run-2" is as
+  alike to "Run-1" as "Run-1(1)" is, so a search only OFFERS
+  (`FoundFilesDialog`, the likeliest chosen), and the automatic look
+  beside the session stays by exact name. Found, the figure is opened
+  again from its own state with the new place (`found_sources`,
+  `session.from_state(..., found=...)`): everything back, the undo
+  history cleared, changed until saved.
+* **Details...** on every file's right-click menu (his request: two files
+  of one name): folder, size, created and modified, SHA-256 of the
+  contents, and what the run records (`profile.details`); Copy puts it
+  on the clipboard. Not modal, so two can stand side by side.
+* Found on the way: a colour link names objects by their place in the
+  file, and with a file missing the places moved - a link joined the
+  wrong curves. `from_state` now restores them through the places in
+  the FILE (`_saved_target`).
+
+Test in `tests/test_family.py` (the
+same file in every member).
+
 ## Next
 
 1. **TGA as a first-class plot** (Christian, 2026-09-28, with his target

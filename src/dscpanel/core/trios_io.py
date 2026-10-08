@@ -118,16 +118,31 @@ def _trapz(y, x):
 
 
 def _meta_string(raw, key):
-    """Value of a .NET length-prefixed metadata string (single-byte length)."""
+    """Value of a .NET length-prefixed metadata string.
+
+    The length is .NET's 7-bit encoded integer: one byte below 128, and
+    above that seven bits a byte, low first, the high bit saying another
+    follows - a procedure of several steps (`proceduresegments`) is
+    longer than 127 bytes, and was read as missing when only a single
+    byte was taken."""
     k = key if isinstance(key, bytes) else key.encode()
     j = raw.find(k)
     if j == -1:
         return None
     p = j + len(k)
-    ln = raw[p]
-    if ln >= 0x80:
+    ln, shift = 0, 0
+    while p < len(raw) and shift <= 28:
+        byte = raw[p]
+        p += 1
+        ln |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            break
+        shift += 7
+    else:
         return None
-    return raw[p + 1:p + 1 + ln].decode('utf-8', 'replace')
+    if p + ln > len(raw):
+        return None
+    return raw[p:p + ln].decode('utf-8', 'replace')
 
 
 def _sample_mass_g(raw):
@@ -1164,7 +1179,8 @@ def read_tri_binary(path):
 
     head = {'Filename': Path(path).stem}
     for key in ('instrumenttype', 'samplename', 'operator', 'project',
-                'rundate', 'samplesize'):
+                'rundate', 'samplesize', 'instrumentname',
+                'proceduresegments'):
         v = _meta_string(raw, key)
         if v:
             head[key] = v

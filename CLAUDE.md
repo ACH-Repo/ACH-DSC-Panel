@@ -51,7 +51,7 @@ going; this file is about how it is done here.
 | `core/loader.py` | path -> `Sample`, and the exotherm-direction detection |
 | `core/arrange.py` | stack, distribute, align (the closed-form `y_align`) |
 | `core/undo.py` | commands, gesture merging |
-| `core/session.py` | the `.dscpanel` file |
+| `core/session.py` | the `.dscpanel` file; finding a moved or missing file |
 | `core/style.py` | the house style: object -> figure -> user default -> built-in |
 | `core/figure.py` | the figure's size: window, aspect ratio, or exact size and margins |
 | `core/presets.py` | style presets: a figure's look (and size) in a file |
@@ -62,9 +62,10 @@ going; this file is about how it is done here.
 | `core/dtg.py` | the DTG: the m% curve's derivative, its units and window |
 | `core/shades.py` | shades of one colour for a stack (the F3 gradient) |
 | `core/molar.py` | molar masses from a formula, a SMILES or a composition |
-| `core/export.py` | CSV, the driver bridge, and the export warnings |
+| `core/export.py` | CSV, TRIOS Excel workbooks, the measured data as text, the driver bridge, and the export warnings |
 | `core/profile.py` | what is particular to DSC/SDT data (one-press F, ...) |
 | `core/ops.py` | the operator registry (copied from MoloM, keep in step) |
+| `core/userops.py` | F3's memory, the user's: the operators used last, aliases of their own, the shared alias file, the factory reset (`operators.json` beside the preferences) |
 | `ui/plot.py` | the painted plot: view, gestures, picking, drawing |
 | `ui/window.py` | operators, menus, docks, drops, exports, undo |
 | `ui/settings.py` | Edit > Settings (`Ctrl+,`): the two-column house style page |
@@ -75,6 +76,40 @@ going; this file is about how it is done here.
 
 ## Traps already paid for
 
+* **A file a session cannot read is KEPT** (2026-10-08, family-wide;
+  `model.MissingSource` in `doc.missing`): its entry, its curves' entries
+  and the labels hanging from them, each with its place in the file.
+  `session._keep_missing` puts them back into EVERY `to_state` (so a save
+  and `is_modified` see them) and moves the colour links, span ends and a
+  region's curves to match. A colour link, a span's ends and a label name
+  things by their PLACE in the file, so `from_state` restores links through
+  `_saved_target` (places in the file), never through the document's
+  lists. Finding the file (`MainWindow.found_sources`) is
+  `from_state(to_state(doc), found={saved path: new path})`: the figure
+  opened again, the undo history cleared, changed until saved. The look
+  beside a session stays by EXACT name; a name merely alike
+  (`similar_files`: 0.85, a copy's "(1)" first, then the same numbers) is
+  only OFFERED - "Run-1" is as alike to "Run-2" as to "Run-1(1)".
+
+* **The source file changes through the WINDOW, after the settings
+  window closes** (2026-10-05, family-wide; `SourceRow`,
+  `_LiveDialog._source_chosen`): `change_source` replaces the sample's
+  whole `__dict__`, so a window left open would show the old file's rows
+  and its Revert would write old values onto the new file. It accepts
+  (its own undo step lands first), the source changes (its own step),
+  and the window opens again. `clean_path` takes the quotes of "Copy as
+  path" off.
+
+* **F3's memory is the USER's, in `operators.json`** (2026-10-05,
+  family-wide; `core/userops.py`): the recent list and the aliases, beside
+  `preferences.json`, written at every change. It is read again whenever
+  the preferences path moves (`userops._ensure`), which is how every test
+  gets an empty one from conftest's `own_preferences`. A shared alias file
+  is known by its CONTENTS (`"format": "operator-aliases"`), never by its
+  name: any other `.json` dropped goes on to the readers. Aliases are
+  stored by operator ID - renaming an id orphans them (they are kept, and
+  find nothing).
+
 * **A settings window's rows are ORDERED, not built in order**
   (2026-10-05, family-wide): `_LiveDialog.FIRST_ROWS` / `LAST_ROWS` (or
   `row_order()`, which `LabelSettings` overrides per kind) name rows by
@@ -83,6 +118,12 @@ going; this file is about how it is done here.
   the middle. The widgets are moved, not rebuilt: hiding a row means its
   field AND `labelForField`.
 
+* **A step's flagged tail is kept aside, not dropped** (`_trim_empty_ends`
+  keeps `step["tail"]`): the curves never see it, but TRIOS's Excel export
+  writes every sample, the empty ones as empty cells, so
+  `export.trios_step_columns` stacks it back. .NET writes a metadata
+  string's length in 7-bit groups (`trios_io._meta_string`): a procedure
+  of 128 bytes or more has a two-byte length and read as missing.
 * **`segment` from the reader is 1-BASED** (`trios_io` writes `j + 1`).
   Reading it as an index draws every analysis one scan too low, and the
   result looks plausible. `Sample.analyses_for` handles it, and
@@ -368,6 +409,16 @@ going; this file is about how it is done here.
   are written is `numbered_ticks` / `_number_box`, shared with
   `_paint_grid`; a hidden number (`number_hidden`, kept with its unit
   like a lock) keeps its tick.
+* **A mass line is drawn FIRST and fades behind what comes later**
+  (`PlotWidget.mass_obstacles`): so where a label, an arrow or a
+  decorator will be is worked out before it is painted -
+  `analysis_label_geometry` is the one layout of an analysis label,
+  used by the painting and by the line. Change a label's layout THERE.
+  The line's value is an object of its own, `model.MassText` (its
+  analysis's `mass_at` / `mass_dy`, `visible` = the line), listed in
+  `Document.objects()` while its line is shown: a click selects IT, so
+  G moves it (selecting the analysis made G move the label); a
+  double-click or right-click is its analysis's.
 * **An axis switching sides goes through `window._to_side`**: on an exact
   figure both margins keep their white space beyond what they hold.
 * **A scale's pivot is MEASURED, not predicted**: after changing the sizes
@@ -447,7 +498,9 @@ going; this file is about how it is done here.
   `PlotWidget.sy_to_px(scan, ...)` / `px_to_sy`, an artist in data units
   through `ay_to_px` (its parent scan's axis, else the MAIN one), a unit
   through `doc.unit_for(scan)` - never the heat flow's `y_to_px` or
-  `doc.y_unit` alone. Gestures act on `main_axis()` ("y2" while a mass is
+  `doc.y_unit` alone. The swipe acts on `swiped_axes()` (the selected
+  drawn curves' y axes, else the main one); the other gestures on
+  `main_axis()` ("y2" while a mass is
   shown). An outliner segment key is FOUR parts, `("segment", id, seg,
   signal)`. Arrangements (stack, distribute, align, S) work per signal.
 * **A one-cursor analysis stores its temperature as BOTH cursors**
@@ -477,13 +530,13 @@ going; this file is about how it is done here.
   first tenth of the x axis empty. It was % of the data's range until
   preferences version 2 / session version 6, which `style.convert_old_fit`
   converts. Read both of an axis's through `PlotWidget.fit_pads`.
-* **A white page darkens only the default palette** (`paper_colour`,
-  family-wide 2026-10-02): `model.PALETTE` is chosen for a dark ground and
-  is brought down to `PAPER_LUMA` on white; any other colour - picked,
-  typed as hex, a gradient's - is drawn exactly as chosen. `for_light`
-  itself still darkens everything: the handling colours (`ACCENTS`) go
-  through it in `set_theme`, so never call it for an object's colour. A
-  golden yellow came out olive on an export until then (Christian).
+* **A white page draws every object colour as on the screen**
+  (`paper_colour`, family-wide 2026-10-07): the default palette too.
+  2026-10-02 still darkened `model.PALETTE` to `PAPER_LUMA` on white, and
+  its orange came out brown in every export (a picked golden yellow had
+  come out olive before that); Christian chose the screen colours as they
+  are. `for_light` darkens the handling colours (`ACCENTS`) in
+  `set_theme` and nothing else: never call it for an object's colour.
 * **The handling colours are not the ink** (`plot.ACCENTS`): the reticle,
   band and selection follow the document's theme even when the page flips
   the ink to the other family. `set_theme(drawing, accent=doc.theme)`.

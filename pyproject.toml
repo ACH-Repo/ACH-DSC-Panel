@@ -36,6 +36,8 @@ dependencies = [
     # dependency: without it, pasting one on a fresh install did nothing
     # visible. A session with a structure opens without it all the same.
     "rdkit",
+    # The TRIOS-style Excel export (.xlsx, `export.write_trios_excel`).
+    "openpyxl",
 ]
 
 [project.optional-dependencies]

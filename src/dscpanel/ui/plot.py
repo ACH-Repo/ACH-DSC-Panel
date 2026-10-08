@@ -119,10 +119,10 @@ THEMES = {
 THEME = THEME_DARK
 globals().update(THEMES[THEME_DARK])
 
-#: Trace colours are brought down to this relative luminance on a light
-#: ground. The number was measured against tab10 / ColorBrewer /
-#: Okabe-Ito rather than taken from the WCAG floor, which is darker than any
-#: of them. The palette is chosen for a dark background and none of it prints.
+#: The handling colours (`ACCENTS`) are brought down to this relative
+#: luminance on a light ground; an object's colour never is (`paper_colour`).
+#: The number was measured against tab10 / ColorBrewer / Okabe-Ito rather
+#: than taken from the WCAG floor, which is darker than any of them.
 PAPER_LUMA = 0.42
 
 
@@ -211,22 +211,13 @@ def for_light(colour):
                            colour.blueF() * factor)
 
 
-#: The default screen palette (`model.PALETTE`): chosen for a dark ground,
-#: so a white page darkens it (`for_light`). A colour somebody chose - in
-#: the picker, the hex field, a gradient - is drawn exactly as chosen on
-#: either page.
-_SCREEN_PALETTE = frozenset(c.lower() for c in model.PALETTE)
-
-
 def paper_colour(colour):
-    """An object's colour as a white page draws it: one of the default
-    screen palette darkened to read on paper (`for_light`), any other
-    exactly as chosen. (The handling colours - reticle, selection - are
-    darkened by `set_theme` itself.)"""
-    colour = QColor(colour)
-    if colour.name().lower() in _SCREEN_PALETTE:
-        return for_light(colour)
-    return colour
+    """An object's colour as a white page - and so every export - draws
+    it: exactly as on the screen, the default palette included. Darkened
+    to read on paper (the palette is chosen for a dark ground), its orange
+    came out brown. Only the handling colours - reticle, selection -
+    follow the page (`set_theme`, `for_light`)."""
+    return QColor(colour)
 
 #: Room for the y numbers, which this plot has and the PXRD one does not.
 _LEFT = 66
@@ -444,6 +435,8 @@ class PlotWidget(QWidget):
         self._nav = None            # a middle-button drag: the mouse's swipe
         self._leader_drag = None    # a note's arrow tip being moved
         self._view_burst = None     # (view before, label) while zooming
+        #: True while the swipe's axes come from the selection.
+        self._swipe_by_selection = False
         self._view_settle = QTimer(self)
         self._view_settle.setSingleShot(True)
         self._view_settle.setInterval(VIEW_SETTLE_MS)
@@ -2809,29 +2802,72 @@ class PlotWidget(QWidget):
         self.set_main_view(lo / factor, hi / factor)
 
     def scale_intensity(self, factor):
-        """The plain swipe and the middle drag: every curve on the main y
-        axis `factor` times taller, about its OWN middle height
-        (`_level_of`), each where it is on the page. Nothing is multiplied:
-        the axis is scaled about y = 0 (`scale_y`) and each curve's offset
-        is changed so its middle height keeps its place - the data stays as
-        measured, and the y numbers, where shown, stay true. Hidden curves
-        on the axis follow too, so they come back in their places. The
-        other y axis is left alone. One undo step per gesture, the offsets
+        """The plain swipe and the middle drag: every curve on a y axis
+        `factor` times taller, about its OWN middle height (`_level_of`),
+        each where it is on the page. Nothing is multiplied: the axis is
+        scaled about y = 0 and each curve's offset is changed so its middle
+        height keeps its place - the data stays as measured, and the y
+        numbers, where shown, stay true. Hidden curves on the axis follow
+        too, so they come back in their places.
+
+        WHICH axis is `swiped_axes`: the selected curves' (the mass and the
+        heat flow made taller one at a time), else the main one. An axis
+        not swiped is left alone. One undo step per gesture, the offsets
         with the framing (`commit_view`)."""
         doc = self.doc
         if factor <= 0 or doc is None:
             return
-        # The range BEFORE the offsets move: a fitted one would otherwise
+        axes = self.swiped_axes()
+        # The ranges BEFORE the offsets move: a fitted one would otherwise
         # refit to the new stack first, and every curve jumped.
-        lo, hi = self.main_view()
-        mass = self.main_axis() == "y2"
+        ranges = [(which, self._axis_view(which)[0]) for which in axes]
         for scan in doc.scans:
-            if bool(getattr(scan, "is_mass", False)) != mass:
+            if self._y_axis_of(scan) not in axes:
                 continue
             rest = self._level_of(scan)
             scan.offset = (float(scan.offset) + rest) / factor - rest
         self.rebuild()
-        self.set_main_view(lo / factor, hi / factor)
+        for which, (lo, hi) in ranges:
+            if which == "y2":
+                self.set_view_y2(lo / factor, hi / factor)
+            else:
+                self.set_view_y(lo / factor, hi / factor)
+        if self._swipe_by_selection:
+            self.hovered.emit("TALLER or flatter: the {} axis (the selected "
+                              "curves')".format(" and the ".join(
+                                  self.axis_name(which) for which in axes)))
+
+    @staticmethod
+    def _y_axis_of(scan):
+        """"y2" for a mass curve, "y" for the rest (a heat flow, a DTG)."""
+        return "y2" if getattr(scan, "is_mass", False) else "y"
+
+    def swiped_axes(self):
+        """The y axes a swipe scales: those of the SELECTED curves that are
+        drawn - each with every curve on it, so a selected heat flow makes
+        all the heat flows taller and leaves the m% alone - else the main
+        axis. A curve is never scaled by itself: nothing is normalised."""
+        doc = self.doc
+        self._swipe_by_selection = False
+        if doc is None:
+            return []
+        axes = []
+        for scan in doc.selected_scans():
+            if not scan.visible or doc.axis_missing(scan):
+                continue
+            which = self._y_axis_of(scan)
+            if which not in axes:
+                axes.append(which)
+        self._swipe_by_selection = bool(axes)
+        return axes or [self.main_axis()]
+
+    def axis_name(self, which):
+        """What a y axis carries, in words: "heat flow", "DTG", "mass"."""
+        if which == "y2":
+            return "mass"
+        if self.doc is not None and self.doc.y_signal() == model.SIGNAL_DTG:
+            return "DTG"
+        return "heat flow"
 
     def _level_of(self, scan):
         """Where a curve is above its own offset, drawn or not: the
@@ -2924,6 +2960,10 @@ class PlotWidget(QWidget):
             near(analysis, box, -model.z_of(analysis))
         for marker, box in self._marker_boxes:
             near(marker, box, -model.z_of(marker))
+        # A mass line's value, over its analysis: dragged, it moves along
+        # its line (`Analysis.mass_text`).
+        for analysis, box in getattr(self, "_mass_boxes", ()):
+            near(analysis.mass_text, box, -model.z_of(analysis) - 1.0)
         for axis, box in self._axis_boxes:
             gap = _rect_distance(QRectF(box), point)
             if gap <= 4.0:
@@ -3182,6 +3222,8 @@ class PlotWidget(QWidget):
           the data.
         * a scan: its offset, in data units.
         """
+        if isinstance(obj, model.MassText):
+            return ("mass_at", "mass_dy")
         if isinstance(obj, model.TextLabel) and getattr(obj, "vline",
                                                         None) is not None:
             return ("vline", "x", "y")
@@ -3209,6 +3251,8 @@ class PlotWidget(QWidget):
         over the offset it is BEING DRAWN at, so a drag starts where the eye
         sees the label rather than jumping.
         """
+        if isinstance(obj, model.MassText):
+            return self.mass_place(obj.analysis)
         if isinstance(obj, model.Analysis):
             # Where the label is drawn, and where along its interval it
             # stands as STORED (None, the peak, stays None unless slid).
@@ -3279,6 +3323,20 @@ class PlotWidget(QWidget):
         return -46.0
 
     def _apply_value(self, obj, value):
+        if isinstance(obj, model.MassText):
+            # Stored as it is drawn - inside the axes, near its line - so a
+            # drag past the end does not leave it stuck there on the way
+            # back.
+            rect = self.plot_rect()
+            trace = self._trace_of(obj.analysis.scan)
+            placed = (self.mass_text_box(trace, obj.analysis, rect)
+                      if trace is not None else None)
+            most = (1.0 if placed is None else max(
+                0.0, 1.0 - placed[0].width() / max(1.0, rect.width())))
+            obj.mass_at = float(min(most, max(0.0, value[0])))
+            obj.mass_dy = float(value[1])
+            obj.mass_dy = self.mass_place(obj.analysis)[1]
+            return
         if getattr(obj, "attached", False) and len(value) == 3 and \
                 isinstance(value[0], (tuple, list)):
             obj.at = tuple(value[0])
@@ -3426,6 +3484,13 @@ class PlotWidget(QWidget):
         elif axis == "y":
             dx_px = 0.0
         for obj, origin in zip(state["objs"], state["origin"]):
+            if isinstance(obj, model.MassText):
+                # Along its line as far as the hand moved, and up or down
+                # only a little: the value belongs to its line.
+                self._apply_value(obj, (
+                    origin[0] + dx_px / max(1.0, rect.width()),
+                    origin[1] + dy_px))
+                continue
             if self.is_artist(obj):
                 # Worked in PIXELS and handed back in the artist's own
                 # space, so a data-space artist moves under the hand
@@ -3539,6 +3604,7 @@ class PlotWidget(QWidget):
                   (model.MoleculeArtist, "structure"),
                   (model.Analysis, "analysis label"),
                   (model.OffsetMarker, "offset marker"),
+                  (model.MassText, "mass line value"),
                   (model.Axis, "axis caption"))
 
     @classmethod
@@ -4792,7 +4858,8 @@ class PlotWidget(QWidget):
             wanted = "x" if key == Qt.Key_X else "y"
             if wanted == "x" and not any(
                     self.is_artist(o) or isinstance(o, (model.OffsetMarker,
-                                                        model.Axis))
+                                                        model.Axis,
+                                                        model.MassText))
                     or getattr(o, "slides", False)
                     for o in self._move["objs"]):
                 self.hovered.emit("A scan does not move along x")
@@ -4843,6 +4910,8 @@ class PlotWidget(QWidget):
             return
         if ev.button() == Qt.RightButton:
             obj = self.object_at(pos)
+            if isinstance(obj, model.MassText):
+                obj = obj.analysis      # a mass line's value: its analysis
             # The spine and the numbers get their menu, never the selection
             # (it would light the caption up).
             if (obj is not None and not obj.selected
@@ -5304,13 +5373,16 @@ class PlotWidget(QWidget):
         ev.accept()
 
     def open_object(self, obj):
-        """What a double-click that did not move does: open the thing.
+        """What a double-click that did not move does: open the thing
+        (a mass line's value opens its analysis).
 
         An analysis made HERE also gets its cursors back, so its interval can
         be adjusted and the analysis recomputed. That used to happen on the
         press, which made a panel analysis's label the one label that could
         not be double-click-dragged - and every new analysis is a panel one.
         """
+        if isinstance(obj, model.MassText):
+            obj = obj.analysis
         several = (self.doc is not None and obj.selected
                    and sum(isinstance(o, model.Analysis)
                            for o in self.doc.selected()) > 1)
@@ -5383,6 +5455,8 @@ class PlotWidget(QWidget):
         if self.is_artist(first):
             return "MOVE {} to x {:.2f}, y {:.2f} of the plot{}".format(
                 first.kind, first.x, first.y, lock)
+        if isinstance(first, model.MassText):
+            return "MOVE the mass line's value along its line{}".format(lock)
         if isinstance(first, model.Analysis) and state.get("axis") == "x":
             return "SLIDE the label along its interval{}".format(lock)
         if isinstance(first, model.Analysis):
@@ -5452,7 +5526,8 @@ class PlotWidget(QWidget):
                  if doc else ()),
                 (tuple(style.figure_value(doc, key) for key in (
                     "font_family", "temperature_format", "value_format",
-                    "offset_format", "analysis_construction",
+                    "offset_format", "mass_line_format",
+                    "analysis_construction",
                     "tangent_overshoot"))
                  + tuple((a.number_format, tuple(a.hidden_numbers or ()),
                           tuple(a.hidden_context or ()))
@@ -5470,6 +5545,9 @@ class PlotWidget(QWidget):
                               # the interval's dashes and lines, and what
                               # a construction is computed from
                               a.show_interval, a.construction, a.source,
+                              getattr(a, "mass_line", False),
+                              getattr(a, "mass_at", None),
+                              getattr(a, "mass_dy", None),
                               a.model_name,
                               tuple(a.cursors()) if a.visible else (),
                               tuple(a.span) if a.span else None)
@@ -5766,6 +5844,7 @@ class PlotWidget(QWidget):
         self._analysis_boxes = []
         self._marker_boxes = []
         self._image_boxes = []
+        self._mass_boxes = []
         self._axis_boxes = []
         self._text_boxes = []
         frame_aa = not self._crisp(p)
@@ -5826,6 +5905,13 @@ class PlotWidget(QWidget):
                     add(analysis, True,
                         lambda t=trace, a=analysis: self._paint_analyses(
                             p, rect, t, only=a))
+                if any(getattr(a, "mass_line", False)
+                       for a in trace.scan.visible_analyses()):
+                    # Under every curve, as the template's `axhline(...,
+                    # zorder=-1)`; its value is drawn with its analysis.
+                    items.append((self.MASS_LINE_Z, len(items), True,
+                                  lambda t=trace: self._paint_mass_lines(
+                                      p, rect, t)))
                 if doc is not None and doc.offset_markers:
                     add(trace.scan.marker, True,
                         lambda t=trace: self._paint_offset_markers(
@@ -7082,6 +7168,243 @@ class PlotWidget(QWidget):
             self._paint_interval(p, rect, trace, analysis)
             self._paint_analysis_label(p, rect, trace, analysis, value,
                                        anchor_y, colour)
+            self._paint_mass_text(p, rect, trace, analysis, colour)
+
+    #: Below everything in the stack: a mass line runs under the curves.
+    MASS_LINE_Z = -1e9
+    #: How much of its colour a mass line keeps where it passes behind
+    #: something - a curve, a label, a decorator, a value.
+    MASS_FADE = 0.25
+    #: The room around what a mass line passes behind, figure units.
+    MASS_PAD = 3.0
+    #: A mass line's dash and gap, figure units, whatever its width.
+    MASS_DASH = (4.0, 2.5)
+    #: How far a value may stand from its line beyond its own half height,
+    #: figure units: up or down a little, never off its line.
+    MASS_REACH = 12.0
+    #: Where a value stands along its line until moved: the template's 0.01
+    #: of the axes' width from the left.
+    MASS_AT = 0.01
+
+    def mass_line(self, trace, analysis, rect=None):
+        """`(y, value)` of an analysis's mass line: the screen height of
+        the point its label points at, and the m% there without the
+        offset, in the weight unit - or None (not asked for, no point on
+        a mass curve, out of the view)."""
+        doc = self.doc
+        if (doc is None or not getattr(analysis, "mass_line", False)
+                or not analysis.has_mass_line
+                or doc.x_axis != model.AXIS_TEMPERATURE):
+            return None
+        rect = rect or self.plot_rect()
+        value = self.label_celsius(analysis)
+        if value is None:
+            return None
+        value = self.to_axis(value)
+        lo, hi = self.view_x()
+        if not lo <= value <= hi:
+            return None
+        index = self._sample_near(trace, value,
+                                  self._analysis_slice(trace, analysis))
+        if index is None:
+            return None
+        y = float(trace.y[index])
+        return (float(self.sy_to_px(trace.scan, y, rect)),
+                y - float(trace.scan.offset))
+
+    def mass_line_text(self, value):
+        """What a mass line says: `62.4 %` (the house style's "Mass
+        lines" format, in the weight unit)."""
+        doc = self.doc
+        return "{} {}".format(
+            numbers.write(value, style.figure_value(doc, "mass_line_format"),
+                          numbers.MASS_LINE),
+            getattr(doc, "weight_unit", model.WEIGHT_PCT))
+
+    def mass_place(self, analysis, height=None):
+        """`(along, dy)` where a mass line's value stands: its own place,
+        else the left edge just above the line; `dy` kept within
+        `MASS_REACH` of the line (beyond the value's half height)."""
+        if height is None:
+            height = QFontMetricsF(self.analysis_font(analysis)).height()
+        along = getattr(analysis, "mass_at", None)
+        along = (self.MASS_AT if along is None
+                 else _clamp(float(along), 0.0, 1.0))
+        dy = getattr(analysis, "mass_dy", None)
+        dy = -(height / 2.0 + 1.0) if dy is None else float(dy)
+        reach = height / 2.0 + self.MASS_REACH
+        return along, _clamp(dy, -reach, reach)
+
+    def mass_text_box(self, trace, analysis, rect=None):
+        """`(box, text, font)` of a mass line's value, or None: along its
+        line at `mass_at` of the axes' width, its middle `mass_dy` from the
+        line (`mass_place`), and inside the axes."""
+        rect = rect or self.plot_rect()
+        at = self.mass_line(trace, analysis, rect)
+        if at is None:
+            return None
+        text = self.mass_line_text(at[1])
+        font = self.analysis_font(analysis)
+        metrics = QFontMetricsF(font)
+        width = metrics.horizontalAdvance(text) + 2.0
+        height = metrics.height()
+        along, dy = self.mass_place(analysis, height)
+        left = _clamp(rect.left() + along * rect.width(), rect.left(),
+                      max(rect.left(), rect.right() - width))
+        return (QRectF(left, at[0] + dy - height / 2.0, width, height),
+                text, font)
+
+    def _label_place(self, trace, analysis, rect):
+        """`(text, box, x, start, step, anchor_y)` of an analysis's label
+        where `_paint_analyses` will draw it, or None (it is not drawn)."""
+        doc = self.doc
+        if doc is None or doc.x_axis != model.AXIS_TEMPERATURE:
+            return None
+        value = self.label_celsius(analysis)
+        if value is None:
+            return None
+        value = self.to_axis(value)
+        lo, hi = self.view_x()
+        if not lo <= value <= hi:
+            return None
+        anchor_y = self._curve_y_at(trace, value, rect,
+                                    self._analysis_slice(trace, analysis))
+        if anchor_y is None:
+            return None
+        return self.analysis_label_geometry(
+            trace, analysis, value, anchor_y, rect,
+            self.analysis_font(analysis)) + (anchor_y,)
+
+    def mass_obstacles(self, y, rect=None):
+        """`[(x0, x1), ...]`, merged and in order: where a mass line at
+        height `y` passes behind something - a drawn curve, an analysis
+        label or its arrow, a mass line's value, a decorator - so it is
+        drawn faint there. Worked out from where those WILL be drawn: the
+        line is drawn first, under all of them."""
+        rect = rect or self.plot_rect()
+        pad = self.MASS_PAD
+        spans = []
+
+        def box_span(box):
+            if box is not None and box.top() - pad <= y <= box.bottom() + pad:
+                spans.append((box.left() - pad, box.right() + pad))
+
+        for trace in self.drawable():
+            if trace.x is None or trace.y is None or not len(trace.x):
+                continue
+            with np.errstate(invalid="ignore"):
+                xs = np.asarray(self.x_to_px(np.asarray(trace.x, dtype=float),
+                                             rect), dtype=float)
+                gap = np.asarray(self.sy_to_px(
+                    trace.scan, np.asarray(trace.y, dtype=float), rect),
+                    dtype=float) - y
+                found = [xs[np.abs(gap) <= pad]]
+                cross = np.flatnonzero(gap[:-1] * gap[1:] < 0)
+                if len(cross):
+                    share = gap[cross] / (gap[cross] - gap[cross + 1])
+                    found.append(xs[cross]
+                                 + share * (xs[cross + 1] - xs[cross]))
+            found = np.concatenate(found)
+            for x in np.unique(np.round(found[np.isfinite(found)])):
+                spans.append((float(x) - pad, float(x) + pad))
+            for analysis in trace.scan.visible_analyses():
+                place = self._label_place(trace, analysis, rect)
+                if place is not None:
+                    _text, box, x, start, _step, anchor_y = place
+                    box_span(box)
+                    if (min(start, anchor_y) - pad <= y
+                            <= max(start, anchor_y) + pad):
+                        spans.append((x - pad, x + pad))
+                    # Its tangents or chords, and the dashes at its ends.
+                    dashes, lines = self.interval_marks(trace, analysis,
+                                                        rect)
+                    for a, b in lines + (dashes if analysis.show_interval
+                                         else []):
+                        lo_y, hi_y = sorted((a.y(), b.y()))
+                        if not lo_y - pad <= y <= hi_y + pad:
+                            continue
+                        if abs(b.y() - a.y()) < 1e-9:
+                            spans.append((min(a.x(), b.x()) - pad,
+                                          max(a.x(), b.x()) + pad))
+                            continue
+                        share = (y - a.y()) / (b.y() - a.y())
+                        x_at = a.x() + _clamp(share, 0.0, 1.0) * (b.x()
+                                                                  - a.x())
+                        spans.append((x_at - pad, x_at + pad))
+                value = self.mass_text_box(trace, analysis, rect)
+                if value is not None:
+                    box_span(value[0])
+        for artist in decorators_of(self.doc) if self.doc is not None else ():
+            if not getattr(artist, "visible", True):
+                continue
+            try:
+                box_span(self.rotated_bounds(
+                    artist, self.artist_box(artist, rect), rect))
+            except Exception:
+                continue
+        merged = []
+        for a, b in sorted(spans):
+            if merged and a <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+            else:
+                merged.append((a, b))
+        return merged
+
+    def _paint_mass_lines(self, p, rect, trace):
+        """The dashed lines of a curve's analyses that show one, across the
+        axes (the template's `showmass`): thinner than the curves (house
+        style "Mass line width") and faint wherever they pass behind
+        something (`mass_obstacles`)."""
+        width = max(0.05, float(style.figure_value(self.doc,
+                                                   "mass_line_width")))
+        dash, gap = self.MASS_DASH
+        for analysis in trace.scan.visible_analyses():
+            at = self.mass_line(trace, analysis, rect)
+            if at is None:
+                continue
+            y = at[0]
+            colour = (QColor(_SELECT) if analysis.selected
+                      else self.analysis_colour(analysis, trace))
+            faint = QColor(colour)
+            faint.setAlphaF(colour.alphaF() * self.MASS_FADE)
+            runs, x = [], rect.left()
+            for a, b in self.mass_obstacles(y, rect):
+                a, b = max(a, rect.left()), min(b, rect.right())
+                if b <= a or b <= x:
+                    continue
+                a = max(a, x)
+                if a > x:
+                    runs.append((x, a, colour))
+                runs.append((a, b, faint))
+                x = b
+            if x < rect.right():
+                runs.append((x, rect.right(), colour))
+            for x0, x1, ink in runs:
+                pen = QPen(ink, width)
+                pen.setCapStyle(Qt.FlatCap)
+                # In units of the width: the same dashes at any width, and
+                # running on unbroken from one run to the next.
+                pen.setDashPattern([dash / width, gap / width])
+                pen.setDashOffset((x0 - rect.left()) / width)
+                p.setPen(pen)
+                p.drawLine(QPointF(x0, y), QPointF(x1, y))
+
+    def _paint_mass_text(self, p, rect, trace, analysis, colour):
+        """A mass line's value where it stands (`mass_text_box`), in its
+        analysis's colour and label size; a drag moves it
+        (`Analysis.mass_text`)."""
+        placed = self.mass_text_box(trace, analysis, rect)
+        if placed is None:
+            return
+        box, text, font = placed
+        if analysis.mass_text.selected:
+            colour = QColor(_SELECT)
+        p.save()
+        p.setFont(font)
+        p.setPen(QPen(colour))
+        p.drawText(box, int(Qt.AlignLeft | Qt.AlignVCenter), text)
+        p.restore()
+        self._mass_boxes.append((analysis, QRectF(box)))
 
     def _paint_integral(self, p, rect, trace, analysis, colour):
         """The shaded area between the curve and its baseline.
@@ -7336,25 +7659,20 @@ class PlotWidget(QWidget):
             if kept is not None:
                 p.drawLine(*kept)
 
-    def _paint_analysis_label(self, p, rect, trace, analysis, value, anchor_y,
-                              colour):
-        """The label, and the arrow from it down to what it names.
-
-        The label sits `label_dy` pixels from the curve and the arrow is
-        drawn between the two, so moving the label lengthens or shortens the
-        arrow - which is what dragging an analysis does. The movement is
-        locked vertically for now, so a label cannot drift off its feature.
-
-        `flush` is the template's: which edge of the text sits on the arrow.
-        Left puts the arrow under the first letter, so the label reads away
-        to the right of its feature; right is the mirror image; centre hangs
-        it over the arrow. The arrow stays vertical whichever it is - the
-        point it touches is the feature, and only the text moves around it.
-        """
-        font = QFont(p.font())
+    def analysis_font(self, analysis, base=None):
+        """The font an analysis's label is written in."""
+        font = QFont(base if base is not None else self.figure_font())
         font.setPointSizeF(max(5.0, float(self.style_of(analysis,
                                                         "label_size"))))
-        p.setFont(font)
+        return font
+
+    def analysis_label_geometry(self, trace, analysis, value, anchor_y, rect,
+                                font):
+        """`(text, box, x, start, step)` of an analysis's label: what it
+        says, its box, the x of its arrow, where the arrow leaves the box
+        and its head's step - as `_paint_analysis_label` draws it, for what
+        must know where a label is BEFORE it is drawn (a mass line, which
+        is drawn under everything and goes faint behind a label)."""
         text = labels.render(analysis, self.doc).text
         if not analysis.certain:
             text += " ?"
@@ -7376,6 +7694,27 @@ class PlotWidget(QWidget):
         # lands ON the feature and not inside the writing.
         start = box.bottom() + 2 if label_y < anchor_y else box.top() - 2
         step = 5.0 if label_y < anchor_y else -5.0
+        return text, box, x, start, step
+
+    def _paint_analysis_label(self, p, rect, trace, analysis, value, anchor_y,
+                              colour):
+        """The label, and the arrow from it down to what it names.
+
+        The label sits `label_dy` pixels from the curve and the arrow is
+        drawn between the two, so moving the label lengthens or shortens the
+        arrow - which is what dragging an analysis does. The movement is
+        locked vertically for now, so a label cannot drift off its feature.
+
+        `flush` is the template's: which edge of the text sits on the arrow.
+        Left puts the arrow under the first letter, so the label reads away
+        to the right of its feature; right is the mirror image; centre hangs
+        it over the arrow. The arrow stays vertical whichever it is - the
+        point it touches is the feature, and only the text moves around it.
+        """
+        font = self.analysis_font(analysis, p.font())
+        p.setFont(font)
+        text, box, x, start, step = self.analysis_label_geometry(
+            trace, analysis, value, anchor_y, rect, font)
         # The shaft stops where the head begins and the head has no edge
         # of its own: one colour, nothing drawn twice.
         p.setPen(QPen(colour, 1.0,

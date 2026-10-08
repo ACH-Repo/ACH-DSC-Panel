@@ -291,6 +291,9 @@ def _trim_empty_ends(data):
             continue
         last = int(measured[-1])
         if last < len(nums) - 1:
+            # Kept aside, never drawn: a TRIOS-style export writes these
+            # rows too (time - and an SDT run's weight - still measured).
+            step["tail"] = nums[last + 1:]
             step["nums"] = nums[:last + 1]
 
 
@@ -961,6 +964,17 @@ class Analysis(Obj):
         #: which interval an analysis covers. The dashes only: the lines of
         #: an onset, endset or Tg are `construction`.
         self.show_interval = True
+        #: A dashed line across the axes at the m% of its point, the value
+        #: written at the left edge (`has_mass_line`); off until ticked.
+        self.mass_line = False
+        #: Where that value stands: `mass_at` along the axes (a share of
+        #: their width, its left edge; None: 0.01, the left edge) and
+        #: `mass_dy` from the line (its middle, figure units, up is
+        #: negative; None: just above it). Set by dragging it
+        #: (`mass_text`), kept near its line by the plot.
+        self.mass_at = None
+        self.mass_dy = None
+        self._mass_text = None
         #: The unit its number is shown in, or None for the axes' (J/g on a
         #: W/g axis, kJ/mol on a W/mol one). A unit written after `{}` in
         #: the label still wins (`labels.render`).
@@ -1029,6 +1043,21 @@ class Analysis(Obj):
             if found is not None:
                 return found
         return None
+
+    @property
+    def mass_text(self):
+        """The value of its mass line, as the thing a drag moves."""
+        if getattr(self, "_mass_text", None) is None:
+            self._mass_text = MassText(self)
+        return self._mass_text
+
+    @property
+    def has_mass_line(self):
+        """True for an analysis that can show a mass line: one on a
+        MASS curve whose result is a point on it (an onset, an endset, a
+        mass at a temperature)."""
+        return (bool(getattr(self.scan, "is_mass", False))
+                and self.value() is not None)
 
     @property
     def slides(self):
@@ -1434,6 +1463,46 @@ class OffsetMarker(Obj):
         self.number_format = None
 
 
+class MassText(object):
+    """The value written at an analysis's mass line, as something the
+    hand moves. Not an object of the figure: it belongs to its analysis,
+    whose `mass_at` and `mass_dy` it reads and writes - so a move, its
+    undo and the session all go to the analysis."""
+
+    kind = "mass_text"
+
+    def __init__(self, analysis):
+        self.analysis = analysis
+        self.name = "Mass line value"
+        self.selected = False
+        self.z = None
+
+    @property
+    def visible(self):
+        """Its line's: H on a selected value hides the mass line."""
+        return bool(self.analysis.mass_line)
+
+    @visible.setter
+    def visible(self, value):
+        self.analysis.mass_line = bool(value)
+
+    @property
+    def mass_at(self):
+        return self.analysis.mass_at
+
+    @mass_at.setter
+    def mass_at(self, value):
+        self.analysis.mass_at = value
+
+    @property
+    def mass_dy(self):
+        return self.analysis.mass_dy
+
+    @mass_dy.setter
+    def mass_dy(self, value):
+        self.analysis.mass_dy = value
+
+
 class ImageArtist(Artist):
     """A picture on the figure, pasted or dropped: a structure, a photo of
     the pan. Furniture, not data - moved, scaled (S), rotated (R), layered
@@ -1711,19 +1780,62 @@ def colour_links(doc):
     return links
 
 
-def restore_colour_links(doc, links):
-    """The links of a session, where both ends are still there."""
+def restore_colour_links(doc, links, target=None):
+    """The links of a session, where both ends are still there. `target`,
+    when given, finds what a `[list, position]` names (a session with a
+    missing file finds its curves at other places than it saved them)."""
+    target = target or (lambda ref: _colour_target(doc, ref))
     for pair in links or ():
         try:
             first, second = pair
         except (TypeError, ValueError):
             continue
-        follower = _colour_target(doc, first)
-        donor = _colour_target(doc, second)
+        follower = target(first)
+        donor = target(second)
         if (follower is None or donor is None
                 or inherits_from(donor, follower)):
             continue
         follower.colour_from = donor
+
+
+class MissingSource(object):
+    """A file a session names that could not be read when it was opened.
+
+    Kept AS THE SESSION HAD IT - the file's entry, the entries of its
+    curves and of the labels hanging from them - so that saving the figure
+    loses none of it, and finding the file (`session.from_state` with
+    `found`) brings all of it back. Shown in the outliner under the file's
+    name; never drawn, never selected."""
+
+    kind = "missing"
+
+    def __init__(self, path, entry, reason=""):
+        self.path = str(path)
+        #: The session's entry for the file.
+        self.entry = dict(entry or {})
+        #: Why it was not read (the reader's words, or "not found").
+        self.reason = str(reason)
+        #: Its place among the session's files.
+        self.index = 0
+        #: `[(place, entry), ...]`: its curves, where the session had them.
+        self.scans = []
+        #: `[(place, entry), ...]`: the labels hanging from its curves.
+        self.labels = []
+
+    @property
+    def name(self):
+        """The file's name, as the session knew it."""
+        return os.path.basename(self.path.replace("\\", "/")) or self.path
+
+    @property
+    def found_nowhere(self):
+        """True when there is no file at the path at all (rather than one
+        that could not be read)."""
+        return not os.path.isfile(self.path)
+
+    def analysis_count(self):
+        return sum(len(entry.get("analyses") or ())
+                   for _place, entry in self.scans)
 
 
 class Document(object):
@@ -1731,6 +1843,8 @@ class Document(object):
 
     def __init__(self):
         self.samples = []
+        #: Files the session named that could not be read (`MissingSource`).
+        self.missing = []
         self.scans = []
         self.arrow = HeatFlowArrow(self._next_id())
         #: The key, off until it is asked for.
@@ -1806,7 +1920,11 @@ class Document(object):
         """Everything selectable, in draw order (later is on top)."""
         markers = ([scan.marker for scan in self.scans]
                    if self.offset_markers else [])
-        return (list(self.scans) + self.analyses() + markers
+        # The value of every mass line shown: selected by itself, so G
+        # moves it rather than its analysis's label.
+        values = [a.mass_text for a in self.analyses()
+                  if a.mass_line and a.has_mass_line]
+        return (list(self.scans) + self.analyses() + markers + values
                 + list(self.labels) + list(self.images)
                 + list(self.structures)
                 + list(self.axes.values()) + [self.arrow, self.legend])

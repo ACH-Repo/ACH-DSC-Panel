@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+- Every colour is printed as it is on the screen: on a white page and in
+  every export the default curve colours are no longer darkened (their
+  orange came out brown).
+- The swipe (wheel, middle drag) on SELECTED curves rescales their own
+  y axis: select a heat flow and the heat flows grow or flatten while
+  the m% stays as it is, and the other way round; with curves on both
+  axes selected, both. Nothing selected: the main axis, as before.
+- A DTG curve has an analysis: "Peak temperature", where the mass
+  changes fastest between the cursors (*T*_{p}).
+- Mass lines: an onset, endset or mass-at-temperature on an m% curve
+  can draw a dashed line across the plot at the m% of its point, the
+  value at the left edge ("Mass line" in its settings; the house
+  style's "Mass lines" format, 0.1 % built in). The line is thinner
+  than the curves ("Mass line width"), lies under everything, and
+  goes faint where it passes behind a curve, a label, a tangent or a
+  decorator. Drag its value along the line, or a little up or down -
+  or click it and press G (X and Y lock); H hides the line.
+- File > Export as TRIOS Excel workbooks: the segments on the figure
+  (the selected curves' only, if any) as TRIOS's own Excel export lays
+  them out - a Details sheet, then a sheet per step with every sample,
+  the instrument's empty ones as empty cells - one workbook per file.
+  Needs openpyxl, now a dependency.
+- File > Export the measured data (tab-separated): the same segments as
+  plain text, a .csv per file - what the run records on lines starting
+  with "#", a header row of names and units, then every sample, its
+  segment's number first; an empty sample is an empty cell.
+- A procedure of 128 characters or more in a .tri was read as missing.
+
+- A file a session cannot find stays in the outliner, in red and
+  MISSING, and what the session held of it - its curves, their analyses,
+  the labels on them - is kept and saved again as it was (before, the
+  next save lost all of it). Right-click it: Locate... (by hand), Find in
+  a folder... (the files under a folder named like it - the same
+  extension, the name 85 % alike or more, a copy's "(1)" first - offered,
+  never taken by themselves), Details..., Forget. Found, the figure opens
+  again with everything back.
+- Details... on a file's right-click menu: where it is, its size and
+  dates, a SHA-256 of its contents and what the run records - to tell
+  apart two files of one name.
+
+- The source file in a file's settings, and a curve's: type or paste
+  another path (the quotes Windows adds with Ctrl+Shift+C are dropped)
+  and press Enter, or Browse... It takes the file's place as "Change the
+  source file" does - one undo step - and the window opens again on it.
+
+- F3 lists the operators you ran from it last on top, the newest
+  selected: F3 then Enter does it again. Remembered between runs.
+- Aliases of your own: right-click an operator in F3, "Add an alias...",
+  and the word you type finds it from then on (shown greyed beside it).
+  Edit > Operator search saves them as a .json file to share; dropping
+  such a file on the window installs its aliases (you are asked first;
+  operators this panel does not have are skipped), and "Reset the
+  operator search to factory" forgets them and the recent list.
+
 - Settings windows in an order you can work down: the text first, then
   the colour, then what only the window can set (a marker line's
   position, a note's point and arrow, a region's stretch), then sizes and

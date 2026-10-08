@@ -39,6 +39,7 @@ TEMPERATURE = "%.0f"        # an onset, an endset, a Tg: whole degrees
 VALUE = "%.3g"              # an enthalpy, a step: three significant figures
 OFFSET = "%+.1f"            # the template's add_yoffset_markers
 MASS = "%.0f"               # a mass at a temperature: "99 %"
+MASS_LINE = "%.1f"          # the m% at an analysis's mass line
 
 
 def normalise(spec, unit_of=None):

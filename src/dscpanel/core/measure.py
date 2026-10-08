@@ -15,6 +15,7 @@ import collections
 
 import numpy as np
 
+from . import dtg as dtg_module
 from . import model
 from . import style
 from . import trios_analysis
@@ -252,6 +253,52 @@ def peak_height(scan, x0, x1, span=None):
     return out
 
 
+DTG_PEAK = "DTG peak temperature"
+
+
+def dtg_peak(scan, x0, x1, span=None):
+    """The peak of a DTG between the cursors: the measured sample farthest
+    from the straight line joining the two ends of the stretch - where the
+    mass changes fastest, a loss (up: DTG = -dm/dt) or a gain alike. Its
+    temperature in degC, and the DTG there in %/degC.
+
+    Over the drawn samples only, between the two a drag ran between
+    (`span`), else between the two temperatures (typed cursors). The line
+    is taken in the order the run went: a cooling segment runs backwards."""
+    if not getattr(scan, "is_dtg", False):
+        return None
+    temperature = scan.temperature()
+    values = scan.dtg_values(dtg_module.PER_DEGREE)
+    if temperature is None or values is None:
+        return None
+    temperature = np.asarray(temperature, dtype=float)
+    values = np.asarray(values, dtype=float)
+    lo, hi = scan.kept_range(len(values))
+    if span is not None:
+        lo = max(lo, int(min(span)))
+        hi = min(hi, int(max(span)) + 1)
+    temperature, values = temperature[lo:hi], values[lo:hi]
+    with np.errstate(invalid="ignore"):
+        keep = np.isfinite(temperature) & np.isfinite(values)
+        if span is None:
+            keep &= ((temperature >= min(x0, x1))
+                     & (temperature <= max(x0, x1)))
+    if keep.sum() < 3:
+        return None
+    t, v = temperature[keep], values[keep]
+    if abs(t[-1] - t[0]) > 1e-9:
+        base = v[0] + (v[-1] - v[0]) * (t - t[0]) / (t[-1] - t[0])
+    else:
+        base = np.linspace(v[0], v[-1], len(v))
+    k = int(np.argmax(np.abs(v - base)))
+    return {"Model": DTG_PEAK,
+            "Cursor x": "{:.4f} \u00b0C".format(x0),
+            "Cursor x1": "{:.4f} \u00b0C".format(x1),
+            "Peak temperature": "{:.4f} \u00b0C".format(float(t[k])),
+            "DTG at peak": "{:.6g} {}".format(float(v[k]),
+                                              dtg_module.PER_DEGREE)}
+
+
 MASS_AT = "Mass at temperature"
 
 
@@ -321,6 +368,9 @@ MODELS = (
     Measurement(MASS_AT, mass_at, needs=1, title="Mass at temperature",
                 note="the m% at one temperature",
                 signals=(model.SIGNAL_MASS,)),
+    Measurement(DTG_PEAK, dtg_peak, title="Peak temperature",
+                note="where the mass changes fastest",
+                signals=(model.SIGNAL_DTG,)),
 )
 
 

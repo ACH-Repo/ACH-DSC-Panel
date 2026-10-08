@@ -60,6 +60,7 @@ DEFAULTS = (
     ("Onset", "*T*_{on} = {}"),
     ("Integration", "\\Delta*H* = {}"),
     ("Peak height", "*q*_{peak} = {}"),
+    ("DTG peak", "*T*_{p} = {}"),
     ("Signal change", "\\Delta*q* = {}"),
 )
 

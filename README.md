@@ -91,7 +91,7 @@ extension.
 | drag from an artist | move it: the arrow, the legend, a label, an analysis label, an axis caption |
 | drag from empty space | **box select** curves, labels and every other artist (with `Shift`, a box from anywhere, adding) |
 | double-click | settings: a curve, an analysis, an axis spine, a caption |
-| two-finger swipe, mouse wheel, or middle-button drag | every curve taller or flatter, each in its place (drag up: taller); the axis rescales and the offsets follow, so the numbers stay true |
+| two-finger swipe, mouse wheel, or middle-button drag | every curve taller or flatter, each in its place (drag up: taller); the axis rescales and the offsets follow, so the numbers stay true. With curves selected, only their own y axis: the heat flow and the m% one at a time |
 | `Shift` + swipe or middle drag | pan the view, in whichever direction the hand goes |
 | pinch, `Ctrl` + wheel or middle drag | zoom both axes about the pointer (Windows sends a pinch as `Ctrl+wheel`) |
 | `Alt` + swipe or middle drag | zoom the page, like a document; with `Shift`, move it (`Alt+F` fits it again) |
@@ -116,7 +116,7 @@ extension.
 | `H` / `Alt+H` | hide the selection / show everything |
 | `Shift+M` | set the molar mass |
 | `N` | show or hide the outliner |
-| `F3` | **operator search**: everything, filtered by what is selected |
+| `F3` | **operator search**: everything, filtered by what is selected; the ones used last on top, Enter repeats the newest; right-click one for an alias of your own |
 | `Ctrl+Z` / `Ctrl+Y` | undo / redo, including a file you removed - and zoom, pan and fit, one gesture at a time |
 | `Ctrl+S` / `Ctrl+E` | save the session / export the figure |
 | `Ctrl+,` | settings: the house style, for every figure and for this one |
@@ -168,6 +168,9 @@ the axis colour; an onset, endset or glass transition also gets straight
 lines from those dashes to its result point, the template's construction
 (one tickbox hides them). A cursor can be picked up and dragged rather than
 replaced. Adjusting an existing analysis keeps the model it already has.
+On an m% curve, an onset, endset or mass at a temperature can also draw
+a dashed line across the plot at the m% of its point, the value at the
+left edge ("Mass line" in its settings); drag the value along it.
 Analyses made here are saved with the session and recomputed from the file
 when it is reopened.
 
@@ -226,12 +229,28 @@ its numbers). On an exact figure an axis moved to its other side takes its
 margin with it, and no margin can be cut into the numbers it holds - the
 one at the corner of the box included.
 
+## Sessions
+
+`Ctrl+S` saves the figure as a `.dscpanel` session: the arrangement and the
+paths of its files, never the data. A file that has moved is looked for
+beside the session (its folder and the folders under it, by name). One that
+is nowhere stays in the outliner, in red and MISSING, with its curves,
+analyses and labels kept - saved again as they were - and a right-click
+looks for it: **Locate...** by hand, or **Find in a folder...**, which
+offers the files under a folder named like it (the same extension, the name
+85 % alike or more, a copy's "(1)" first). Found, the figure opens again
+with everything back. **Details...** on any file's right-click menu says
+where it is, its size, dates and a SHA-256 of its contents, and what the run
+records - to tell apart two files of one name.
+
 ## Exports
 
 | Export | What it is for |
 | :-- | :-- |
 | PNG / SVG | the figure, drawn in the light palette, warnings stamped on; at an exact size, exactly that size (the PNG carries its dpi, the SVG its millimetres) |
 | CSV | the curves as numbers, one x/y column pair per scan |
+| TRIOS Excel | File > Export as TRIOS Excel workbooks: the segments on the figure (the selected curves' only, if any) laid out as TRIOS's own Excel export - a Details sheet, then a sheet per step with every sample - one workbook per file |
+| Measured data | File > Export the measured data (tab-separated): the same segments as text, a .csv per file - the run's details on `#` lines, a header row (`Segment`, then each column with its unit), every sample; `pandas.read_csv(path, sep="\t", comment="#")` reads it |
 | `DSC_Plotter.py` | the arrangement as a driver script for the DSC_Plotter matplotlib template |
 
 The driver needs that template's `achdsc` package, which is not on PyPI.
