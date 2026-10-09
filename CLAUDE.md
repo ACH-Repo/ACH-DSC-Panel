@@ -66,6 +66,7 @@ going; this file is about how it is done here.
 | `core/profile.py` | what is particular to DSC/SDT data (one-press F, ...) |
 | `core/ops.py` | the operator registry (copied from MoloM, keep in step) |
 | `core/userops.py` | F3's memory, the user's: the operators used last, aliases of their own, the shared alias file, the factory reset (`operators.json` beside the preferences) |
+| `core/props.py` | Ctrl+C / Ctrl+V of settings: what is copied, the menu's groups, the changes a paste makes (the same file in every member) |
 | `ui/plot.py` | the painted plot: view, gestures, picking, drawing |
 | `ui/window.py` | operators, menus, docks, drops, exports, undo |
 | `ui/settings.py` | Edit > Settings (`Ctrl+,`): the two-column house style page |
@@ -75,6 +76,33 @@ going; this file is about how it is done here.
 | `ui/outliner.py`, `ui/palette.py`, `ui/dialogs.py` | the rest of the UI |
 
 ## Traps already paid for
+
+* **A style preset carries the page's colour** (2026-10-09, family-wide;
+  `Preset.background`, `presets.KEEP`): `Document.background` came after
+  the presets and was never in them. None ("the theme's") IS carried; a
+  preset without the key is `KEEP` and leaves the page alone. Anything new
+  a figure keeps outside `doc.style`, the layout and `OBJECT_FIELDS` is in
+  no preset until it is added to `from_figure`, `to_state`, `from_state`
+  and `changes`.
+* **A hidden curve hides its labels** (2026-10-08, family-wide;
+  `model.drawn`): a label that belongs to a curve is drawn, picked, boxed,
+  exported and held by a margin only while the curve is shown - its own
+  `visible` is untouched. Anything that asks "is this on the figure"
+  asks `model.drawn(obj)`, never `obj.visible` alone.
+* **Ctrl+V pastes SETTINGS onto a selection** (2026-10-08, family-wide;
+  `core/props.py`, `MainWindow.SETTINGS_WINDOWS`): what a kind's settings
+  are is its settings windows' `FIELDS` less `INDIVIDUAL`; the text and
+  the place are offered by themselves. A new settings window joins
+  `SETTINGS_WINDOWS`, or its kind cannot be copied. The menu is built by
+  `paste_menu` and shown by `ask_paste`, which conftest's
+  `no_modal_loops` refuses (a real QMenu hangs a test however `QMenu.exec`
+  is patched): a test answers `ask_paste` itself. The objects copied are
+  never targets (`_copy_ref`), or Ctrl+C, Ctrl+V on a label asked about
+  its own settings instead of making a new one - an existing test hung
+  on exactly that. A
+  copied curve carries its analyses (`session._analysis_state`);
+  `paste_analyses` measures them again (`session.measure_again`, over the
+  span only on the same data: `session.data_key`) as ONE CallCommand.
 
 * **A file a session cannot read is KEPT** (2026-10-08, family-wide;
   `model.MissingSource` in `doc.missing`): its entry, its curves' entries
@@ -486,12 +514,21 @@ going; this file is about how it is done here.
   say. The panel's endset used to BE its onset. In a TRIOS record the
   onset/endset cursors are at +86/+132 and for an ENDSET the flat one is the
   second, called "Onset cursor x" in TRIOS's export.
-* **A file analysis draws TRIOS's STORED construction** (`Analysis.
-  stored_construction`, three points, four for a Tg), a panel analysis the
-  Python one (`measure.tangent_points`), a `.txt` one chords. A construction
-  is placed through `Scan.axes_points`, the same arithmetic as the curve,
-  never a mapping of its own. `Analysis.fields["variable"]` says which curve
-  an analysis was made on; one on the WEIGHT is never drawn on the heat flow.
+* **An onset's lines run from the DASHES to its POINT** (Christian,
+  2026-10-09: "keep the point in mid air, as long as A and C are drawn on
+  the trace"): `interval_marks` draws dash A (on the trace) -> B -> dash C,
+  B where the construction puts it - the tangents' crossing
+  (`construction_points`: one for an onset or endset, a Tg's onset and
+  end), which may lie off the curve - and the label's arrow points at B
+  (`anchor_y`). No construction (a `.txt` export's, a failed fit): B on
+  the curve (`_chord_lines`). The tangents are never drawn: they ran
+  from TRIOS's own end points, not the dashes, and on a small step
+  looked like lines drawn wrong. A stored "tangents" reads as the lines
+  to the point. The construction is TRIOS's stored one for a file's
+  analysis (`Analysis.stored_construction`), Python's for a panel one
+  (`measure.tangent_points`), placed through `Scan.axes_points`.
+  `Analysis.fields["variable"]` says which curve an analysis was made
+  on; one on the WEIGHT is never drawn on the heat flow.
 * **A mass (m%) curve is a SCAN of its own** (`Scan.signal ==
   SIGNAL_MASS`, 2026-09-28), drawn against `doc.axes["y2"]` in
   `doc.weight_unit`. Anything placed at a scan's height maps through

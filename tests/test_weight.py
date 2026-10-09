@@ -959,10 +959,10 @@ def test_a_marker_on_a_run_with_no_mass_says_its_recorded_mg(qapp):
 
 
 # ---------------------------------------------- onsets on the mass
-def test_trioss_mass_onsets_draw_their_construction_on_the_mass(qapp):
+def test_trioss_mass_onsets_draw_their_lines_on_the_mass(qapp):
     """The SDT reference run's two onsets were made in TRIOS on the
-    weight: they are the MASS scan's, and draw TRIOS's stored
-    construction in % on its curve."""
+    weight: they are the MASS scan's, their stored construction is read
+    in %, and their lines run on its curve to the point TRIOS reported."""
     from dscpanel.core import labels, measure
     win = _window(qapp, loader.read_sample(_path(SDT_REFERENCE)))
     doc, plot = win.doc, win.plot
@@ -978,9 +978,12 @@ def test_trioss_mass_onsets_draw_their_construction_on_the_mass(qapp):
     win.refresh()
     plot.grab()
     trace = plot._trace_of(mass)
+    rect = plot.plot_rect()
     for analysis in onsets:
-        lines = plot.tangent_lines(trace, analysis)
-        assert lines and len(lines) == 2
+        lines = plot.interval_marks(trace, analysis, rect)[1]
+        assert len(lines) == 2 and lines[0][1] == lines[1][0]
+        assert plot.px_to_x(lines[0][1].x(), rect) == pytest.approx(
+            analysis.value(), abs=1e-3)
 
 
 def test_an_onset_is_measured_on_a_mass_curve():

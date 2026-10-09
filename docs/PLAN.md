@@ -1491,6 +1491,86 @@ He chose, for the whole family:
 Test in `tests/test_family.py` (the
 same file in every member).
 
+## The NEXT.md requests (2026-10-08): the NEXT.md requests - family-wide
+
+Christian, 2026-10-08, on the three requests parked that morning; he
+chose each recommendation and the whole family for all three.
+
+* **A hidden curve hides its labels** (`model.drawn`). In Triplot's
+  `Hbc_Tgs.dscpanel` an old "ZIF-62" label hung from CN-103's HIDDEN
+  first up-scan, still drawn 1.8 cm above the page, so the top margin
+  held it and a blade jumped to 1.8 cm of white space. Now such a label
+  is not drawn, picked, boxed, exported or held by a margin; its own
+  Show is untouched and the outliner greys it.
+* **Copy properties**: Ctrl+C copies the selection - labels as before,
+  and every object's settings as JSON (`core/props.py`, the same file in
+  each member); Ctrl+V with objects of a copied kind selected opens a
+  menu at the pointer (`paste_menu`, `ask_paste`): All settings (colour,
+  sizes, style), Colour, Sizes, Style, Text, Place, and Paste as new for
+  labels. What a kind's settings are is its settings windows' `FIELDS`
+  less `INDIVIDUAL` (`SETTINGS_WINDOWS`); the text and the place only by
+  name. Several copied onto as many selected go in order. No new key:
+  Ctrl+Shift+V was taken, and a QMenu does the arrow keys and letters.
+* **Analyses from another session**, through the same paste (his choice
+  over a menu command): a copied curve carries its analyses; "Analyses"
+  measures each again on the selected curve with all its settings
+  (`MainWindow.paste_analyses`, `session.measure_again`): over the sample
+  span where the data is the same (`session.data_key`: file name,
+  segment, length), else between its x values; one already there is
+  skipped; a model the curve does not offer is reported. TRIOS's own
+  analyses (Triplot) give their settings by key (`session.restyle`). One
+  undo step.
+
+Tests in `tests/test_family.py`; TRIOS's own analyses
+and the span across tabs in `tests/test_round32.py`.
+
+## Lines to the point (2026-10-09): no tangent construction drawn
+
+Christian, on an endset at 280 degC of a small m% step: "Why does this
+keep coming up? You already know the points A,B,C. Just draw AB and BC
+and put dash markers at A and C, right?", and asked what the tangent
+construction even is: "Why can you not just draw based on those for
+visual consistency?". What was drawn was the default "tangents": the
+transition tangent from the inflection (261 degC, not the 248 degC
+bound) to its crossing with the baseline tangent (280 degC, not on the
+curve), then on to the right bound - a gap at the left dash and a kink
+off the curve. First made bound -> the point ON the curve -> bound;
+then, on his second thought ("the big difference to TRIOS is the point
+drawn in mid air by the tangent construction - keep that, as long as A
+and C are on the trace"): bound (the dash, on the trace) -> the
+construction's point(s) (`PlotWidget.construction_points`: the tangents'
+crossing; a Tg's onset and end) -> bound, and the label's arrow at that
+point too (`anchor_y`); the point on the curve only without a
+construction. The tangents are not drawn: the "tangents" choice and
+"Tangent overshoot" left the settings, a stored "tangents" is cleaned to
+the default; `tangent_lines`, `construction_segments` and
+`measure.lines_note` went. Tests in `tests/test_tangents.py` (rewritten
+for these lines) and `test_weight.py`.
+
+## Label sides (2026-10-09): above, but a falling peak's integration
+
+Christian: "Endsets also show up on the wrong side when confirming
+analyses. They should always show up above the line first." 1.2.1 put an
+onset's or endset's label on the side its peak goes (read from its flat
+end), so below a falling peak. Now `PlotWidget.label_offset` puts every
+label above (-46 px) and only an integration ("Integration" or TRIOS's
+"Area under the curve") of a peak that points down on screen below
+(+46); "I can't think of exceptions". A mass at a temperature keeps its
+-34. A dragged label keeps its own `label_dy`. Triplot only (analyses
+are each panel's own). Tests in `tests/test_next.py`.
+
+## Presets (2026-10-09): presets carry the page's colour - family-wide
+
+Christian asked whether the background colour was added after the style
+sheets and so could not be carried by one. It was: presets came in
+Triplot's round 23 (2026-09-27), the page's colour (`Document.background`)
+in round 26, and nothing put it into them. He chose: always carried - a
+colour, or None for "the theme's" - and applied in the preset's undo step;
+a preset saved before says nothing (`presets.KEEP`) and leaves the page.
+`Preset.background`; `from_figure`, `to_state`, `from_state` (a
+"#rrggbb" or null, anything else ignored), `changes`. Test in
+`tests/test_family.py`.
+
 ## Next
 
 1. **TGA as a first-class plot** (Christian, 2026-09-28, with his target

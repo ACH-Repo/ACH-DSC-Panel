@@ -468,6 +468,11 @@ _BASE_OF = {"Heat Flow (Normalized)": units.UNIT_W_G,
 def tangent_points(analysis, scan=None):
     """The tangent construction of an onset, endset or Tg: a `Construction`.
 
+    Its inner points - where the tangents cross - are where the figure
+    puts the analysis's POINT, and its lines run there from the dashes
+    on the trace (`PlotWidget.construction_points`, `interval_marks`);
+    the tangents themselves are not drawn.
+
     Whose construction it is follows who made the number:
 
     * **a `.tri`'s own analysis** draws TRIOS's STORED points (the reader's
@@ -498,31 +503,6 @@ def tangent_points(analysis, scan=None):
     found = _python_construction(analysis, scan)
     analysis._tangent_memo = (key, found)
     return found
-
-
-def lines_note(analysis, doc=None):
-    """Why an analysis that is to be drawn with tangents gets chords, in one
-    short line, or "" - for its settings. Besides `tangent_points`'
-    reasons, the one the axes add: points in W/g on an mW axis need the
-    sample mass, which is never made up."""
-    if not analysis.marks_a_point or style.value(
-            doc, analysis, "construction") != style.LINES_TANGENTS:
-        return ""
-    found = tangent_points(analysis)
-    if not found.points:
-        return found.reason
-    scan = analysis.scan
-    if getattr(scan, "is_mass", False):
-        unit = getattr(doc, "weight_unit", model.WEIGHT_PCT)
-        missing = (None if unit == found.base or scan.sample.mass_g
-                   else "sample mass")
-    else:
-        unit = getattr(doc, "y_unit", units.UNIT_W_G)
-        missing = units.factor(unit, found.base, scan.sample.mass_g,
-                               scan.molar_mass)[1]
-    if missing:
-        return "Drawing them needs the {}: drawn as chords.".format(missing)
-    return ""
 
 
 def _stored_construction(analysis, scan):

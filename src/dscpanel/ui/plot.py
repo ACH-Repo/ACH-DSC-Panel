@@ -1816,7 +1816,7 @@ class PlotWidget(QWidget):
         for side, over in self._numbers_overhang(rect, base).items():
             need[side] = max(need[side], over)
         for artist in decorators_of(self.doc):
-            if not getattr(artist, "visible", True):
+            if not model.drawn(artist):
                 continue
             try:
                 box = self.rotated_bounds(artist, self.artist_box(artist,
@@ -2949,7 +2949,8 @@ class PlotWidget(QWidget):
             near(label, box, -model.z_of(label))
         rect_now = self.plot_rect()
         for label in doc.labels:
-            x = self.vline_px(label, rect_now) if label.visible else None
+            x = (self.vline_px(label, rect_now) if model.drawn(label)
+                 else None)
             if (x is not None and rect_now.top() <= point.y()
                     <= rect_now.bottom() and abs(point.x() - x) <= radius):
                 hits.append((abs(point.x() - x), -model.z_of(label), label,
@@ -3111,7 +3112,7 @@ class PlotWidget(QWidget):
                 chosen.append(analysis)
         rect = self.plot_rect()
         for obj in doc.objects():
-            if (not self.is_artist(obj) or not getattr(obj, "visible", True)
+            if (not self.is_artist(obj) or not model.drawn(obj)
                     or obj in chosen):
                 continue
             bounds = self.rotated_bounds(obj, self.artist_box(obj, rect),
@@ -5527,8 +5528,7 @@ class PlotWidget(QWidget):
                 (tuple(style.figure_value(doc, key) for key in (
                     "font_family", "temperature_format", "value_format",
                     "offset_format", "mass_line_format",
-                    "analysis_construction",
-                    "tangent_overshoot"))
+                    "analysis_construction"))
                  + tuple((a.number_format, tuple(a.hidden_numbers or ()),
                           tuple(a.hidden_context or ()))
                          for a in doc.axes.values())
@@ -6501,7 +6501,8 @@ class PlotWidget(QWidget):
         if doc is None:
             return
         for label in doc.labels:
-            if not label.visible or (only is not None and label is not only):
+            if not model.drawn(label) or (only is not None
+                                          and label is not only):
                 continue
             box = self._label_box(label, rect, p.font())
             font = QFont(p.font())
@@ -6728,7 +6729,7 @@ class PlotWidget(QWidget):
         if doc is None:
             return None
         for label in doc.labels:
-            if not (label.selected and label.visible and label.leader):
+            if not (label.selected and model.drawn(label) and label.leader):
                 continue
             if getattr(label, "attached", False):
                 continue                # the whole note slides instead
@@ -7155,8 +7156,7 @@ class PlotWidget(QWidget):
             value = self.to_axis(value)
             if not (lo <= value <= hi):
                 continue
-            anchor_y = self._curve_y_at(trace, value, rect,
-                                        self._analysis_slice(trace, analysis))
+            anchor_y = self.anchor_y(trace, analysis, value, rect)
             if anchor_y is None:
                 continue
             colour = (QColor(_SELECT) if analysis.selected
@@ -7267,8 +7267,7 @@ class PlotWidget(QWidget):
         lo, hi = self.view_x()
         if not lo <= value <= hi:
             return None
-        anchor_y = self._curve_y_at(trace, value, rect,
-                                    self._analysis_slice(trace, analysis))
+        anchor_y = self.anchor_y(trace, analysis, value, rect)
         if anchor_y is None:
             return None
         return self.analysis_label_geometry(
@@ -7335,7 +7334,7 @@ class PlotWidget(QWidget):
                 if value is not None:
                     box_span(value[0])
         for artist in decorators_of(self.doc) if self.doc is not None else ():
-            if not getattr(artist, "visible", True):
+            if not model.drawn(artist):
                 continue
             try:
                 box_span(self.rotated_bounds(
@@ -7442,10 +7441,12 @@ class PlotWidget(QWidget):
     def label_offset(self, analysis, trace, rect):
         """How far the label sits from the curve, in pixels.
 
-        `label_dy` of None means "work it out": the label goes on the side the
-        peak does NOT occupy, so the leader arrow never crosses the shading.
-        A negative integral - an endotherm on an exo-down axis - therefore
-        labels from below, as it should. Once it has been
+        `label_dy` of None means "work it out": ABOVE the curve, whatever
+        the analysis - but an integration of a peak that points DOWN on
+        screen (an endotherm on an exo-up axis) labels from below, so its
+        arrow does not cross the shaded area. That is the one exception
+        (Christian): an onset or endset read from its peak's side went
+        below a falling peak too, and was wrong there. Once it has been
         dragged the stored number wins, because that was a decision.
         """
         if analysis.label_dy is not None:
@@ -7454,7 +7455,11 @@ class PlotWidget(QWidget):
             # A mass at a temperature hangs ABOVE its point, the arrow
             # pointing down at the curve (the template's `add_annot`).
             return -34.0
-        return -46.0 if self.peak_points_up(analysis, trace) else 46.0
+        name = analysis.model_name
+        if (("Integration" in name or "Area under" in name)
+                and not self.peak_points_up(analysis, trace)):
+            return 46.0
+        return -46.0
 
     def _covered(self, trace, analysis):
         """`(xs, ys)`: the part of the drawn curve an analysis covers, in
@@ -7500,9 +7505,9 @@ class PlotWidget(QWidget):
         then bending away): read that way, every onset label went to the
         side the peak does not go. So for them it is which way the curve
         leaves its flat end - the baseline an onset starts from (its first
-        sample measured) or an endset returns to (its last): the label goes
-        on the peak's side, as an integration's does. Not on a mass curve,
-        whose steps keep the chord's answer."""
+        sample measured) or an endset returns to (its last). Not on a mass
+        curve, whose steps keep the chord's answer. Only an integration's
+        label side asks (`label_offset`); every other label stands above."""
         covered = self._covered(trace, analysis)
         if covered is None:
             return True
@@ -7536,18 +7541,18 @@ class PlotWidget(QWidget):
         * **dashes**: a short vertical dash at each bound, centred ON the
           trace. Every analysis with two cursors has them; `show_interval`
           decides whether they are PAINTED, not whether they are here.
-        * **lines**: only where the result is a temperature on the curve
-          (`Analysis.marks_a_point` - onset, endset, glass transition), as
-          its `construction` says:
-          - "tangents", the default: the tangent construction
-            (`tangent_lines`) - two tangents for an onset or endset, three
-            for a Tg - each run a little past where it crosses;
-          - "chords": a straight line from the left bound to the result
-            point and on to the right bound. No dash at the
-            point itself; the label's arrow already marks it. Also what
-            "tangents" falls back on where there are none to draw
-            (`measure.tangent_points` says why);
-          - "none": nothing.
+        * **lines**: only where the result is a temperature
+          (`Analysis.marks_a_point` - onset, endset, glass transition):
+          straight lines from the dash at one bound, ON the trace, to the
+          analysis's point and on to the dash at the other - A to B, B to
+          C. B is where its construction puts it, as TRIOS draws it: the
+          tangents' crossing, which may lie off the curve (a Tg's two, its
+          onset and end); without a construction (a `.txt` export's, a
+          fit that fails) the point on the curve (`construction_points`).
+          No dash at the point itself; the label's arrow points at it.
+          Its `construction` "none" draws none. (The tangents drawn
+          before ran from TRIOS's own end points, not the dashes: on a
+          small step they looked like these lines drawn wrong.)
         * an integration gets the dashes alone: its shading and baseline show
           what was integrated, and a connecting curve must never be drawn.
 
@@ -7579,15 +7584,59 @@ class PlotWidget(QWidget):
         dashes = [(QPointF(b.x(), b.y() - tick),
                    QPointF(b.x(), b.y() + tick)) for b in bounds]
         lines = []
-        choice = (self.style_of(analysis, "construction")
-                  if analysis.marks_a_point else style.LINES_NONE)
-        if choice == style.LINES_TANGENTS:
-            lines = self.tangent_lines(trace, analysis, rect)
-            if lines is None:
-                choice = style.LINES_CHORDS
-        if choice == style.LINES_CHORDS:
-            lines = self._chord_lines(trace, analysis, rect, bounds, stretch)
+        if (analysis.marks_a_point
+                and self.style_of(analysis, "construction")
+                != style.LINES_NONE):
+            inner = self.construction_points(trace, analysis, rect)
+            if inner:
+                # From the first bound's side to the other's.
+                inner.sort(key=lambda q: abs(q.x() - bounds[0].x()))
+                points = [bounds[0]] + inner + [bounds[1]]
+                lines = list(zip(points[:-1], points[1:]))
+            else:
+                lines = self._chord_lines(trace, analysis, rect, bounds,
+                                          stretch)
         return dashes, lines or []
+
+    def construction_points(self, trace, analysis, rect=None):
+        """Where an onset's, endset's or Tg's construction puts its point
+        in pixels - the tangents' crossing: one for an onset or endset, two
+        for a Tg (its onset and end) - or None where it has none to place:
+        a `.txt` export's, a fit that failed, an axis its points cannot be
+        drawn on. TRIOS's stored points for a file's analysis, Python's
+        for one made here (`measure.tangent_points`), placed by the SCAN
+        (`Scan.axes_points`) exactly as its curve is."""
+        doc = self.doc
+        if (doc is None or doc.x_axis != model.AXIS_TEMPERATURE
+                or not analysis.marks_a_point):
+            return None
+        rect = rect or self.plot_rect()
+        found = measure.tangent_points(analysis, trace.scan)
+        if not found.points or len(found.points) < 3:
+            return None
+        xs, ys = trace.scan.axes_points(found.points, found.base,
+                                        doc.unit_for(trace.scan),
+                                        doc.exo, getattr(doc, "x_unit",
+                                                         units.TEMP_C))
+        if xs is None:
+            return None
+        px = np.asarray(self.x_to_px(xs, rect), dtype=float)
+        py = np.asarray(self.sy_to_px(trace.scan, ys, rect), dtype=float)
+        if not (np.all(np.isfinite(px)) and np.all(np.isfinite(py))):
+            return None
+        return [QPointF(float(a), float(b))
+                for a, b in zip(px[1:-1], py[1:-1])]
+
+    def anchor_y(self, trace, analysis, value, rect):
+        """Where an analysis's arrow points, at its x `value` (axis units):
+        an onset's or endset's point where its construction puts it - the
+        tangents' crossing, possibly off the curve, where its lines meet -
+        else the curve (a Tg's midpoint, a peak, an integration)."""
+        inner = self.construction_points(trace, analysis, rect)
+        if inner and len(inner) == 1:
+            return inner[0].y()
+        return self._curve_y_at(trace, value, rect,
+                                self._analysis_slice(trace, analysis))
 
     def _chord_lines(self, trace, analysis, rect, bounds, stretch):
         """Chords: bound -> the result point on the curve -> bound."""
@@ -7600,40 +7649,6 @@ class PlotWidget(QWidget):
             return []
         point = QPointF(float(self.x_to_px(x, rect)), float(y))
         return [(bounds[0], point), (point, bounds[1])]
-
-    def tangent_lines(self, trace, analysis, rect=None):
-        """The tangent construction in pixels: `[(a, b), ...]`, or None when
-        there is none to draw (then the caller draws chords).
-
-        The points are `measure.tangent_points`' - TRIOS's own for a
-        `.tri`'s analysis, Python's for one made here - in degC and the
-        heat flow, mapped onto the axes by the SCAN (`Scan.axes_points`),
-        the same arithmetic that places its curve: units, exo direction,
-        offset. A unit this scan cannot be drawn in has no construction
-        either. Each tangent runs `tangent_overshoot` points past its
-        crossing(s), measured on the figure, so the overshoot looks the
-        same whatever the axes' scales.
-        """
-        doc = self.doc
-        if doc is None or doc.x_axis != model.AXIS_TEMPERATURE:
-            return None
-        rect = rect or self.plot_rect()
-        found = measure.tangent_points(analysis, trace.scan)
-        if not found.points:
-            return None
-        xs, ys = trace.scan.axes_points(found.points, found.base,
-                                        doc.unit_for(trace.scan),
-                                        doc.exo, getattr(doc, "x_unit",
-                                                         units.TEMP_C))
-        if xs is None:
-            return None
-        px = np.asarray(self.x_to_px(xs, rect), dtype=float)
-        py = np.asarray(self.sy_to_px(trace.scan, ys, rect), dtype=float)
-        if not (np.all(np.isfinite(px)) and np.all(np.isfinite(py))):
-            return None
-        points = [QPointF(float(a), float(b)) for a, b in zip(px, py)]
-        overshoot = float(style.figure_value(doc, "tangent_overshoot") or 0.0)
-        return construction_segments(points, overshoot * PT)
 
     def _paint_interval(self, p, rect, trace, analysis):
         """The interval marks, in the axis colour: structure, not data.
@@ -8927,32 +8942,6 @@ def decorators_of(doc):
     out += list(getattr(doc, "images", ()))
     out += list(getattr(doc, "structures", ()))
     return out
-
-
-def construction_segments(points, overshoot):
-    """A tangent construction's points as segments: `[(a, b), ...]`.
-
-    TRIOS's extents: segment k runs from point k to point k + 1, so an onset or
-    endset (three points) is two tangents and a Tg (four) is three. Every INNER
-    point is a crossing, and a tangent that ends or starts at one runs
-    `overshoot` figure units past it, along itself - the inflection tangent of
-    a Tg both ways. A segment of no length has no direction and is not
-    extended.
-    """
-    segments = []
-    last = len(points) - 1
-    for k in range(last):
-        a, b = QPointF(points[k]), QPointF(points[k + 1])
-        dx, dy = b.x() - a.x(), b.y() - a.y()
-        length = math.hypot(dx, dy)
-        if length > 1e-9 and overshoot > 0.0:
-            ux, uy = dx / length * overshoot, dy / length * overshoot
-            if k > 0:
-                a = QPointF(a.x() - ux, a.y() - uy)
-            if k + 1 < last:
-                b = QPointF(b.x() + ux, b.y() + uy)
-        segments.append((a, b))
-    return segments
 
 
 def _rect_distance(box, point):

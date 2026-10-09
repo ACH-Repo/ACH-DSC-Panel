@@ -10,7 +10,7 @@ import pytest
 
 from dscpanel.core import measure, model, session
 
-from test_family import _swipe
+from test_family import _swipe, clipboard  # noqa: F401 (a fixture)
 from test_weight import _window, sdt_data
 
 
@@ -610,3 +610,55 @@ def test_the_window_exports_the_data_a_file_each(qapp, tmp_path):
         "Run-A-2.csv", "Run-A.csv"]
     assert win.ops.get("file.export_data") is not None
     assert "file.export_data" in dict(win.MENUS)["Fi&le"]
+
+
+# ------------------------------------- analyses pasted onto another figure
+def test_analyses_paste_onto_the_same_file_in_another_figure(qapp,
+                                                             clipboard):
+    """A curve copied in one tab and pasted onto the same file's curve in
+    another: TRIOS's own analysis gives its settings to the one of the
+    same key there, and one made here is measured again over the SAME
+    samples (the same file, segment and length: `session.data_key`)."""
+    import numpy as np
+    from conftest import make_data
+    from dscpanel.ui.window import MainWindow
+    from test_family import _choose
+    stored = {"Ramp 10,00 C/min to 250 C #1": {
+        "Onset point": [{"segment": 1, "Onset x": "80,0 \u00b0C"}]}}
+    win = MainWindow()
+    win._sample_loaded(model.Sample("C:/nowhere/Same.tri",
+                                    make_data(analyses=stored)))
+    first = win.doc.scans[0]
+    own = first.analysis_objects[0]
+    assert own.source != "panel"
+    own.visible, own.colour = True, "#00aa55"
+    win.plot.grab()
+    xs = [t for t in win.plot.traces if t.scan is first][0].x
+    made = None
+    for entry in measure.models_for(first):
+        made = measure.run(entry.name, first, float(xs[100]),
+                           float(xs[200]), span=(100, 200))
+        if made is not None:
+            break
+    assert made is not None and made.span == (100, 200)
+    win.refresh()
+    win.doc.select_only([first])
+    win.copy_selected()
+
+    win.new_figure()
+    win._sample_loaded(model.Sample("C:/nowhere/Same.tri",
+                                    make_data(analyses=stored)))
+    second = win.doc.scans[0]
+    assert second is not first
+    theirs = second.analysis_objects[0]
+    assert not theirs.visible
+    win.doc.select_only([second])
+    _choose(win, "Analyses")
+    win.paste()
+    assert theirs.visible and theirs.colour == "#00aa55"
+    again = [a for a in second.analysis_objects if a.source == "panel"]
+    assert len(again) == 1 and again[0].span == (100, 200)
+    assert np.isclose(again[0].cursors()[0], made.cursors()[0])
+    win.undo.undo()
+    assert not theirs.visible
+    assert not [a for a in second.analysis_objects if a.source == "panel"]

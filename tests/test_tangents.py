@@ -1,13 +1,13 @@
 """Tangent constructions for onset, endset and glass transition.
 
-* The lines are TANGENTS by default; each analysis may choose tangents,
-  chords (bound -> point -> bound) or none, and the house style
-  holds the default.
-* A `.tri`'s own analysis draws TRIOS's STORED construction; one made here
-  draws the Python construction of its own cursors; a `.txt` export's has
-  no points and is drawn with chords, and the settings say why.
-* Solid, in the axis colour, TRIOS's extents, each tangent a house-style
-  overshoot past its crossing.
+* The construction is worked out - TRIOS's STORED one for a `.tri`'s own
+  analysis, Python's for one made here, none for a `.txt` export's - and
+  checked against the numbers. It puts the analysis's POINT: where the
+  tangents cross, which may lie off the curve. The figure draws straight
+  lines from the dash at each bound, on the trace, to that point (a Tg's
+  two: its onset and end) and points the label's arrow at it; without a
+  construction, the point on the curve. Or no lines, as the analysis or
+  the house style says. Solid, in the axis colour.
 * The panel's endset was its onset, and a cooling onset took its baseline
   on the far side: the flat cursor goes by ACQUISITION order.
 
@@ -265,7 +265,7 @@ def test_an_export_has_no_tangents_and_says_so():
 def test_tangents_in_w_g_on_a_run_without_a_mass_are_not_papered_over():
     """A run with no sample mass draws in mW, but TRIOS's points are in W/g
     (the construction of an analysis made on the normalised curve): they
-    cannot be put on that axis, and the settings say what is missing."""
+    cannot be put on that axis."""
     data = _step_data()
     del data["head"]["samplesize"]
     data["analyses"] = {"Ramp 10,00 C/min to 250 C #1": {"Onset point": [
@@ -280,12 +280,6 @@ def test_tangents_in_w_g_on_a_run_without_a_mass_are_not_papered_over():
     assert found.points and found.base == units.UNIT_W_G
     assert heat.axes_points(found.points, found.base, units.UNIT_MW,
                             units.EXO_DOWN) == (None, None)
-    doc = model.Document()
-    doc.y_unit = units.UNIT_MW
-    assert measure.lines_note(analysis, doc) == \
-        "Drawing them needs the sample mass: drawn as chords."
-    analysis.construction = style.LINES_CHORDS         # asked for chords
-    assert measure.lines_note(analysis, doc) == ""
 
 
 def test_tangents_that_barely_cross_are_not_a_construction():
@@ -398,58 +392,62 @@ def _trace(window, scan):
     return [t for t in window.plot.traces if t.scan is scan][0]
 
 
-def _px(plot, scan, found, rect):
-    doc = plot.doc
-    x, y = scan.axes_points(found.points, found.base, doc.y_unit, doc.exo,
-                            doc.x_unit)
-    return [QPointF(float(a), float(b)) for a, b in
-            zip(plot.x_to_px(x, rect), plot.y_to_px(y, rect))]
-
-
 def _distance(a, b):
     return math.hypot(a.x() - b.x(), a.y() - b.y())
 
 
-def _crossing(first, second):
-    """Where the LINES through two segments meet."""
-    (a, b), (c, d) = first, second
-    x1, y1, x2, y2 = a.x(), a.y(), b.x(), b.y()
-    x3, y3, x4, y4 = c.x(), c.y(), d.x(), d.y()
-    den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
-    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den
-    return QPointF(x1 + t * (x2 - x1), y1 + t * (y2 - y1))
+def _centres(dashes):
+    return [QPointF(d[0].x(), (d[0].y() + d[1].y()) / 2.0) for d in dashes]
 
 
-def test_an_onset_is_drawn_as_two_tangents_meeting_at_its_number(
-        step_window):
-    from dscpanel.ui import plot as plot_module
+def test_an_onset_is_drawn_from_its_dashes_to_its_point(step_window):
+    """A to B to C: from the dash at each bound, ON the trace, to the point
+    its construction puts the onset at - where the tangents cross, which
+    may lie off the curve, as TRIOS draws it - and the label's arrow
+    points there too (Christian: "keep that, as long as A and C are drawn
+    on the trace"). The tangents drawn before ran from their own end
+    points, not the dashes."""
     window = step_window
     scan = window.doc.scans[0]
     onset = measure.run("Onset point", scan, 110.0, 170.0)
     trace = _trace(window, scan)
     plot = window.plot
     rect = plot.plot_rect()
-    # built in, the tangents meet exactly
     dashes, lines = plot.interval_marks(trace, onset, rect)
     assert len(dashes) == 2 and len(lines) == 2
-    assert _distance(lines[0][1], lines[1][0]) < 1e-9
-    window.doc.style.tangent_overshoot = 6.0
-    dashes, lines = plot.interval_marks(trace, onset, rect)
-    p0, p1, p2 = _px(plot, scan, measure.tangent_points(onset), rect)
-    (a0, b0), (a1, b1) = lines
-    assert _distance(a0, p0) < 1e-9 and _distance(b1, p2) < 1e-9
-    # each runs past the crossing by the overshoot asked for, 6 pt
-    over = 6.0 * plot_module.PT
-    assert _distance(b0, p1) == pytest.approx(over)
-    assert _distance(a1, p1) == pytest.approx(over)
-    crossing = _crossing(lines[0], lines[1])
-    assert _distance(crossing, p1) < 1e-6
-    assert crossing.x() == pytest.approx(
+    a, c = _centres(dashes)
+    (a0, b0), (b1, c1) = lines
+    assert _distance(a0, a) < 1e-6 and _distance(c1, c) < 1e-6
+    assert _distance(b0, b1) < 1e-9
+    (crossing,) = plot.construction_points(trace, onset, rect)
+    assert _distance(b0, crossing) < 1e-9
+    assert b0.x() == pytest.approx(
         plot.x_to_px(plot.to_axis(onset.value()), rect), abs=0.01)
-    # the house style's overshoot, in points
-    window.doc.style.tangent_overshoot = 12.0
-    _dashes, lines = plot.interval_marks(trace, onset, rect)
-    assert _distance(lines[0][1], p1) == pytest.approx(2 * over)
+    place = plot._label_place(trace, onset, rect)
+    assert place[5] == pytest.approx(b0.y())          # the arrow's tip
+
+
+def test_without_a_construction_the_point_is_on_the_curve(window):
+    """A `.txt` export stores no tangents: its point is the curve's."""
+    scan = window.doc.scans[0]
+    scan._analyses = None
+    scan.sample.data["analyses"] = {
+        "Ramp 10,00 C/min to 250 C #1": {"Onset point": [{
+            "segment": 1, "Onset cursor x": "60.0000 \u00b0C",
+            "Transition cursor x": "120.0000 \u00b0C",
+            "Onset x": "95.0000 \u00b0C"}]}}
+    (onset,) = scan.analysis_objects
+    onset.visible = True
+    trace = _trace(window, scan)
+    plot = window.plot
+    rect = plot.plot_rect()
+    assert plot.construction_points(trace, onset, rect) is None
+    lines = plot.interval_marks(trace, onset, rect)[1]
+    x = plot.to_axis(onset.value())
+    assert lines[0][1].x() == pytest.approx(plot.x_to_px(x, rect))
+    assert lines[0][1].y() == pytest.approx(plot._curve_y_at(trace, x, rect))
+    assert plot._label_place(trace, onset, rect)[5] == pytest.approx(
+        lines[0][1].y())
 
 
 def _file_tg(window):
@@ -471,33 +469,30 @@ def _file_tg(window):
     return scan, tg
 
 
-def test_a_glass_transition_is_drawn_as_three_tangents(window):
-    """TRIOS's four points are its three tangents; the inflection tangent,
-    in the middle, runs past BOTH crossings. The lines cross at the stored
-    onset and end."""
+def test_a_glass_transition_is_drawn_through_its_onset_and_end(window):
+    """From the dashes to TRIOS's two crossings - its onset and its end -
+    and between them along the inflection tangent; its arrow points at
+    the midpoint, on the curve."""
     scan, tg = _file_tg(window)
     trace = _trace(window, scan)
     plot = window.plot
     rect = plot.plot_rect()
-    window.doc.style.tangent_overshoot = 6.0
     dashes, lines = plot.interval_marks(trace, tg, rect)
     assert len(dashes) == 2 and len(lines) == 3
-    p0, p1, p2, p3 = _px(plot, scan, measure.tangent_points(tg), rect)
-    assert _distance(lines[0][0], p0) < 1e-9
-    assert _distance(lines[2][1], p3) < 1e-9
-    assert _distance(lines[1][0], p1) > 1 and _distance(lines[1][1], p2) > 1
-    for (first, second), stored in ((lines[:2], "Onset x"),
-                                    (lines[1:], "End x")):
-        crossing = _crossing(first, second)
-        celsius = model.number(tg.fields[stored])
-        assert plot.px_to_x(crossing.x(), rect) == pytest.approx(celsius,
-                                                                abs=1e-6)
+    a, c = _centres(dashes)
+    assert _distance(lines[0][0], a) < 1e-6 and _distance(lines[2][1], c) < 1e-6
+    for point, key in ((lines[0][1], "Onset x"), (lines[1][1], "End x")):
+        assert plot.px_to_x(point.x(), rect) == pytest.approx(
+            model.number(tg.fields[key]), abs=1e-6)
+    midpoint = plot.to_axis(tg.value())
+    assert plot._label_place(trace, tg, rect)[5] == pytest.approx(
+        plot._curve_y_at(trace, midpoint, rect))
 
 
-def test_the_reference_runs_lines_cross_at_trioss_numbers(qapp):
+def test_the_reference_runs_lines_meet_at_trioss_numbers(qapp):
     """The real thing: the DSC reference run's endset (first heating) and its
-    Tg (the 50 K/min heating, given an offset), drawn from TRIOS's points,
-    cross at the numbers TRIOS reported - in W/g and in mW."""
+    Tg (the 50 K/min heating, given an offset): their lines meet at the
+    numbers TRIOS reported - in W/g and in mW."""
     path = local_file(DSC_REFERENCE)
     if path is None:
         pytest.skip("the DSC reference run is not on this machine")
@@ -525,34 +520,33 @@ def test_the_reference_runs_lines_cross_at_trioss_numbers(qapp):
             lines = plot.interval_marks(trace, analysis, rect)[1]
             assert len(lines) == len(keys) + 1
             for k, key in enumerate(keys):
-                crossing = _crossing(lines[k], lines[k + 1])
-                assert plot.px_to_x(crossing.x(), rect) == pytest.approx(
+                assert plot.px_to_x(lines[k][1].x(), rect) == pytest.approx(
                     model.number(analysis.fields[key]), abs=1e-3)
 
 
-def test_chords_none_and_the_dashes_are_separate_choices(window):
+def test_the_lines_and_the_dashes_are_separate_choices(window):
     from dscpanel.ui import plot as plot_module
     scan, tg = _file_tg(window)
     trace = _trace(window, scan)
     plot = window.plot
     rect = plot.plot_rect()
-    tangents = plot.interval_marks(trace, tg, rect)
-    tg.construction = style.LINES_CHORDS
-    dashes, chords = plot.interval_marks(trace, tg, rect)
-    assert dashes == tangents[0]                 # the dashes do not change
-    assert len(chords) == 2 and chords[0][1] == chords[1][0]
-    # chords end where the dashes sit, on the curve
-    assert chords[0][0].x() == pytest.approx(dashes[0][0].x())
-    tg.construction = style.LINES_NONE
     dashes, lines = plot.interval_marks(trace, tg, rect)
-    assert lines == [] and dashes == tangents[0]
+    assert len(lines) == 3 and lines[0][1] == lines[1][0]
+    # the lines end where the dashes sit, on the curve
+    assert lines[0][0].x() == pytest.approx(dashes[0][0].x())
+    tg.construction = style.LINES_NONE
+    none = plot.interval_marks(trace, tg, rect)
+    assert none[1] == [] and none[0] == dashes  # the dashes do not change
     # the house style decides for an analysis that chose nothing ...
     tg.construction = None
-    window.doc.style.analysis_construction = style.LINES_CHORDS
-    assert len(plot.interval_marks(trace, tg, rect)[1]) == 2
+    window.doc.style.analysis_construction = style.LINES_NONE
+    assert plot.interval_marks(trace, tg, rect)[1] == []
     # ... and an analysis's own choice wins
-    tg.construction = style.LINES_TANGENTS
+    tg.construction = style.LINES_CHORDS
     assert len(plot.interval_marks(trace, tg, rect)[1]) == 3
+    # one that asked for tangents, as was possible, gets the same lines
+    tg.construction = style.LINES_TANGENTS
+    assert plot.interval_marks(trace, tg, rect)[1] == lines
 
     drawn = []
 
@@ -579,36 +573,17 @@ def test_chords_none_and_the_dashes_are_separate_choices(window):
     assert drawn == []
 
 
-def test_without_points_tangents_are_drawn_as_chords(window):
-    scan = window.doc.scans[0]
-    scan._analyses = None
-    scan.sample.data["analyses"] = {
-        "Ramp 10,00 C/min to 250 C #1": {"Onset point": [{
-            "segment": 1, "Onset cursor x": "60.0000 \u00b0C",
-            "Transition cursor x": "120.0000 \u00b0C",
-            "Onset x": "95.0000 \u00b0C"}]}}
-    (onset,) = scan.analysis_objects
-    onset.visible = True
-    trace = _trace(window, scan)
-    plot = window.plot
-    rect = plot.plot_rect()
-    assert measure.tangent_points(onset).reason == measure.NO_TANGENTS_FILE
-    lines = plot.interval_marks(trace, onset, rect)[1]
-    onset.construction = style.LINES_CHORDS
-    assert lines == plot.interval_marks(trace, onset, rect)[1]
-
-
-def test_a_zoomed_svg_export_keeps_the_tangents_inside_the_clip(
+def test_a_zoomed_svg_export_keeps_the_lines_inside_the_clip(
         step_window, tmp_path, monkeypatch):
-    """Qt's SVG writer ignores clipping, so the construction is painted
+    """Qt's SVG writer ignores clipping, so an onset's lines are painted
     inside the axes' fence (`_clip_mark`) and cut to the box: zoomed in,
-    its tangents run off the view and must not reach the margins."""
+    they run off the view and must not reach the margins."""
     window = step_window
     scan = window.doc.scans[0]
     onset = measure.run("Onset point", scan, 110.0, 170.0)
     trace = _trace(window, scan)
     plot = window.plot
-    plot.set_view_x(128.0, 136.0)                    # the crossing, close up
+    plot.set_view_x(128.0, 136.0)                    # the point, close up
     state = {"open": False, "calls": []}
     real_mark, real_interval = plot._clip_mark, plot._paint_interval
 
@@ -683,8 +658,7 @@ def test_lines_in_the_settings_mirror_a_group_in_one_undo_step(window):
 
 
 def test_the_settings_offer_lines_only_where_there_are_some(window):
-    """An integration has no lines; an onset whose file stores no tangents
-    says so, in one line, while tangents are asked for."""
+    """An integration has no lines; an onset has, to its point."""
     from dscpanel.ui.dialogs import AnalysisSettings
     scan = window.doc.scans[0]
     integral = measure.run("Peak Integration (enthalpy)", scan, 70.0, 150.0)
@@ -700,11 +674,9 @@ def test_the_settings_offer_lines_only_where_there_are_some(window):
     (onset,) = scan.analysis_objects
     dialog = AnalysisSettings(window, onset)
     assert dialog.lines.isEnabled()
-    assert dialog.lines_note.text() == measure.NO_TANGENTS_FILE
-    assert "tangents" in dialog.lines.combo.itemText(0)   # the default's
-    dialog.lines.set_value(style.LINES_CHORDS)
-    assert onset.construction == style.LINES_CHORDS
-    assert dialog.lines_note.text() == ""                # chords asked for
+    assert "to the point" in dialog.lines.combo.itemText(0)  # the default's
+    dialog.lines.set_value(style.LINES_NONE)
+    assert onset.construction == style.LINES_NONE
     dialog.close()
 
 
@@ -714,32 +686,32 @@ def test_the_render_cache_follows_the_lines(window):
     window.refresh()
     plot = window.plot
     before = plot._key()
-    onset.construction = style.LINES_CHORDS
+    onset.construction = style.LINES_NONE
     assert plot._key() != before
     before = plot._key()
     onset.show_interval = False
-    assert plot._key() != before
-    before = plot._key()
-    window.doc.style.tangent_overshoot = 10.0
     assert plot._key() != before
     before = plot._key()
     window.doc.style.analysis_construction = style.LINES_NONE
     assert plot._key() != before
 
 
-def test_the_settings_page_lists_the_lines_and_their_overshoot(window):
+def test_the_settings_page_lists_the_lines(window):
     from dscpanel.ui.settings import SettingsDialog
     page = SettingsDialog(window)
     assert page.default_value("analysis_construction") == \
-        style.LINES_TANGENTS
-    assert page.default_value("tangent_overshoot") == pytest.approx(0.0)
+        style.LINES_CHORDS
+    assert "tangent_overshoot" not in style.BY_KEY
     combo = page.defaults["analysis_construction"].combo
     assert [combo.itemText(i) for i in range(combo.count())] == [
         style.LINES_TITLES[c] for c in style.LINES]
-    page.set_default("analysis_construction", style.LINES_CHORDS)
-    assert style.preference("analysis_construction") == style.LINES_CHORDS
+    page.set_default("analysis_construction", style.LINES_NONE)
+    assert style.preference("analysis_construction") == style.LINES_NONE
     page.revert()
-    assert style.preference("analysis_construction") == style.LINES_TANGENTS
+    assert style.preference("analysis_construction") == style.LINES_CHORDS
+    # a default of "tangents", saved before, is the lines to the point
+    assert style.BY_KEY["analysis_construction"].clean(
+        style.LINES_TANGENTS) is None
 
 
 # ------------------------------------------------------------ the session
@@ -766,7 +738,8 @@ def test_the_lines_survive_a_session(document, sample, tmp_path):
     reopened = _reopen(document, sample, tmp_path)
     by_model = {a.model_name: a for a in reopened.scans[0].analysis_objects}
     assert by_model["Onset point"].construction == style.LINES_CHORDS
-    assert by_model["Endset point"].construction == style.LINES_TANGENTS
+    # "tangents", saved before, follows the figure: lines to the point
+    assert by_model["Endset point"].construction is None
     # a panel endset is measured again on load: flat side by acquisition
     # order, so a session saved with the old endset reopens corrected
     assert by_model["Endset point"].value() != by_model["Onset point"].value()

@@ -117,6 +117,7 @@ extension.
 | `Shift+M` | set the molar mass |
 | `N` | show or hide the outliner |
 | `F3` | **operator search**: everything, filtered by what is selected; the ones used last on top, Enter repeats the newest; right-click one for an alias of your own |
+| `Ctrl+C` / `Ctrl+V` | copy the selection / paste: onto selected objects of the copied kind a menu asks what (all settings, colour, sizes, style, text, place; a curve's analyses); otherwise labels, a picture, a SMILES or text |
 | `Ctrl+Z` / `Ctrl+Y` | undo / redo, including a file you removed - and zoom, pan and fit, one gesture at a time |
 | `Ctrl+S` / `Ctrl+E` | save the session / export the figure |
 | `Ctrl+,` | settings: the house style, for every figure and for this one |
@@ -165,8 +166,9 @@ the panel computes 13.3 J/g where the file says 13.2611.
 
 Each analysis marks its interval with a dash on the curve at each end, in
 the axis colour; an onset, endset or glass transition also gets straight
-lines from those dashes to its result point, the template's construction
-(one tickbox hides them). A cursor can be picked up and dragged rather than
+lines from those dashes to its point - where the tangents cross, as in
+TRIOS - and the label's arrow points there ("Lines" in its settings, or
+none). A cursor can be picked up and dragged rather than
 replaced. Adjusting an existing analysis keeps the model it already has.
 On an m% curve, an onset, endset or mass at a temperature can also draw
 a dashed line across the plot at the m% of its point, the value at the
@@ -190,8 +192,8 @@ where the drag began and ended, not every point between two temperatures.
 The caption's **alignment** is the plotter's `flush`: which edge of the text
 sits on the leader arrow. Left reads away to the right of the feature, right
 to the left, centred hangs over it. By default it follows the analysis kind
-as the template does - tangent constructions (onset, endset, glass
-transition) flush left, integrals centre.
+as the template does - onsets, endsets and glass transitions flush
+left, integrals centre.
 
 ## House style
 
@@ -203,6 +205,11 @@ columns:
   too, under Handling: it is about your hand, not about a figure.
 - **This figure** is saved in the session file and wins over the default,
   for this figure only. Left on "default", it follows the column beside it.
+
+**Style presets** (Edit > Style presets) keep a figure's look in a
+`.dscstyle` file - its style column, axes, arrow and legend, the page's
+colour, and optionally its size and margins - and put it on any figure in
+one step.
 
 A size chosen in an object's own settings (double-click it) wins over both,
 and its **Default** button hands it back. The **caption distance** is the

@@ -1412,7 +1412,9 @@ def test_a_label_stays_where_it_hangs_when_its_curve_is_hidden(window):
     """Swapping first upscans for later ones: hiding a curve dropped its labels
     on the middle of the plot, and dragging one from there ended the program -
     a TypeError inside a mouse handler, which PySide6 turns into an access
-    violation."""
+    violation. A hidden curve now hides its labels (`model.drawn`): the
+    label keeps its place, a drag where it stood does not reach it, and it
+    is back there with the curve."""
     plot = window.plot
     label, scan = _hang_a_label(window)
     window.lock_framing(True)       # hiding a curve would refit the view
@@ -1423,18 +1425,17 @@ def test_a_label_stays_where_it_hangs_when_its_curve_is_hidden(window):
     window.refresh()
     plot.grab()
     assert plot._trace_of(scan) is None
+    assert label.visible and not model.drawn(label)
     assert plot.artist_point(label, rect) == pytest.approx(before, abs=0.5)
-    _drag_from(plot, before, 20.0, 16.0)
-    k = plot.page()[2]
-    after = plot.artist_point(label, rect)
+    _drag_from(plot, before, 20.0, 16.0)        # nothing there to drag
     assert label.attached
-    assert after[0] - before[0] == pytest.approx(20.0 / k, abs=1.0)
-    assert after[1] - before[1] == pytest.approx(16.0 / k, abs=1.0)
-    # shown again, the curve has it where it was dragged to
+    assert plot.artist_point(label, rect) == pytest.approx(before, abs=0.5)
+    # shown again, the curve has it where it was
     window.undo.set_props([(scan, "visible", True)], "show")
     window.refresh()
     plot.grab()
-    assert plot.artist_point(label, rect) == pytest.approx(after, abs=0.5)
+    assert model.drawn(label)
+    assert plot.artist_point(label, rect) == pytest.approx(before, abs=0.5)
 
 
 def test_a_label_with_no_point_on_its_curve_still_drags(window,

@@ -490,12 +490,23 @@ def _flank_labels(window, scan):
     return [plot.label_offset(a, trace, rect) for a in (onset, endset)]
 
 
-def test_an_onset_label_goes_where_its_peak_goes(window):
-    """The chord between an onset's cursors lies on the PEAK's side of
-    its flank, so reading the side from it put every onset label on the
-    wrong side. The fixture's peak points down: both labels below."""
-    assert all(offset > 0 for offset in _flank_labels(
-        window, window.doc.scans[0]))
+def test_an_onset_label_stands_above_a_peak_that_falls(window):
+    """Every label is made ABOVE its curve; only an integration of a peak
+    that points down is made below (Christian: an onset and an endset
+    went below a falling peak, on the peak's side, and were wrong there).
+    The fixture's peak points down: both labels above, and a peak height
+    too - an integration of it below."""
+    from dscpanel.core import measure
+    scan = window.doc.scans[0]
+    assert all(offset < 0 for offset in _flank_labels(window, scan))
+    plot = window.plot
+    trace = plot._trace_of(scan)
+    rect = plot.plot_rect()
+    height = measure.run("Peak height", scan, 90.0, 150.0)
+    area = measure.run("Peak Integration (enthalpy)", scan, 90.0, 150.0)
+    assert not plot.peak_points_up(area, trace)
+    assert plot.label_offset(height, trace, rect) < 0
+    assert plot.label_offset(area, trace, rect) > 0
 
 
 def test_an_onset_label_stands_above_a_peak_that_rises(qapp):

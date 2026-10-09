@@ -3000,7 +3000,7 @@ class AnalysisSettings(_LiveDialog):
     #: The order of its rows (`_LiveDialog.FIRST_ROWS`).
     FIRST_ROWS = ("Label", "Shows", "Colour", "@auto", "Number format", "Unit",
                   "Model", "@source", "@start", "@end", "Results", "Peak (Tp)",
-                  "Lines", "@lines_note", "@mass_line", "Label size",
+                  "Lines", "@mass_line", "Label size",
                   "Alignment",
                   "@interval", "Marker length", "@shade", "Shading")
     LAST_ROWS = ("@visible", "Layer")
@@ -3112,15 +3112,9 @@ class AnalysisSettings(_LiveDialog):
             lambda: style.LINES_TITLES.get(
                 style.inherited(self.doc, self.obj, "construction"), ""),
             parent=self, titles=style.LINES_TITLES)
-        self.lines.setToolTip("Tangent construction, chords to the point, "
-                              "or none.")
+        self.lines.setToolTip("From each end of the interval to the "
+                              "point, or none.")
         form.addRow("Lines", self.lines)
-        # Why there are no tangents to draw, when there are none: one line.
-        self.lines_note = QLabel("")
-        self.lines_note.setWordWrap(True)
-        self.lines_note.setStyleSheet("color: #9a9a9a;")
-        self.lines_note.setVisible(False)
-        form.addRow("", self.lines_note)
         # A dashed line across the axes at the m% of its point - only an
         # analysis with a point on a mass curve has one.
         self.mass_line = QCheckBox("Mass line")
@@ -3248,14 +3242,10 @@ class AnalysisSettings(_LiveDialog):
         self._show_preview()
 
     def _show_lines(self):
-        """Lines only for an onset, endset or Tg; and, where tangents are
-        asked for and there are none to draw, why - in one line."""
+        """Lines only for an onset, endset or Tg."""
         analysis = self.obj
         self.lines.setEnabled(analysis.marks_a_point)
         self.lines.refresh()
-        note = measure.lines_note(analysis, self.doc)
-        self.lines_note.setText(note)
-        self.lines_note.setVisible(bool(note))
 
     def _show_preview(self):
         """The label as it will be drawn, and anything wrong with it."""

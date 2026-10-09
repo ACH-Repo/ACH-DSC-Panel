@@ -52,18 +52,20 @@ FLUSH_TITLES = {
 }
 
 #: The lines an onset, endset or glass transition is drawn with
-#: (`Analysis.construction`): the tangent construction - TRIOS's own for
-#: a `.tri`'s analysis - or chords from the interval's bounds to the
-#: point, or none. The interval's
-#: dashes are a separate switch (`Analysis.show_interval`).
+#: (`Analysis.construction`): straight lines from the dash at each end of
+#: its interval, on the trace, to its point - where its construction puts
+#: it, the tangents' crossing, which may lie off the curve, as TRIOS draws
+#: it - or none. The interval's dashes are a separate switch
+#: (`Analysis.show_interval`). "tangents" drew the tangents from their own
+#: end points, which did not meet the dashes; a stored "tangents" is read
+#: as the lines to the point.
 LINES_TANGENTS = "tangents"
 LINES_CHORDS = "chords"
 LINES_NONE = "none"
-LINES = (LINES_TANGENTS, LINES_CHORDS, LINES_NONE)
+LINES = (LINES_CHORDS, LINES_NONE)
 
 LINES_TITLES = {
-    LINES_TANGENTS: "tangents",
-    LINES_CHORDS: "chords to the point",
+    LINES_CHORDS: "lines to the point",
     LINES_NONE: "none",
 }
 
@@ -160,11 +162,10 @@ SETTINGS = (
     Setting("analysis_flush", "Analysis label alignment", FLUSH_LEFT,
             kind="choice", choices=(FLUSH_AUTO,) + FLUSHES,
             titles=FLUSH_TITLES, note="Edge of the label on its arrow."),
-    # Tangents by default, drawn solid in the axis colour, each running
-    # this far past where it crosses the other.
+    # From the interval's ends to the point, solid in the axis colour.
     Setting("analysis_construction", "Onset, endset and Tg lines",
-            LINES_TANGENTS, kind="choice", choices=LINES, titles=LINES_TITLES,
-            note="Tangent construction, chords to the point, or none."),
+            LINES_CHORDS, kind="choice", choices=LINES, titles=LINES_TITLES,
+            note="From each end of the interval to the point, or none."),
     Setting("analysis_peak", "Integration peak temperature (Tp)", PEAK_OFF,
             kind="choice", choices=PEAKS, titles=PEAK_TITLES,
             note="Shown after the enthalpy: \u0394H = 141 J/g, "
@@ -179,10 +180,6 @@ SETTINGS = (
             kind="choice", choices=SHADINGS, titles=SHADING_TITLES,
             note="Opaque: the colour the translucent fill makes over the "
                  "page, with nothing showing through."),
-    # 0 built in: the tangents meet exactly.
-    Setting("tangent_overshoot", "Tangent overshoot", 0.0, low=0.0,
-            high=72.0, step=1.0, decimals=1, suffix=" pt",
-            note="How far a tangent runs past its crossing."),
     Setting("caption_size", "Axis captions", 14.0, low=5.0, high=40.0,
             note="T / \u00b0C and Heat Flow / W/g."),
     Setting("tick_size", "Axis numbers", 12.0, low=4.0, high=30.0),
